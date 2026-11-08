@@ -1,0 +1,20 @@
+/node_modules/
+/dist/
+/outputs/
+/work/
+/desktop/local-defaults.json
+/workspace-state.json
+/task-images/
+/worktrees/
+.env
+.env.*
+!.env.example
+*.log
+*.zip
+
+# Local design review captures
+/design-qa.md
+/comparison-*.png
+/implementation-*.jpg
+/studio-*.jpg
+/studio-*.png
