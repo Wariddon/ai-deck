@@ -1,12 +1,17 @@
 import { useState } from "react";
 import { agentNames } from "./TeamThread.jsx";
+import { overlappingScope } from "../desktop/team-paths.mjs";
 
 export function WorktreeComparison({ preview, busy, readOnly, combine, refresh }) {
-  const [paths, setPaths] = useState({ main: [], claude: [] });
+  const [paths, setPaths] = useState(() => preview.reviewed
+    ? { main: [...preview.main.tracked, ...preview.main.files], claude: [...preview.claude.tracked, ...preview.claude.files] }
+    : { main: [], claude: [] });
   const count = paths.main.length + paths.claude.length;
+  const overlap = overlappingScope(paths.main, paths.claude);
   return <>
     <p className="dialog-intro">Select whole files from either worktree. AI Deck tries to apply them on the shared base and opens a new task if they combine cleanly.</p>
     <p className="setting-detail">Base {preview.base.slice(0, 12)} · The new task has unstaged changes. Both original worktrees stay available.</p>
+    {preview.reviewed && <p className="setting-detail">The full file set matches the Auto Team combined review. A different selection changes the reviewed set.</p>}
     <div className="deck-comparison">
       {["main", "claude"].map((lane) => {
         const { tracked, files, diff, truncated } = preview[lane];
@@ -37,9 +42,10 @@ export function WorktreeComparison({ preview, busy, readOnly, combine, refresh }
       })}
     </div>
     {readOnly && <p className="setting-detail">This project allows comparison only. Enable project edits to create a combined task.</p>}
+    {overlap && <p className="live-error" role="status">Both worktrees have a selected version of {overlap}. Choose one version before combining.</p>}
     <div className="dialog-actions">
       <button className="button small" disabled={busy} onClick={refresh}>Refresh comparison</button>
-      <button className="button primary small" disabled={busy || readOnly || !count} onClick={() => combine(paths)}>
+      <button className="button primary small" disabled={busy || readOnly || !count || Boolean(overlap)} onClick={() => combine(paths)}>
         {busy ? "Checking changes…" : "Create combined task" + (count ? " · " + count : "")}
       </button>
     </div>
@@ -132,7 +138,7 @@ export function ReviewFreshness({ review, busy, draftReview }) {
   </section>;
 }
 
-export function RunEvidence({ evidence, compact = false }) {
+export function RunEvidence({ evidence, compact = false, agents }) {
   if (!evidence?.length) return compact ? null : <p className="setting-detail">No command or approval evidence was saved for this run.</p>;
   return <details className="live-context-add deck-run-evidence" open={compact ? undefined : true}>
     <summary>Commands & approvals · {evidence.length}</summary>
@@ -142,7 +148,7 @@ export function RunEvidence({ evidence, compact = false }) {
           : Number.isInteger(item.exitCode) ? "Exit " + item.exitCode
             : ({ failed: "Reported error", returned: "Output returned", declined: "Declined" }[item.status] ?? "Exit code unavailable");
         return <li key={item.id + ":" + index}>
-          <p><strong>{agentNames[item.agent]}</strong> · {item.kind === "approval" ? item.title || "Approval" : "Command"} · {outcome}</p>
+          <p><strong>{agents?.[item.agent]?.memberName ?? agentNames[item.agent]}</strong> · {item.kind === "approval" ? item.title || "Approval" : "Command"} · {outcome}</p>
           {item.subject && <code>{item.subject}</code>}
           <time className="setting-detail" dateTime={item.at}>{new Date(item.at).toLocaleString()}</time>
         </li>;

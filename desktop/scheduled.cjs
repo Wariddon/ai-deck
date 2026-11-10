@@ -1,5 +1,6 @@
 const { randomUUID } = require("node:crypto");
 const { planPair } = require("./collaboration.mjs");
+const { nextOccurrence } = require("./schedule-time.mjs");
 
 const schedules = new Set(["daily", "weekdays", "weekly"]);
 const runners = new Set(["team", "build-review", "claude-plan-codex", "codex-plan-claude", "codex", "claude", "claude-write"]);
@@ -7,20 +8,6 @@ const days = [0, 1, 2, 3, 4, 5, 6];
 const graceMs = 5 * 60_000;
 const waitingStatus = "waiting for usage";
 const waitingRun = (schedule) => schedule.runs.find((run) => run.status === waitingStatus);
-
-function nextOccurrence(schedule, after = Date.now()) {
-  const [hour, minute] = schedule.time.split(":").map(Number);
-  const date = new Date(after);
-  for (let offset = 0; offset <= 7; offset++) {
-    const candidate = new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset, hour, minute);
-    const day = candidate.getDay();
-    if (candidate.getTime() <= after) continue;
-    if (schedule.cadence === "weekdays" && (day === 0 || day === 6)) continue;
-    if (schedule.cadence === "weekly" && day !== schedule.day) continue;
-    return candidate.getTime();
-  }
-  throw new Error("Could not calculate the next scheduled run.");
-}
 
 function scheduleInput(payload, workspaceExists, previous, now = Date.now()) {
   if (previous && waitingRun(previous)) throw new Error("Cancel the waiting run before editing this schedule.");

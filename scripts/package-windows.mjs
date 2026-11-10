@@ -1,33 +1,66 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
+import { createWindowsStage } from "./windows-package-stage.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(readFileSync(path.join(root, "desktop", "package.json"), "utf8"));
-const electron = path.join(root, "node_modules", "electron", "dist");
 const renderer = path.join(root, "dist", "client");
-if (process.platform !== "win32" || !existsSync(path.join(electron, "electron.exe")) || !existsSync(path.join(renderer, "index.html"))) {
-  throw new Error("Build AI Deck and download the Windows Electron runtime before packaging.");
+if (process.platform !== "win32" || process.arch !== "x64" || !existsSync(path.join(renderer, "index.html"))) {
+  throw new Error("Build AI Deck on Windows x64 before packaging.");
+}
+const require = createRequire(import.meta.url);
+const electron = path.dirname(require("electron"));
+if (!existsSync(path.join(electron, "electron.exe"))) throw new Error("The Windows Electron executable is missing.");
+const voice = process.env.AI_DECK_VOICE_DIR;
+const voiceFiles = ["whisper-cli.exe", "whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "LICENSE"]
+  .map((file) => path.join("whisper", file)).concat(path.join("models", "ggml-base-q5_1.bin"));
+if (voice && voiceFiles.some((file) => !existsSync(path.join(voice, file)))) {
+  throw new Error("AI_DECK_VOICE_DIR must point to a complete Windows Whisper runtime and model folder.");
 }
 
-const scratch = mkdtempSync(path.join(path.dirname(root), "ai-deck-windows-"));
+const { scratch, finish } = createWindowsStage(root, process.argv.includes("--keep-stage"));
 const stage = path.join(scratch, "AI Deck");
 cpSync(electron, stage, { recursive: true });
 renameSync(path.join(stage, "electron.exe"), path.join(stage, "AI Deck.exe"));
 const target = path.join(stage, "resources", "app");
-cpSync(path.join(root, "desktop"), target, { recursive: true });
+const desktop = path.join(root, "desktop");
+cpSync(desktop, target, { recursive: true, filter: (source) => source === desktop ||
+  (path.dirname(source) === desktop && /^(?:package\.json|[^.][^/\\]*\.(?:cjs|mjs|ps1|ico))$/u.test(path.basename(source))) });
+buildSync({
+  entryPoints: [path.join(root, "desktop", "native-hooks.cjs")],
+  outfile: path.join(target, "native-hooks.cjs"),
+  bundle: true,
+  platform: "node",
+  mainFields: ["module", "main"],
+  format: "cjs",
+  target: "node22",
+});
+require(path.join(target, "native-hooks.cjs"));
+const hookLicenses = path.join(target, "native-hook-licenses");
+mkdirSync(hookLicenses);
+for (const [pkg, file] of [["jsonc-parser", "LICENSE.md"], ["toml-eslint-parser", "LICENSE"], ["eslint-visitor-keys", "LICENSE"]]) {
+  cpSync(path.join(root, "node_modules", pkg, file), path.join(hookLicenses, pkg + ".txt"));
+}
 cpSync(renderer, path.join(target, "renderer"), { recursive: true });
+const voiceTarget = path.join(target, "voice-tools");
+for (const file of voice ? voiceFiles : []) {
+  const destination = path.join(voiceTarget, file);
+  mkdirSync(path.dirname(destination), { recursive: true });
+  cpSync(path.join(voice, file), destination);
+}
 const htmlPath = path.join(target, "renderer", "index.html");
-const csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'\">";
+const csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src blob:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'\">";
 writeFileSync(htmlPath, readFileSync(htmlPath, "utf8").replace("<head>", "<head>\n    " + csp));
 
 const defaults = {};
-const packagedCodex = process.env.AI_DECK_CODEX_EXE;
-const localClaude = path.resolve(root, "../ai-deck-tools/node_modules/@anthropic-ai/claude-code-win32-x64/claude.exe");
-if (packagedCodex && existsSync(packagedCodex)) defaults.codex = packagedCodex;
-if (existsSync(localClaude)) defaults.claude = localClaude;
-writeFileSync(path.join(target, "local-defaults.json"), JSON.stringify(defaults, null, 2));
+for (const [agent, configured] of [["codex", process.env.AI_DECK_CODEX_EXE], ["claude", process.env.AI_DECK_CLAUDE_EXE]]) {
+  if (configured && existsSync(configured)) defaults[agent] = path.resolve(configured);
+}
+if (Object.keys(defaults).length) writeFileSync(path.join(target, "local-defaults.json"), JSON.stringify(defaults, null, 2));
 writeFileSync(path.join(stage, "START HERE.txt"), [
   `AI Deck ${version} — Windows x64 portable`,
   "",
@@ -41,11 +74,31 @@ writeFileSync(path.join(stage, "START HERE.txt"), [
   "To make X quit immediately, turn off Close to system tray in Team settings > Device performance.",
   "Open a repository from Projects. Use either build-and-review direction, run either agent alone, or select Team Separate edits for two independent worktrees.",
   "Click Codex or Claude Code beside the message box to choose its model, effort and speed. AI Deck saves defaults even before you open a repository. A project or task can override each agent separately.",
+  "Click the waveform beside Send to start Voice chat. Choose Thai or English, record up to 30 seconds, then review the text in the composer and send. Read replies uses your installed Windows voices.",
   "Timeline shows the shared conversation. Split opens an activity lane for each agent.",
+  "Open Projects > Recents > Pull sessions to browse local Codex and Claude Code conversations. Pin chats, load older messages or search within a chat.",
+  "Select messages and choose Handoff to create a draft for either agent. Check the destination repo, branch and commit before creating and sending the draft.",
+  "Use Link conversation to continue the original Codex or Claude Code session. Choose the original checkout or an isolated copy, then switch agents in the linked conversation as needed. Keep the source idle when sending.",
+  "The combined linked timeline shows both providers and recorded run evidence. Save a next step, or use Review & attach to select and preview Git diffs and command results. Open in Codex or Claude Code resumes that session in a terminal.",
+  "Use the linked Shared checklist to assign and draft steps with evidence. If a provider is limited, review a handoff to the other provider beside Send.",
+  "From a linked worktree copy, use Review & apply to original to preview files or select hunks. Verify the branch and confirm before applying the patch to the working files.",
+  "Undo Apply previews the inverse of the latest supported patch applied from a linked copy. Git rechecks the original checkout before changing working files.",
+  "Drafts are saved per task. Review recovery checks an interrupted turn and prepares a draft. Check delivery shows Git changes, open steps and reported tests, with editable commit and PR drafts.",
   "Open Inspector on the right and select Outputs to view task preview links, images, observed running commands, and sources. Use + to add links or files to this task.",
   "Inspector also shows the current task's Git changes, both providers' usage, and shared context.",
+  "The usage badges next to each provider and at the bottom of the navigation rail show the highest current account quota percentage. Click a badge for the reported windows and reset times.",
+  "Drag the dividers beside Projects and Inspector to resize them. Focus a divider and use the arrow keys, or double-click it to reset its width.",
+  "At compact widths, panels that cannot dock open in their own view. Choose Back to chat or press Escape to return to the composer.",
   "The navigation rail opens full pages for Usage, Knowledge, Plugins, Git & Review, Scheduled and Settings. The Projects and Inspector panels can open beside the conversation.",
   "Team settings has separate sections for General, Appearance, Models, Project and Connections.",
+  "Open Settings with Ctrl+, and search across Personal, Integrations and Coding. Import previews compatible Codex and Claude Code settings before applying selected defaults to AI Deck.",
+  "Import can also apply project settings to the selected repository. Configuration and Hooks inspect local source groups. Claude Code push switches can be mapped to Windows completion and action alerts.",
+  "Settings > Hooks can run Git status or Git diff --check before or after either provider's turn. Save project hooks and inspect their results in the timeline or Run history.",
+  "Settings > Hooks also manages local Codex and Claude Code hooks. Choose a source, load its definitions, and preview the command and working folder before running a script test.",
+  "Send runs enabled, trusted Codex hooks and Claude Code user scripts. Use Review for Send in Settings > Hooks to approve Claude project scripts. Run history records the hook outcomes reported by each provider.",
+  "Set Auto Team required checks in Settings > Project. Auto Team runs them on a temporary checkout of the final changes and can send a failure to its assigned writer for one repair round.",
+  "Use Session Team next to the composer to save ordered members, positions and models for this task. Connect Gemini with an AI Studio key or load local models from Ollama.",
+  "Settings > Computer use shares one previewed Windows window with one selected agent for the next turn. Approve each control or text change in the timeline. Revoke access from the composer at any time.",
   "Open Team plan in the composer to choose a workflow. Drag an agent to the other card or use Swap agents. Instructions stay with each role. Save for this session to reuse the assignment in new messages.",
   "Use for next message applies a role override to one send or queue entry. The composer returns to the session workflow. Role presets save a named workflow and written responsibilities.",
   "Open saved role details in the queue, run history, or handoff preview. When usage blocks a writer, the replacement receives the writer's responsibilities.",
@@ -98,5 +151,12 @@ execFileSync(archiver, ["-a", "-cf", archiveName, "AI Deck"], { cwd: scratch, wi
 const outputs = path.resolve(root, "../../outputs");
 mkdirSync(outputs, { recursive: true });
 const deliverable = path.join(outputs, path.basename(archive));
-cpSync(archive, deliverable);
+try {
+  renameSync(archive, deliverable);
+} catch (error) {
+  if (error.code !== "EXDEV") throw error;
+  cpSync(archive, deliverable);
+  unlinkSync(archive);
+}
+finish();
 console.log(JSON.stringify({ executable: path.join(stage, "AI Deck.exe"), archive: deliverable }));

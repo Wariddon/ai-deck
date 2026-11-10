@@ -5,8 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f5f0e8" />
     <title>AI Deck</title>
+    <link rel="stylesheet" href="/src/deck-motion.css" />
   </head>
   <body>
+    <div id="deck-launch" role="status">
+      <span class="deck-launch-mark" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 4 4 8l8 4 8-4-8-4M4 12l8 4 8-4M4 16l8 4 8-4" />
+        </svg>
+      </span>
+      <strong>AI Deck</strong>
+      <span class="deck-launch-status"><span class="deck-spinner" aria-hidden="true"></span>Opening workspace…</span>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

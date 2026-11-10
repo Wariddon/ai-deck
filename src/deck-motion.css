@@ -1,0 +1,86 @@
+#deck-launch {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  color-scheme: light dark;
+  background: light-dark(#faf9f7, #191919);
+  color: light-dark(#242421, #f1f0ee);
+  font: 600 16px/1.4 "Segoe UI", system-ui, sans-serif;
+}
+
+.deck-launch-mark {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border: 1px solid light-dark(#deddd9, #393938);
+  border-radius: 14px;
+  background: light-dark(#f3f2ef, #272727);
+  color: light-dark(#245db5, #93bbff);
+}
+
+.deck-launch-status,
+.deck-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.deck-launch-status {
+  color: light-dark(#60605b, #aaa9a7);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.deck-loading {
+  min-height: 24px;
+  margin-block: 6px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.deck-spinner {
+  display: inline-block;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+}
+
+.thread-app[data-launching] { visibility: hidden; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .deck-launch-mark { animation: deck-logo-in 240ms ease-out both; }
+  .deck-spinner { animation: deck-spin 750ms linear infinite; }
+  .thread-app:not([data-launching]) { animation: deck-shell-in 200ms ease-out; }
+
+  .thread-app :is(.deck-workbench, .thread-main, .thread-sidebar, .thread-inspector):not([hidden]),
+  .thread-app :is(.deck-menu-section:not([hidden]), .thread-inspector-body) {
+    animation: deck-menu-in 160ms ease-out;
+  }
+}
+
+@keyframes deck-logo-in {
+  from { opacity: .55; scale: .92; }
+  to { opacity: 1; scale: 1; }
+}
+
+@keyframes deck-spin {
+  to { rotate: 1turn; }
+}
+
+@keyframes deck-shell-in {
+  from { opacity: .72; }
+  to { opacity: 1; }
+}
+
+@keyframes deck-menu-in {
+  from { opacity: .78; translate: 0 3px; }
+  to { opacity: 1; translate: 0 0; }
+}

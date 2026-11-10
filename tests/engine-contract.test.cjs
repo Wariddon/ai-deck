@@ -36,9 +36,12 @@ test("Codex routes an approval, streams content, and reports provider usage", as
       assert.equal(message.params.sandboxPolicy.networkAccess, false);
       assert.equal(message.params.model, "gpt-fixture");
       assert.equal(message.params.effort, "ultra");
+      assert.equal(message.params.summary, "concise");
       assert.equal(message.params.serviceTierForTurn, "priority");
       child.send({ id: message.id, result: { turn: { id: "turn-1" } } });
       child.send({ method: "item/agentMessage/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "item-1", delta: "Hello" } });
+      child.send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1",
+        item: { id: "summary-1", type: "reasoning", summary: ["Provider summary"], content: ["Internal text"] } } });
       child.send({ id: "approve-1", method: "item/commandExecution/requestApproval", params: { command: "git status" } });
     }
     if (message.id === "approve-1" && message.result) {
@@ -58,7 +61,12 @@ test("Codex routes an approval, streams content, and reports provider usage", as
     }
     if (message.id === "question-1" && message.result) {
       assert.deepEqual(message.result, { answers: { output: { answers: ["Summary"] } } });
-      child.send({ method: "thread/tokenUsage/updated", params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 4, totalTokens: 15 } } } });
+      const previous = { inputTokens: 6, outputTokens: 4, cachedInputTokens: 3, totalTokens: 10 };
+      const latest = { inputTokens: 10, outputTokens: 5, cachedInputTokens: 4, totalTokens: 15 };
+      for (const total of [previous, latest, latest]) {
+        child.send({ method: "thread/tokenUsage/updated", params: { threadId: "thread-1", turnId: "turn-1",
+          tokenUsage: { total, last: { inputTokens: 4, outputTokens: 1, cachedInputTokens: 1, totalTokens: 5 } } } });
+      }
       child.send({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });
     }
   }));
@@ -74,8 +82,9 @@ test("Codex routes an approval, streams content, and reports provider usage", as
     });
   });
   try {
+    assert.equal(replace.mock.calls[0].arguments[1].includes("features.prefer_mxc=true"), process.platform === "win32");
     await engine.initialize();
-    assert.equal((await engine.run("thread-1", process.cwd(), "Test", false, { model: "gpt-fixture", effort: "ultra", speed: "fast" })).status, "completed");
+    assert.equal((await engine.run("thread-1", process.cwd(), "Test", false, { model: "gpt-fixture", effort: "ultra", speed: "fast", summary: "concise" })).status, "completed");
     assert.equal(decision, "accept");
     assert.deepEqual(events.find((item) => item.type === "command-result"),
       { type: "command-result", key: "command-1", command: "git status", exitCode: 0, status: "completed" });
@@ -83,11 +92,42 @@ test("Codex routes an approval, streams content, and reports provider usage", as
     assert.equal(events.find((item) => item.type === "web-source").detail, "fixture search");
     assert.equal(events.find((item) => item.type === "generated-image").filename, "C:/fixture/output.png");
     assert.equal(events.find((item) => item.type === "delta").text, "Hello");
-    assert.deepEqual(events.find((item) => item.type === "usage").usage, { input: 10, output: 5, cached: 4, total: 15 });
+    assert.equal(events.find((item) => item.key === "reasoning:summary-1").text, "Reasoning summary\nProvider summary");
+    assert.doesNotMatch(JSON.stringify(events), /Internal text/u);
+    assert.equal(events.filter((item) => item.type === "provider-call").length, 1);
+    assert.deepEqual(events.filter((item) => item.type === "provider-usage").map((item) => item.usage),
+      [{ input: 8, output: 2, cached: 2, total: 10 }]);
+    assert.equal(events.findLast((item) => item.type === "usage").usage.total, 15);
   } finally {
     engine.close();
     replace.mock.restore();
     delete require.cache[require.resolve("../desktop/engines.cjs")];
+  }
+});
+
+test("Codex stop settles when the CLI acknowledges interrupt without completing the turn", { timeout: 8000 }, async () => {
+  const processes = require("node:child_process");
+  const replace = mock.method(processes, "spawn", () => new FakeCli((child, line) => {
+    const { id, method } = JSON.parse(line);
+    if (method === "turn/start") child.send({ id, result: { turn: { id: "turn-1" } } });
+    if (method === "turn/interrupt") child.send({ id, result: {} });
+  }));
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  const { CodexEngine } = require(filename);
+  const { promise: started, resolve: ready } = Promise.withResolvers();
+  const engine = new CodexEngine("fixture.exe", process.cwd(), [], (event) => {
+    if (event.type === "steer-ready") ready();
+  });
+  try {
+    const turn = engine.run("thread-1", process.cwd(), "Check stop", false);
+    await started;
+    await engine.interrupt();
+    assert.equal((await turn).status, "interrupted");
+  } finally {
+    engine.close();
+    replace.mock.restore();
+    delete require.cache[filename];
   }
 });
 
@@ -121,6 +161,135 @@ test("Claude consumes newline-delimited result usage and exposes the final answe
     assert.equal(events.find((item) => item.type === "message").text, "Review complete");
   } finally {
     replace.mock.restore();
+  }
+});
+
+test("Claude preserves the final answer if its CLI stays alive after result", { timeout: 8000 }, async () => {
+  const processes = require("node:child_process");
+  const replace = mock.method(processes, "spawn", () => {
+    const child = new FakeCli(null, () => queueMicrotask(() =>
+      child.send({ type: "result", session_id: "session-final", result: "Finished", is_error: false })));
+    child.kill = () => child.emit("close", null);
+    return child;
+  });
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  try {
+    const { runClaude } = require(filename);
+    const result = await runClaude("fixture.exe", process.cwd(), "Review", [], undefined, () => {}).done;
+    assert.equal(result.status, "completed");
+    assert.equal(result.sessionId, "session-final");
+    assert.equal(result.answer, "Finished");
+  } finally {
+    replace.mock.restore();
+    delete require.cache[filename];
+  }
+});
+
+test("Claude stops repeated raw tool text mid-stream without accepting it as a command", { timeout: 5000 }, async () => {
+  const processes = require("node:child_process");
+  const invocation = '<invoke name="Bash">\n<parameter name="command">git status</parameter>\n</invoke>\n';
+  const replace = mock.method(processes, "spawn", (_exe, args) => {
+    assert.equal(args[args.indexOf("--tools") + 1], "AskUserQuestion");
+    return new FakeCli((child, line) => {
+      const input = JSON.parse(line);
+      if (input.request?.subtype === "initialize") {
+        child.send({ type: "control_response", response: { request_id: input.request_id, subtype: "success" } });
+      } else if (input.type === "user") {
+        assert.match(input.message.content, /answer directly/u);
+        const sendDelta = (text) => child.send({ type: "stream_event", event: {
+          type: "content_block_delta", index: 0, delta: { type: "text_delta", text },
+        } });
+        const repeated = invocation.repeat(3);
+        sendDelta(repeated.slice(0, -6));
+        sendDelta(repeated.slice(-6));
+        // The provider never sends a result and does not exit on its own.
+      }
+    });
+  });
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  try {
+    const { runClaude } = require(filename);
+    const events = [];
+    const run = runClaude("fixture.exe", process.cwd(), "สวัสดี ทีมฉัน", [], undefined, (event) => events.push(event),
+      { interactive: true });
+    const result = await run.done;
+    assert.equal(result.status, "failed");
+    assert.match(result.error, /same tool invocation as text/u);
+    assert.equal(result.answer, undefined);
+    assert.equal(run.canSteer(), false);
+    assert.equal(events.some((event) => event.type === "command-start" || event.type === "approval"), false);
+  } finally {
+    replace.mock.restore();
+    delete require.cache[filename];
+  }
+});
+
+test("Claude final snapshots do not count streamed text twice", { timeout: 5000 }, async () => {
+  const processes = require("node:child_process");
+  const text = '<invoke name="Read"><parameter name="file_path">example.js</parameter></invoke>\n'.repeat(2);
+  const replace = mock.method(processes, "spawn", () => new FakeCli(null, (child) => queueMicrotask(() => {
+    child.send({ type: "stream_event", event: { type: "message_start", message: { id: "fixture-answer" } } });
+    child.send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } });
+    child.send({ type: "assistant", message: { id: "fixture-answer", content: [{ type: "text", text }] } });
+    child.send({ type: "result", result: text, is_error: false });
+    child.kill();
+  })));
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  try {
+    const { runClaude } = require(filename);
+    const result = await runClaude("fixture.exe", process.cwd(), "Show a short XML example", [], undefined, () => {}).done;
+    assert.equal(result.status, "completed");
+    assert.equal(result.answer, text);
+  } finally {
+    replace.mock.restore();
+    delete require.cache[filename];
+  }
+});
+
+test("Claude finalizes each streamed text block in place after separate thinking snapshots", { timeout: 5000 }, async () => {
+  const processes = require("node:child_process");
+  const id = "msg-thinking";
+  const replace = mock.method(processes, "spawn", () => new FakeCli(null, (child) => queueMicrotask(() => {
+    const stream = (event, parent_tool_use_id = null) => child.send({ type: "stream_event", parent_tool_use_id, event });
+    const snapshot = (block) => child.send({ type: "assistant", message: { id, content: [block] } });
+    stream({ type: "message_start", message: { id } });
+    stream({ type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    snapshot({ type: "thinking", thinking: "private fixture reasoning" });
+    for (const index of [1, 2]) {
+      stream({ type: "content_block_start", index, content_block: { type: "text", text: "" } });
+      stream({ type: "content_block_delta", index, delta: { type: "text_delta", text: "Same " } });
+      stream({ type: "message_start", message: { id: "nested" } }, "tool-1");
+      stream({ type: "content_block_delta", index, delta: { type: "text_delta", text: "reply" } });
+      snapshot({ type: "text", text: "Same reply" });
+      stream({ type: "content_block_stop", index });
+    }
+    stream({ type: "content_block_start", index: 3, content_block: { type: "tool_use" } });
+    snapshot({ type: "text", text: "Same reply" });
+    const finish = { type: "result", uuid: "final", result: "Same reply\n\nSame reply", is_error: false, usage: { input_tokens: 10, output_tokens: 2 } };
+    child.send(finish);
+    child.send(finish);
+    child.kill();
+  })));
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  try {
+    const { runClaude } = require(filename);
+    const rows = new Map();
+    const usage = [];
+    const run = runClaude("fixture.exe", process.cwd(), "Review", [], undefined, ({ type, key, text }) => {
+      if (type === "delta") rows.set(key, (rows.get(key) ?? "") + text);
+      if (type === "message") rows.set(key, text);
+      if (type === "provider-usage") usage.push(type);
+    });
+    assert.equal((await run.done).status, "completed");
+    assert.deepEqual([...rows], [[id + "-1", "Same reply"], [id + "-2", "Same reply"]]);
+    assert.equal(usage.length, 1);
+  } finally {
+    replace.mock.restore();
+    delete require.cache[filename];
   }
 });
 
@@ -189,6 +358,76 @@ test("agent scopes exclude disabled and other-agent MCP servers", () => {
   assert.equal(args[args.indexOf("--allowedTools") + 1], "mcp__shared__search,mcp__reader__get");
 });
 
+test("Claude permits the turn-scoped window bridge while rejecting unrelated tools", { timeout: 5000 }, async () => {
+  const processes = require("node:child_process");
+  const hook = (child, id, tool_name) => child.send({ type: "control_request", request_id: id,
+    request: { subtype: "hook_callback", callback_id: "deck-tools", input: { tool_name } } });
+  const replace = mock.method(processes, "spawn", (_exe, args) => {
+    assert.ok(args.includes("--no-session-persistence"));
+    return new FakeCli((child, line) => {
+      const message = JSON.parse(line);
+      if (message.request?.subtype === "initialize") {
+        child.send({ type: "control_response", response: { request_id: message.request_id, subtype: "success", response: {} } });
+      } else if (message.type === "user") {
+        hook(child, "window", "mcp__ai_deck_computer__screenshot");
+      } else if (message.response?.request_id === "window") {
+        assert.equal(message.response.response.hookSpecificOutput.permissionDecision, "allow");
+        hook(child, "other", "mcp__other__screenshot");
+      } else if (message.response?.request_id === "other") {
+        assert.equal(message.response.response.hookSpecificOutput.permissionDecision, "deny");
+        child.send({ type: "result", result: "Complete", is_error: false });
+      }
+    }, (child) => queueMicrotask(() => child.kill()));
+  });
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  try {
+    const { runClaude } = require(filename);
+    const result = await runClaude("fixture.exe", process.cwd(), "Inspect the fixture",
+      [{ name: "ai_deck_computer", url: "http://127.0.0.1:1024/fixture", tools: ["screenshot"] }],
+      undefined, () => {}, { interactive: true, computer: true }).done;
+    assert.equal(result.status, "completed");
+  } finally {
+    replace.mock.restore();
+    delete require.cache[filename];
+  }
+});
+
+test("approved Claude edits can write inside the worktree and cannot escape it", { timeout: 5000 }, async () => {
+  const processes = require("node:child_process");
+  const path = require("node:path");
+  const cwd = process.cwd();
+  const targets = [["src/new.js", "allow"], ["tests/peer.js", "deny"], ["../outside.js", "deny"], [".git/config", "deny"], ["src/new.js:stream", "deny"]];
+  const checked = [];
+  const replace = mock.method(processes, "spawn", () => new FakeCli((child, line) => {
+    const message = JSON.parse(line);
+    if (message.request?.subtype === "initialize") {
+      child.send({ type: "control_response", response: { request_id: message.request_id, subtype: "success", response: {} } });
+    } else if (message.type === "user") {
+      for (const [index, [filename]] of targets.entries()) {
+        child.send({ type: "control_request", request_id: String(index), request: { subtype: "hook_callback", callback_id: "deck-tools",
+          input: { tool_name: "Write", tool_input: { file_path: path.resolve(cwd, filename) } } } });
+      }
+    } else {
+      const index = Number(message.response?.request_id);
+      checked[index] = message.response?.response?.hookSpecificOutput?.permissionDecision;
+      if (checked.filter(Boolean).length === targets.length) child.send({ type: "result", result: "Done", is_error: false });
+    }
+  }, (child) => queueMicrotask(() => child.kill())));
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  const { runClaude } = require(filename);
+  try {
+    const run = runClaude("fixture.exe", cwd, "Write the fixture", [], undefined, () => {},
+      { interactive: true, role: "write", approvedWorkspaceEdits: true, writePaths: ["src/"] });
+    assert.equal((await run.done).status, "completed");
+    assert.deepEqual(checked, targets.map(([, decision]) => decision));
+  } finally {
+    replace.mock.restore();
+    delete require.cache[filename];
+  }
+});
+
 test("Claude answers a clarification before requesting a foreground check", { timeout: 5000 }, async () => {
   const processes = require("node:child_process");
   const questions = [{ question: "What should I test?", multiSelect: true, options: [{ label: "Build" }, { label: "Lint" }] }];
@@ -248,6 +487,49 @@ test("Claude edit and plan use restricted file tools and cannot inherit MCP", ()
   assert.deepEqual(JSON.parse(arg(write, "--mcp-config")), { mcpServers: {} });
   assert.equal(arg(write, "--model"), "sonnet");
   assert.equal(arg(write, "--resume"), "write-session");
+});
+
+test("Claude surfaces Bash hook requests and records the result only after approval", { timeout: 5000 }, async () => {
+  const processes = require("node:child_process");
+  const command = "node --test test/example.test.cjs";
+  const hook = (child, id, input) => child.send({ type: "control_request", request_id: id, request: {
+    subtype: "hook_callback", callback_id: "deck-tools",
+    input: { tool_name: "Bash", tool_use_id: id + "-tool", tool_input: input },
+  } });
+  const replace = mock.method(processes, "spawn", () => new FakeCli((child, line) => {
+    const frame = JSON.parse(line);
+    if (frame.request?.subtype === "initialize") {
+      child.send({ type: "control_response", response: { request_id: frame.request_id, subtype: "success", response: {} } });
+    } else if (frame.type === "user") {
+      hook(child, "background", { command, run_in_background: true });
+    } else if (frame.response?.request_id === "background") {
+      assert.equal(frame.response.response.hookSpecificOutput.permissionDecision, "deny");
+      hook(child, "test", { command });
+    } else if (frame.response?.request_id === "test") {
+      assert.equal(frame.response.response.hookSpecificOutput.permissionDecision, "allow");
+      child.send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "test-tool", content: "1 test passed" }] } });
+      child.send({ type: "result", result: "Passed", is_error: false });
+    }
+  }, (child) => queueMicrotask(() => child.kill())));
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  const { runClaude } = require(filename);
+  const events = [];
+  const run = runClaude("fixture.exe", process.cwd(), "Run the check", [], null, (event) => {
+    events.push(event);
+    if (event.type === "approval") queueMicrotask(() => run.decide(event.key, true));
+  }, { interactive: true, role: "write", allowCommands: true });
+  try {
+    assert.equal((await run.done).answer, "Passed");
+    assert.deepEqual(events.filter((event) => event.type === "approval").map(({ key }) => key), ["test"]);
+    assert.equal(events.find((event) => event.type === "approval").commandId, "test-tool");
+    assert.deepEqual(events.find((event) => event.type === "command-result"), {
+      type: "command-result", key: "test-tool", command, status: "returned", output: "1 test passed",
+    });
+  } finally {
+    replace.mock.restore();
+    delete require.cache[filename];
+  }
 });
 
 test("Codex maps a terminal usage-limit notification and its exhausted window", async () => {
@@ -333,4 +615,31 @@ test("Steer waits for Codex to acknowledge the exact active turn", async () => {
     replace.mock.restore();
     delete require.cache[filename];
   }
+});
+
+test("only interactive writer turns can use elevated permission presets", () => {
+  const { codexPermissions, supportsRunPermissions } = require("../desktop/run-permissions.mjs");
+  const { claudeArguments } = require("../desktop/engines.cjs");
+  const cwd = process.cwd();
+  const ask = codexPermissions("ask", cwd, false, false);
+  assert.equal(ask.approvalPolicy, "on-request");
+  assert.equal(ask.approvalsReviewer, "user");
+  assert.equal(ask.sandboxPolicy.networkAccess, false);
+  assert.deepEqual(codexPermissions("auto", cwd, false, false), { ...ask, approvalsReviewer: "auto_review" });
+  assert.deepEqual(codexPermissions("full", cwd, false, false).sandboxPolicy, { type: "dangerFullAccess" });
+  assert.equal(codexPermissions("full", cwd, false, false).approvalPolicy, "never");
+  assert.equal(codexPermissions("full", cwd, true, false).sandboxPolicy.type, "readOnly");
+  assert.equal(codexPermissions("full", cwd, false, true).sandboxPolicy.type, "workspaceWrite");
+  for (const mode of ["parallel-write", "session-team", "auto-team", "team-discussion"]) assert.equal(supportsRunPermissions(mode), false);
+
+  const args = (permissionMode, options) => claudeArguments([], null, { role: "write", interactive: true, permissionMode, ...options });
+  const mode = (flags) => flags[flags.indexOf("--permission-mode") + 1];
+  assert.equal(mode(args("ask")), "default");
+  assert.equal(mode(args("auto")), "auto");
+  assert.equal(mode(args("full")), "bypassPermissions");
+  assert.equal(args("full").includes("--restricted"), false);
+  assert.equal(args("auto").includes("--restricted"), true);
+  assert.equal(mode(args("full", { writePaths: ["src"] })), "default");
+  assert.equal(mode(args("full", { role: "review" })), "default");
+  assert.equal(mode(args("full", { interactive: false })), "acceptEdits");
 });

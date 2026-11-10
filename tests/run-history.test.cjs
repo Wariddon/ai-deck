@@ -2,6 +2,22 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { newRun, recordEvent, finishRun, restoreWorkspace } = require("../desktop/run-history.cjs");
 
+test("a completed blocked review retires an older checkpoint but a limited review remains resumable", () => {
+  const runs = ["completed", "limited"].map((status) => {
+    const run = newRun("build-review", "fixture", ["codex", "claude"]);
+    run.agents.codex.status = "completed";
+    run.agents.claude.status = status;
+    run.reviewPending = true;
+    run.collaboration = { verdict: "blocked", reviewCheckpoint: { reviewer: "claude" } };
+    finishRun(run);
+    return run;
+  });
+  restoreWorkspace({ runHistory: runs });
+  assert.equal(runs[0].reviewPending, false);
+  assert.equal(runs[0].collaboration.reviewCheckpoint, undefined);
+  assert.equal(runs[1].reviewPending, true);
+});
+
 test("upgrade preserves previous provider sessions and enables existing MCP entries", () => {
   const workspace = { codexThread: "old-thread", claudeSession: "old-session", plugins: [{ name: "legacy" }] };
   restoreWorkspace(workspace);
@@ -15,15 +31,21 @@ test("history replaces message snapshots and saves each provider's reported scop
   const run = newRun("team", "Check retry", ["codex", "claude"]);
   recordEvent(run, "codex", { type: "delta", key: "1", text: "Partial" });
   recordEvent(run, "codex", { type: "activity", text: "Raw command output" });
+  recordEvent(run, "codex", { type: "run-model", model: "model-one", effort: "low" });
   recordEvent(run, "codex", { type: "message", key: "1", text: "Final" });
+  recordEvent(run, "codex", { type: "run-model", model: "model-two" });
   recordEvent(run, "codex", { type: "message", key: "1", text: "Replaced" });
+  recordEvent(run, "codex", { type: "message", key: "2", text: "Follow-up" });
   recordEvent(run, "codex", { type: "usage", scope: "Thread total", usage: { total: 12 } });
   recordEvent(run, "claude", { type: "usage", scope: "CLI result", usage: { total: 7 } });
   recordEvent(run, "claude", { type: "status", status: "completed" });
   finishRun(run);
   assert.equal(run.agents.codex.status, "interrupted");
   assert.equal(run.agents.claude.status, "completed");
-  assert.deepEqual(run.agents.codex.messages, [{ key: "1", text: "Replaced" }]);
+  assert.deepEqual(run.agents.codex.messages, [
+    { key: "1", text: "Replaced", profile: { model: "model-one", effort: "low" } },
+    { key: "2", text: "Follow-up", profile: { model: "model-two", effort: "low" } },
+  ]);
   assert.equal(run.agents.codex.usage.scope, "Thread total");
   assert.equal(run.agents.claude.usage.scope, "CLI result");
   assert.ok(run.finishedAt);

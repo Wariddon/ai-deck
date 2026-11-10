@@ -6,6 +6,8 @@ import {
 import { agentNames, modeLabel, projectName } from "./TeamThread.jsx";
 import { activeUsageLimit } from "../desktop/usage-routing.mjs";
 import { planResultCanBeConfirmed } from "../desktop/collaboration.mjs";
+import { nextOccurrence } from "../desktop/schedule-time.mjs";
+import { DeckLoading } from "./DeckLoading.jsx";
 
 const pages = [
   ["workspace", "Workspace", IconHome2],
@@ -19,10 +21,16 @@ const pages = [
   ["settings", "Settings", IconSettings],
 ];
 
-export function DeckNav({ current, go }) {
+export function DeckNav({ current, go, footer, inboxCount }) {
   return <nav className="deck-nav" aria-label="AI Deck">
     {pages.map(([key, label, Icon]) => <button type="button" className="icon-button" key={key} aria-label={label}
-      title={label} aria-current={current === key ? "page" : undefined} onClick={() => go(key)}><Icon size={19} /></button>)}
+      title={key === "inbox" && inboxCount ? label + " · " + inboxCount + " waiting" : label}
+      aria-describedby={key === "inbox" && inboxCount ? "deck-inbox-count" : undefined}
+      aria-current={current === key ? "page" : undefined} onClick={() => go(key)}><Icon size={19} />
+      {key === "inbox" && inboxCount > 0 && <span className="deck-nav-count" id="deck-inbox-count"
+        aria-label={inboxCount + " waiting"}>{inboxCount > 9 ? "9+" : inboxCount}</span>}
+    </button>)}
+    {footer && <div className="deck-nav-footer">{footer}</div>}
   </nav>;
 }
 
@@ -47,6 +55,9 @@ const inboxFilters = {
 function inboxLabel(row) {
   if (row.kind === "plan-input") return ({ "needs-input": "Plan needs your input", unclassified: "Plan needs revision", blocked: "Plan blocked" })[row.planState];
   if (row.kind === "approval" && planResultCanBeConfirmed(row.applyStatus)) return "Implementation needs review";
+  if (row.kind === "approval" && row.applyStatus === "limited") return "Implementation paused at usage limit";
+  if (row.kind === "approval" && row.applyStatus === "blocked") return "Implementation blocked";
+  if (row.kind === "approval" && row.applyStatus === "interrupted") return "Implementation stopped";
   return ({ approval: "Plan awaits approval", review: "Review pending", usage: "Usage handoff available", queue: "Queue paused" })[row.kind];
 }
 
@@ -70,7 +81,7 @@ export function TeamInbox({ rows, loading, error, busy, connections, now, refres
       </select>}
     </div>
     {error && <p className="live-error" role="alert">{error}</p>}
-    {loading && !rows.length && <p role="status">Checking team tasks…</p>}
+    {loading && <DeckLoading>{rows.length ? "Refreshing team tasks…" : "Checking team tasks…"}</DeckLoading>}
     {!loading && !visible.length && !error && <div className="deck-box"><h2>Nothing waiting here</h2>
       <p className="setting-detail">Tasks appear when they need a decision or have follow-up work.</p></div>}
     <div className="deck-inbox-list">
@@ -122,6 +133,8 @@ function ScheduleForm({ draft, setDraft, projects, save, cancel, busy, lowMemory
     });
   }
   const field = (name) => ({ name, value: draft[name], onChange: change });
+  const next = /^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(draft.time) ? nextOccurrence(draft) : null;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return <form className="deck-box deck-schedule-form" onSubmit={(event) => { event.preventDefault(); save(draft); }}>
     <h2>{draft.id ? "Edit schedule" : "New schedule"}</h2>
     <label className="field"><strong>Name</strong><input required maxLength={90} {...field("name")} /></label>
@@ -145,6 +158,11 @@ function ScheduleForm({ draft, setDraft, projects, save, cancel, busy, lowMemory
       </select></label>
     </div>
     {isPlanMode(draft.mode) && <p className="setting-detail">Only the planner starts on schedule. Open the resulting task to review the plan and approve implementation.</p>}
+    <div className="deck-schedule-preview" role="status">
+      <strong>{draft.id ? "Next eligible time" : "First eligible time when enabled"}</strong>
+      <span>{next ? formatDate(next) + " · " + zone : "Choose a local time"}</span>
+      <small>{draft.access === "write" ? "Edits in a fresh worktree" : "Read-only"} · {draft.fallback === "available" ? "Runs the available agent at a usage limit" : "Waits when usage is limited"}</small>
+    </div>
     <p className="setting-detail">Each run starts from the project's committed HEAD in a fresh worktree. New schedules start paused.</p>
     <div className="thread-actions"><button className="button primary small" disabled={busy}>Save schedule</button>
       <button className="button small" type="button" onClick={cancel}>Cancel</button></div>

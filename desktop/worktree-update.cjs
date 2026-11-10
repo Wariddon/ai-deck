@@ -57,7 +57,7 @@ function readNewFile(source, file, remaining) {
   return data;
 }
 
-async function transferPreview(git, { source, base, temp, includeDiff = true }) {
+async function transferPreview(git, { source, base, temp, includeDiff = true, includeFileDigests = false }) {
   if (!commitId.test(base)) throw new Error("The task's original base is invalid.");
   if (await git(source, ["ls-files", "--unmerged", "-z"], { limit: 2 })) throw new Error("Resolve the source worktree's existing conflicts first.");
   const scratch = fs.mkdtempSync(path.join(temp, "ai-deck-compare-"));
@@ -77,7 +77,16 @@ async function transferPreview(git, { source, base, temp, includeDiff = true }) 
       digests.push([name, fingerprint(data)]);
     }
     const stamp = fingerprint(JSON.stringify([tracked, fingerprint(patch), digests]));
-    return { tracked, files, stamp, ...(includeDiff && { diff: patch.toString("utf8", 0, 90000), truncated: patch.length > 90000 }) };
+    let fileDigests;
+    if (includeFileDigests) {
+      const boundaries = patch.length ? [0] : [];
+      for (let index = patch.indexOf("\ndiff --git "); index >= 0; index = patch.indexOf("\ndiff --git ", index + 1)) boundaries.push(index + 1);
+      if (boundaries.length !== tracked.length || patch.length && !patch.subarray(0, 11).equals(Buffer.from("diff --git "))) {
+        throw new Error("The changed paths could not be matched to the Git patch.");
+      }
+      fileDigests = [...tracked.map((name, index) => [name, fingerprint(patch.subarray(boundaries[index], boundaries[index + 1]))]), ...digests];
+    }
+    return { tracked, files, stamp, fileDigests, ...(includeDiff && { diff: patch.toString("utf8", 0, 90000), truncated: patch.length > 90000 }) };
   } finally {
     fs.rmSync(file, { force: true });
     fs.rmdirSync(scratch);

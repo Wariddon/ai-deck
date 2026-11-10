@@ -25,7 +25,10 @@ function ensureTasks(workspace) {
     workspace.currentTask = task.id;
   }
   for (const task of workspace.tasks) task.queue ??= [];
-  if (!workspace.tasks.some((task) => task.id === workspace.currentTask)) workspace.currentTask = workspace.tasks[0].id;
+  if (!workspace.tasks.some((task) => !task.archivedAt)) workspace.tasks.push(newTask());
+  if (!workspace.tasks.some((task) => task.id === workspace.currentTask && !task.archivedAt)) {
+    workspace.currentTask = workspace.tasks.find((task) => !task.archivedAt).id;
+  }
   return workspace;
 }
 
@@ -34,14 +37,22 @@ function selectedTask(workspace) {
 }
 
 function taskSummary(task) {
-  return { id: task.id, title: task.title, openedAt: task.openedAt, runs: task.runHistory.length, queued: task.queue.length };
+  return { id: task.id, title: task.title, openedAt: task.openedAt, runs: task.runHistory.length, queued: task.queue.length,
+    ...(task.archivedAt && { archived: true }) };
 }
 
 function workspaceView(workspace) {
   if (!workspace) return null;
   const { tasks, ...settings } = workspace;
   const task = selectedTask(workspace);
-  return { ...settings, ...task, taskId: task.id, tasks: tasks.map(taskSummary) };
+  const { linkedUndo, ...publicTask } = task;
+  const runHistory = task.runHistory.map((run) => {
+    const checkpoint = run.collaboration?.reviewCheckpoint;
+    if (!checkpoint) return run;
+    return { ...run, collaboration: { ...run.collaboration,
+      reviewCheckpoint: { reviewer: checkpoint.reviewer, sha256: checkpoint.packet.info.sha256, files: checkpoint.packet.info.includedPaths } } };
+  });
+  return { ...settings, ...publicTask, runHistory, taskId: task.id, canUndoLinkedApply: Boolean(linkedUndo), tasks: tasks.map(taskSummary) };
 }
 
 function canDrain(run, stopped, paused) {
@@ -54,6 +65,7 @@ function teamInbox(workspaces) {
   const rows = [];
   for (const workspace of Object.values(workspaces)) {
     for (const task of workspace.tasks) {
+      if (task.archivedAt) continue;
       const latest = task.runHistory.at(-1);
       const summary = { repo: workspace.repo, taskId: task.id, title: task.title };
       const addRun = (kind, run, detail) => rows.push({

@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { IconArrowsExchange, IconBolt, IconGripVertical, IconLayersLinked } from "@tabler/icons-react";
-import { agentRole, effectiveTeamwork, swapTeamAssignment, teamFields, teamWorkflowMode, workflowFamily } from "../desktop/collaboration.mjs";
+import { agentRole, discussionMode, effectiveTeamwork, separateEditsIssue, swapTeamAssignment, teamFields, teamWorkflowMode, workflowFamily } from "../desktop/collaboration.mjs";
 import { routeMode } from "../desktop/usage-routing.mjs";
 import { agentNames, AssignmentEvidence, modeLabel, projectName } from "./TeamThread.jsx";
 
 const teamChoices = {
-  "build-review": "Build → Review",
-  "codex-plan-claude": "Plan → Implement",
-  team: "Shared task",
-  "parallel-write": "Separate edits",
+  [discussionMode]: "Discuss together · no edits",
+  "auto-team": "Auto Team · agree, implement and cross-review",
+  "build-review": "Implement → Review the resulting diff",
+  "codex-plan-claude": "Plan → Approve → Implement",
+  team: "Implement and review the starting snapshot",
+  "parallel-write": "Edit in separate worktrees",
 };
 const soloChoices = ["codex", "codex-plan", "codex-review", "claude", "claude-plan", "claude-write"];
 const roleNames = { plan: "Plan", review: "Review", write: "Implement" };
@@ -21,6 +23,7 @@ const roleExample = {
 export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, readOnly, projectDefault, projectMode,
   running, queued, presets, editPreset, canSave, canSaveProject, busy, apply, saveSession, resetSession, saveDefault, brand, close }) {
   const [flow, setFlow] = useState(mode);
+  const [saveScope, setSaveScope] = useState(canSave && !once ? "session" : "next");
   const originalBrief = effectiveTeamwork(value, session, projectDefault) ?? {};
   const [brief, setBrief] = useState(originalBrief);
   const dirty = flow !== mode || teamFields.some((key) => (originalBrief[key] ?? "") !== (brief[key] ?? ""));
@@ -32,14 +35,27 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
   const selectedPreset = presets.find((preset) => preset.id === presetId);
   const agents = routeMode(flow, {}).requested;
   const family = workflowFamily(flow);
-  const canSwap = agents.length === 2;
+  const automatic = family === "auto-team";
+  const separateIssue = separateEditsIssue(flow, brief);
+  const discussion = flow === discussionMode;
+  const canSwap = agents.length === 2 && !automatic && !discussion;
   const ordered = family === "build-review" || family === "codex-plan-claude";
   const summary = ({
+    "auto-team": "Codex proposes a plan and Claude checks it and assigns the work. Approve before either edits. The team reviews the diff and can request one fix round per assignment.",
     "codex-plan-claude": "Approve the read-only plan before implementation starts.",
     "build-review": "The reviewer receives the resulting diff and the builder’s handoff.",
-    "parallel-write": "Each agent edits a separate worktree. Compare changes before combining.",
+    "parallel-write": "Give each writer its own paths. Each agent edits a separate worktree. AI Deck checks both Git diffs after the run.",
+    [discussionMode]: "AI Deck sends Codex’s opening reply to Claude. Each agent replies once, without project tools.",
     team: "The reviewer uses the worktree snapshot captured before the run.",
   })[family] ?? "Only the selected agent runs.";
+
+  function roleInput(role) {
+    if (role === "review") return family === "build-review" ? "Builder’s diff and handoff after implementation" : "Checkout snapshot from before the run";
+    if (role === "plan") return "Current files and the shared brief";
+    if (family === "codex-plan-claude") return "The plan after you approve it";
+    if (family === "parallel-write") return "Its own isolated worktree";
+    return "Current worktree and the shared brief";
+  }
 
   function swap() {
     const next = swapTeamAssignment(flow, brief);
@@ -60,11 +76,13 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
 
   return <form className="deck-team-form" onSubmit={(event) => {
     event.preventDefault();
-    if (canSave) void saveSession(flow, brief);
+    if (busy || separateIssue) return;
+    if (saveScope === "project" && canSaveProject) void saveDefault(flow, brief);
+    else if (saveScope === "session" && canSave) void saveSession(flow, brief);
     else apply(flow, brief);
   }}>
     <div className="deck-team-scope">
-      <div><p className="deck-kicker">Session roles</p><strong title={sessionTitle}>{sessionTitle || "Current draft"}</strong></div>
+      <div><p className="deck-kicker">Shared team brief</p><strong title={sessionTitle}>{sessionTitle || "Current draft"}</strong></div>
       <span className="source-pill">{dirty ? "Unsaved changes" : once ? "Next message only" : value !== undefined || session && session.mode !== mode ? "Draft override" : session ? "Session default" : "Project brief"}</span>
     </div>
     {running && <AssignmentEvidence mode={running.mode} teamwork={running.teamwork} label="Current run roles" lowMemory={running.lowMemory} />}
@@ -79,11 +97,12 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
       </select></label>
       {canSwap && <button className="button small" type="button" onClick={swap}><IconArrowsExchange size={16} />Swap agents</button>}
     </div>
-    {canSwap && <p className="setting-detail deck-team-hint">Drag an agent onto the other card or use Swap agents. Responsibilities stay with the role.</p>}
-    <div className={"deck-role-board" + (canSwap ? " has-two-roles" : "")} aria-label="Role board">
+    <p className="setting-detail deck-team-hint">{summary}{lowMemory && agents.length === 2 && " · Low RAM runs one agent at a time."}</p>
+    {canSwap && <p className="setting-detail deck-team-hint">Drag or use Swap agents. Responsibilities stay with the role.</p>}
+    <div className={"deck-role-board" + (agents.length === 2 ? " has-two-roles" : "")} aria-label="Role board">
       {agents.map((agent, index) => {
         const role = agentRole(flow, agent);
-        const step = !canSwap ? "Solo" : ordered || lowMemory ? "Step " + (index + 1) : "Lane " + (index === 0 ? "A" : "B");
+        const step = automatic ? "Planning step " + (index + 1) : !canSwap ? "Solo" : ordered || lowMemory ? "Step " + (index + 1) : "Lane " + (index === 0 ? "A" : "B");
         const eligible = Boolean(dragAgent && dragAgent !== agent);
         return <section className={"deck-role-card" + (eligible ? " is-drop-target" : "")}
           data-slot={index + 1} data-agent={agent} aria-label={step + " " + roleNames[role]}
@@ -97,7 +116,7 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
             swap();
           }}>
           <header className="deck-role-heading">
-            <div><p className="deck-kicker">{step}</p><h3>{roleNames[role]}</h3></div>
+            <div><p className="deck-kicker">{step}</p><h3>{automatic ? index ? "Check & assign" : "Propose" : roleNames[role]}</h3></div>
             <span className="source-pill">{role === "write" && !readOnly ? "Worktree edits" : "Read-only"}</span>
           </header>
           <div className="deck-role-agent" draggable={canSwap} data-draggable={canSwap}
@@ -110,12 +129,18 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
             {canSwap && <IconGripVertical size={16} aria-hidden="true" />}
             {brand(agent)}<strong>{agentNames[agent]}</strong>
           </div>
-          {field(agent, "Responsibilities", roleExample[role])}
+          <p className="deck-role-input"><strong>Sees</strong> {discussion ? index ? "Your message and the opening reply" : "Your message"
+            : automatic && index ? "Codex’s proposal, the current files and the shared brief" : roleInput(role)}</p>
+          {!discussion && field(agent, automatic ? "Assignment preferences" : "Responsibilities",
+            automatic ? "Example: prefer test coverage and keep edits scoped." : roleExample[role])}
+          {family === "parallel-write" && field(agent + "Paths", "Write paths · " + agentNames[agent],
+            agent === "codex" ? "src/api/\nsrc/routes.js" : "tests/\nREADME.md")}
         </section>;
       })}
     </div>
+    {family === "parallel-write" && <p className="setting-detail deck-team-hint">Use one repository-relative path per line. End folder paths with a slash.</p>}
+    {separateIssue && <p className="live-error" role="status">{separateIssue}</p>}
     {readOnly && <p className="setting-detail deck-team-hint">This project is read-only.</p>}
-    <p className="setting-detail deck-team-hint">{summary}{lowMemory && canSwap && " · Low RAM runs one agent at a time."}</p>
     <div className="deck-form-grid deck-team-notes">
       {field("brief", "Shared brief", "What should both agents know?")}
       {field("outcome", "Done when / handoff", "What should they check and hand over?")}
@@ -142,21 +167,27 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
       <div className="deck-team-controls">
         <label className="field"><strong>New preset name</strong><input maxLength={70} value={presetName}
           onChange={(event) => setPresetName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} /></label>
-        <button className="button small" type="button" disabled={!presetName.trim() || busy} onClick={async () => {
+        <button className="button small" type="button" disabled={!presetName.trim() || busy || Boolean(separateIssue)} onClick={async () => {
           const next = await editPreset({ action: "save", name: presetName, mode: flow, teamwork: brief });
           if (next) { setPresetId(next.rolePresets.at(-1).id); setPresetName(""); setConfirmRemove(false); }
         }}>Save preset</button>
       </div>
     </details>
-    <p className="setting-detail">Session defaults apply to new messages. A one-time override applies to the next message you send or queue.</p>
     <p className="deck-role-announcement" role="status">{announcement}</p>
-    <div className="dialog-actions deck-team-actions">
-      <button className="button small" type="button" onClick={close}>Cancel</button>
-      {canSave && (value !== undefined || session || projectMode && projectMode !== flow) && <button className="button small" type="button" disabled={busy}
-        onClick={resetSession}>Use project default</button>}
-      {canSaveProject && <button className="button small" type="button" disabled={busy} onClick={() => saveDefault(flow, brief)}>Save project default</button>}
-      {canSave && <button className="button small" type="button" disabled={busy} onClick={() => apply(flow, brief)}>Use for next message</button>}
-      <button className="button small primary" disabled={busy}>{canSave ? "Save for this session" : "Use for next message"}</button>
+    <div className="deck-team-save">
+      <label className="field"><strong>Apply to</strong>
+        <select value={saveScope === "project" && !canSaveProject ? "session" : saveScope} disabled={busy} onChange={(event) => setSaveScope(event.target.value)}>
+          <option value="next">Next message only</option>
+          {canSave && <option value="session">This session</option>}
+          {canSaveProject && <option value="project">Project default</option>}
+        </select>
+      </label>
+      <div className="dialog-actions deck-team-actions">
+        <button className="button small" type="button" onClick={close}>Cancel</button>
+        {canSave && (value !== undefined || session || projectMode && projectMode !== flow) && <button className="button small" type="button" disabled={busy}
+          onClick={resetSession}>Use project default</button>}
+        <button className="button small primary" disabled={busy || Boolean(separateIssue) || (saveScope === "project" && !canSaveProject)}>Apply roles</button>
+      </div>
     </div>
   </form>;
 }
@@ -183,7 +214,7 @@ export function SharedSkills({ skills, library, repo, busy, action, importSkill,
           return <div className="live-note" key={skill.id}>
             <label className="plugin-enable"><input type="checkbox" checked={skill.enabled} disabled={busy}
               onChange={(event) => action({ action: "note-toggle", id: skill.id, enabled: event.target.checked })} />
-              <strong>{skill.name}</strong><span className="source-pill">{skill.enabled ? "Both agents" : "On demand"}</span>
+              <strong>{skill.name}</strong><span className="source-pill">{skill.enabled ? "Project · both agents" : "Available for one turn"}</span>
             </label>
             <details><summary>Preview instructions</summary><pre className="file-preview">{skill.text}</pre></details>
             {skill.libraryId && <p className="setting-detail">Library v{skill.libraryRevision}{available?.revision > skill.libraryRevision && " · v" + available.revision + " available"}</p>}
@@ -289,6 +320,7 @@ export function SkillPicker({ skills, selected, toggle, close, openLibrary }) {
 
 export const slashCommands = [
   { name: "team-plan", label: "Set workflow and responsibilities" },
+  { name: "auto-team", label: "Let both agents agree and review", mode: "auto-team" },
   { name: "skill", label: "Choose a shared skill for this draft", project: true },
   { name: "skills", label: "Open project skills" },
   { name: "library", label: "Open the local skill library" },
@@ -296,6 +328,7 @@ export const slashCommands = [
   { name: "plan", label: "Select read-only planning for one agent", mode: true },
   { name: "review", label: "Select read-only review for one agent", mode: true },
   { name: "team", label: "Select Team mode", mode: "team" },
+  { name: "discuss", label: "Discuss a topic with Codex and Claude without opening the project", mode: discussionMode },
   { name: "build-review", label: "Codex builds, Claude reviews", mode: "build-review" },
   { name: "claude-review", label: "Claude reviews without editing", mode: "claude" },
   { name: "codex", label: "Select Codex only", mode: "codex" },
@@ -330,7 +363,7 @@ export function CommandMenu({ commands, selected, choose, reason }) {
 }
 
 export function TeamPlanButton({ active, once, onClick }) {
-  return <button className="button small" type="button" onClick={onClick} aria-label="Team plan">
-    <IconLayersLinked size={14} />Team plan{(active || once) && <span className="source-pill">{once ? "Once" : "Set"}</span>}
+  return <button className="button small" type="button" onClick={onClick} aria-label="Team Brief">
+    <IconLayersLinked size={14} />Team Brief{(active || once) && <span className="source-pill">{once ? "Once" : "Set"}</span>}
   </button>;
 }

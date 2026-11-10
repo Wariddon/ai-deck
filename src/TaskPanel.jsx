@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { IconFileText, IconPhoto, IconPlus, IconRoute, IconTerminal2, IconWorld, IconX } from "@tabler/icons-react";
 import { agentNames } from "./TeamThread.jsx";
+import { DeckLoading } from "./DeckLoading.jsx";
 
 const empty = { outputs: [], sources: [], processes: [] };
 
@@ -23,7 +24,8 @@ function TaskPanelRow({ item, thumbnail, open, remove }) {
 }
 
 export function TaskPanel({ taskId, api, refresh, add, open, remove, thumbnail }) {
-  const [state, setState] = useState(empty);
+  const [loaded, setLoaded] = useState(null);
+  const state = loaded ?? empty;
   const [expanded, setExpanded] = useState({ outputs: false, sources: false });
   const [error, setError] = useState("");
   useEffect(() => {
@@ -41,8 +43,8 @@ export function TaskPanel({ taskId, api, refresh, add, open, remove, thumbnail }
         try {
           const next = await api["task-panel"]({ taskId, scanImages });
           if (disposed || next.taskId !== taskId) continue;
-          setState((current) => ({ ...next, outputs: scanImages ? next.outputs : [
-            ...next.outputs, ...current.outputs.filter((entry) => entry.id.startsWith("worktree:")),
+          setLoaded((current) => ({ ...next, outputs: scanImages ? next.outputs : [
+            ...next.outputs, ...(current?.outputs ?? []).filter((entry) => entry.id.startsWith("worktree:")),
           ] }));
           setError("");
         } catch {
@@ -80,16 +82,17 @@ export function TaskPanel({ taskId, api, refresh, add, open, remove, thumbnail }
 
   return <section className="task-panel-card" aria-label="Task outputs and sources">
     {error && <p className="task-panel-empty" role="status">{error}</p>}
+    {taskId && !loaded && !error && <DeckLoading>Reading task details…</DeckLoading>}
     <section aria-label="Outputs">
       <div className="task-panel-heading"><h3>Outputs</h3>
         <button className="icon-button" type="button" aria-label="Add output" title="Add output" disabled={!taskId}
           onClick={() => add("outputs")}><IconPlus size={18} /></button>
       </div>
-      {renderItems("outputs", taskId ? "No outputs yet" : "Open a project to see task outputs")}
+      {(loaded || !taskId) && renderItems("outputs", taskId ? "No outputs yet" : "Open a project to see task outputs")}
     </section>
     <section aria-label="Background processes">
       <div className="task-panel-heading"><h3>Background processes</h3></div>
-      {!state.processes.length && <p className="task-panel-empty">No active processes</p>}
+      {!state.processes.length && (loaded || !taskId) && <p className="task-panel-empty">No active processes</p>}
       <ul>{state.processes.map((item) => <li className="task-panel-row" key={item.id}>
         <div className="task-panel-item" title={agentNames[item.agent] + " · " + item.detail + " · " + item.label}>
           <IconTerminal2 size={17} aria-hidden="true" /><span>{item.label}</span>
@@ -101,7 +104,7 @@ export function TaskPanel({ taskId, api, refresh, add, open, remove, thumbnail }
         <button className="icon-button" type="button" aria-label="Add source" title="Add source" disabled={!taskId}
           onClick={() => add("sources")}><IconPlus size={18} /></button>
       </div>
-      {renderItems("sources", "No sources yet")}
+      {(loaded || !taskId) && renderItems("sources", "No sources yet")}
     </section>
   </section>;
 }
