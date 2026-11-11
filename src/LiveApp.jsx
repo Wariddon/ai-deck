@@ -10,6 +10,8 @@ import { defaultPanelWidths, panelLayout } from "../desktop/panel-layout.mjs";
 import { defaultDeckPreferences } from "../desktop/deck-preferences.mjs";
 import { PanelDivider } from "./PanelDivider.jsx";
 import { ControlPopover } from "./ControlPopover.jsx";
+import { UpdateBell } from "./UpdateBell.jsx";
+import { NativeDraftLedger } from "../desktop/native-chat-delivery.mjs";
 import { CodeGraph } from "./CodeGraph.jsx";
 import { TeamRunCompare } from "./TeamRunCompare.jsx";
 import { DeckLoading } from "./DeckLoading.jsx";
@@ -32,7 +34,7 @@ import { ReviewEvidence, ReviewFiles, ReviewFreshness, ReviewTarget, RunEvidence
 import { CommandMenu, LibrarySkillPreview, LocalSkillLibrary, SharedSkills, SkillPicker, TeamPlan, parseSlash, slashCommands } from "./Collaboration.jsx";
 import { TaskPanel, TaskPanelEntry } from "./TaskPanel.jsx";
 import { BatchSessionDeletion, LinkAttachment, SessionActions, SessionButton, WindowAttachment } from "./SessionTools.jsx";
-import { sessionKey } from "../desktop/session-selection.mjs";
+import { nativeJobKey, sessionKey } from "../desktop/session-selection.mjs";
 import { HandoffLocation, HandoffSources, NativeChat, NativeChatTransfer } from "./NativeRecents.jsx";
 import { latestReportedRun } from "./usage-view.mjs";
 import { idleRefresh } from "./idle-refresh.mjs";
@@ -917,6 +919,8 @@ export function LiveApp() {
   const [nativeConversation, setNativeConversation] = useState(null);
   const nativeChatRequest = useRef(null);
   const nativeDrafts = useRef(null);
+  const nativeDraftLedger = useRef(null);
+  nativeDraftLedger.current ??= new NativeDraftLedger();
   if (!nativeDrafts.current) {
     try { nativeDrafts.current = new Map(JSON.parse(localStorage.getItem("ai-deck-native-drafts") ?? "[]").filter(([key, value]) => typeof key === "string" && typeof value === "string").slice(-16)); }
     catch { nativeDrafts.current = new Map(); }
@@ -1073,7 +1077,8 @@ export function LiveApp() {
   const latestPlannedRun = workspace?.runHistory?.at(-1);
   const latestPlanNeedsBaseCheck = autoTeamPlanNeedsBaseCheck(latestPlannedRun);
   const latestPlanIssue = latestPlannedRun?.teamPlan?.state !== "ready" || latestPlanNeedsBaseCheck ? latestPlannedRun : null;
-  const showPlanIssue = !working && Boolean(latestPlanIssue?.teamPlan) && continuation?.kind !== "resume-auto-plan";
+  const showPlanIssue = !working && Boolean(latestPlanIssue?.teamPlan) && workspace?.hiddenPlanNoticeId !== latestPlanIssue.id && continuation?.kind !== "resume-auto-plan";
+  const relatedPlanChats = workspace?.replanLinks ?? [];
   const claudeReplyRun = answer ? runs.findLast((run) => run.agents.claude?.answer === answer) : undefined;
   const implementationReview = continuation && runs.find((run) => run.id === continuation.runId)?.teamPlan?.applyStatus;
   const canContinue = continuation && routeMode(continuation.mode, state.connections, quotaClock).available.length > 0;
@@ -1547,7 +1552,12 @@ export function LiveApp() {
         setError(error);
       }
     });
-    if (result && nativeChatRequest.current === request) setNativeConversation({ session, sourceTaskId, ...result });
+    if (result && nativeChatRequest.current === request) {
+      const key = sessionKey(session);
+      const receipt = nativeDraftLedger.current.receipt(key, result.messages, nativeDrafts.current.get(key));
+      if (receipt?.discardDraft) keepNativeDraft(session, "");
+      setNativeConversation({ session, sourceTaskId, ...result, ...(receipt && { delivered: receipt }) });
+    }
   }
 
   async function olderNativeMessages(query, original = false) {
@@ -1569,6 +1579,8 @@ export function LiveApp() {
   async function sendNativeChat(prompt, revision, options) {
     const request = nativeChatRequest.current;
     const { provider, id } = nativeConversation.session;
+    const key = sessionKey({ provider, id });
+    const submitted = nativeDraftLedger.current.begin(key, prompt, options.requestId, nativeConversation.messages);
     let next;
     try { next = await api["native-chat-send"]({ provider, id, prompt, revision, ...options }); }
     catch (reason) { const error = cleanError(reason);
@@ -1577,15 +1589,17 @@ export function LiveApp() {
         setNativeConversation((current) => ({ ...current, chat: { ...current.chat, unverified: true } }));
       }
       setError(error);
-    }
-    if (next?.delivered && nativeDrafts.current.get(provider + ":" + id)?.trim() === prompt) {
+    } finally { nativeDraftLedger.current.finish(key, submitted); }
+    const discardDraft = nativeDraftLedger.current.canClear(key, submitted, nativeDrafts.current.get(key));
+    if (next?.delivered && discardDraft) {
       keepNativeDraft({ provider, id }, "");
     }
     if (!next) return false;
     if (nativeChatRequest.current !== request) return Boolean(next.delivered);
     setNativeConversation((current) => {
       const newest = new Set(next.messages.map(({ id }) => id));
-      return { ...current, ...next, messages: [...next.messages, ...current.messages.filter(({ id }) => !newest.has(id))] };
+      return { ...current, ...next, ...(next.delivered && { delivered: { ...next.delivered, discardDraft } }),
+        messages: [...next.messages, ...current.messages.filter(({ id }) => !newest.has(id))] };
     });
     return true;
   }
@@ -1599,8 +1613,20 @@ export function LiveApp() {
     }
   }
 
+  async function chooseNativeModels(options) {
+    const request = nativeChatRequest.current;
+    const { provider, id } = nativeConversation.session;
+    const result = await api["save-native-chat-models"]({ provider, id, options,
+      revision: nativeConversation.chat.revision, modelStamp: nativeConversation.chat.modelStamp });
+    if (nativeChatRequest.current === request) {
+      setNativeConversation((current) => ({ ...current, chat: { ...current.chat, ...result } }));
+    }
+    return result;
+  }
+
   function keepNativeDraft(session, draft) {
     const key = sessionKey(session);
+    nativeDraftLedger.current.edited(key);
     nativeDrafts.current.delete(key);
     if (draft) nativeDrafts.current.set(key, draft);
     if (nativeDrafts.current.size > 16) nativeDrafts.current.delete(nativeDrafts.current.keys().next().value);
@@ -2814,6 +2840,7 @@ export function LiveApp() {
             title="Run one agent at a time" disabled={locked || typeof state.lowMemory !== "boolean"}
             onClick={() => perform("save-low-memory", !lowMemory)}><IconCpu size={15} />Low RAM {lowMemory ? "on" : "off"}</button>
           <button className="button small" onClick={() => openSettings("connections")}><IconPlug size={15} />Connections</button>
+          <UpdateBell api={api} ready={!launching} busy={locked || (state.jobs?.length ?? 0) > 0} />
         </div>
       </header>
       <div className="thread-layout" ref={layoutRef} data-panel-view={layout.focused ?? undefined} style={{
@@ -2873,9 +2900,9 @@ export function LiveApp() {
           action={perform} openTask={(repo, id) => open("switch-task", { repo, id })} openProvider={openProvider} openRepo={openRepoHere} />}
         {page === "features" && <FeatureMap go={go} openProvider={openProvider} error={error} />}
         {nativeChatPage && !layout.focused && <NativeChat key={sessionKey(nativeConversation.session)} preview={nativeConversation}
-          job={state.jobs?.find((job) => job.key === "native:" + sessionKey(nativeConversation.session))}
-          api={api} choosePermission={chooseNativePermission}
-          busy={locked} ready={routeMode(nativeConversation.session.provider, state.connections, now).available.length > 0}
+          job={state.jobs?.find((job) => job.key === nativeJobKey(nativeConversation.session))}
+          api={api} choosePermission={chooseNativePermission} chooseModels={chooseNativeModels}
+          busy={busy} ready={routeMode(nativeConversation.session.provider, state.connections, now).available.length > 0}
           error={!modal ? error : ""} initialDraft={nativeDrafts.current.get(sessionKey(nativeConversation.session)) ?? ""}
           keepDraft={(text) => keepNativeDraft(nativeConversation.session, text)}
           older={(query) => olderNativeMessages(query, true)} sendChat={sendNativeChat}
@@ -3006,7 +3033,7 @@ export function LiveApp() {
             {!latestRun?.sessionTeam && (working || !showPlanIssue && latestRun?.autoTeam?.status === "approval") && <TeamProgress run={latestRun} working={working} statuses={statuses}
               activity={teamActivity} reportedModels={reportedModels} pending={new Set(rows.filter((row) =>
                 working && row.id.startsWith(latestRun?.id + ":") && ["approval", "question"].includes(row.kind) && !row.decision).map((row) => row.agent))} />}
-            {!working && !showPlanIssue && latestRun?.autoTeam && latestRun.autoTeam.status !== "approval" && <div className="thread-pending">
+            {!working && !showPlanIssue && !latestRun?.teamPlan && latestRun?.autoTeam && latestRun.autoTeam.status !== "approval" && <div className="thread-pending">
               <span title={latestRun.autoTeam.detail}>{teamResults[latestRun.autoTeam.status] ?? "Auto Team"}</span>
               <button className="button small" type="button" disabled={locked} onClick={() => {
                 setHistoryRun(latestRun.id); setModal("history");
@@ -3031,10 +3058,21 @@ export function LiveApp() {
                 : <button className="button small" disabled={locked} onClick={() => previewContinuation()}>
                   {continuation.resumeRunId ? "Resume team" : continuation.kind === "usage-handoff" ? "Review handoff" : "Review plan to apply"}</button>}
             </div>}
-            {showPlanIssue && <div className="thread-pending thread-plan-attention">
-              <span>{latestPlanNeedsBaseCheck ? "Plan base needs verification" : latestPlanIssue.teamPlan.state === "blocked" ? "Plan blocked" : planStatus[latestPlanIssue.teamPlan.state]} · {projectName(workspace.repo)}
-                {names[latestPlanIssue.teamPlan.from] && " · Decision by " + names[latestPlanIssue.teamPlan.from]}</span>
+            {showPlanIssue && <div className="thread-plan-note" role="note" aria-label="Saved plan note">
+              <span>{latestPlanNeedsBaseCheck ? "Verify the saved plan before editing" : "Earlier plan saved"} · You can keep chatting
+                {relatedPlanChats.length > 0 && <small className="thread-plan-related">Related chat{relatedPlanChats.length === 1
+                  ? " · " + projectName(relatedPlanChats[0].repo) : "s · " + relatedPlanChats.length + " chats"}</small>}
+              </span>
               <div className="thread-actions">
+                {relatedPlanChats.length === 1 && <button className="button small primary" type="button" disabled={locked}
+                  onClick={() => open("switch-task", { repo: relatedPlanChats[0].repo, id: relatedPlanChats[0].taskId })}>
+                  <IconArrowRight size={14} />Open {projectName(relatedPlanChats[0].repo)} chat
+                </button>}
+                {relatedPlanChats.length > 1 && <ControlPopover label="Continued chats" title="Continued chats" icon={<IconArrowRight size={14} />} disabled={locked}>
+                  {relatedPlanChats.map((chat) => <button className="button small" type="button" key={chat.taskId}
+                    onClick={() => open("switch-task", { repo: chat.repo, id: chat.taskId })}>{projectName(chat.repo)} · {chat.title}</button>)}
+                </ControlPopover>}
+                <ControlPopover label="Plan options" title="Plan options" icon={<IconAdjustmentsHorizontal size={14} />} disabled={locked}>
                 <button className="button small" type="button" disabled={locked} onClick={() => {
                   setHistoryRun(latestPlanIssue.id); setModal("history");
                 }}>Team results</button>
@@ -3043,6 +3081,10 @@ export function LiveApp() {
                   onClick={() => choosePlanBase(latestPlanIssue)}>Replan on another base</button>}
                 {!link && latestPlanIssue.finishedAt && <button className="button small" disabled={locked}
                   onClick={() => continuePlanInAnotherProject(latestPlanIssue)}>Continue in another project</button>}
+                </ControlPopover>
+                {latestPlanIssue.teamPlan.state !== "ready" && <button className="button small" type="button" aria-label="Hide plan note"
+                  title="Hide this note. The plan stays in Run history." disabled={locked}
+                  onClick={() => perform("hide-plan-notice", { taskId, runId: latestPlanIssue.id })}><IconX size={14} /></button>}
               </div>
             </div>}
             {pendingReview?.finishedAt && <div className="thread-pending">

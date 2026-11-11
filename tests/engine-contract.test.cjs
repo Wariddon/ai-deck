@@ -26,6 +26,77 @@ class FakeCli extends EventEmitter {
   }
 }
 
+test("tool-free Codex chats expose only the explicitly shared window MCP without enabling shell or other plugins", () => {
+  let flags;
+  const replacement = mock.method(require("node:child_process"), "spawn", (_exe, args) => { flags = args; return new FakeCli(); });
+  const modulePath = require.resolve("../desktop/engines.cjs"); delete require.cache[modulePath];
+  const plugins = [{ name: "ai_deck_computer", url: "http://127.0.0.1:1234/shared", tools: ["screenshot"] },
+    { name: "unrelated_server", url: "https://example.invalid/mcp", tools: ["write"] }];
+  let engine;
+  try {
+    const { CodexEngine } = require(modulePath);
+    engine = new CodexEngine("fixture.exe", process.cwd(), plugins, () => {}, { unattended: true, textOnly: true, approvedWindowTools: true });
+    assert.ok(flags.some(flag => flag.includes("mcp_servers.ai_deck_computer.url")));
+    assert.ok(!flags.some(flag => flag.includes("unrelated_server")));
+    assert.ok(flags.includes("features.shell_tool=false"));
+    assert.ok(flags.includes("features.multi_agent=false"));
+    engine.close();
+    engine = new CodexEngine("fixture.exe", process.cwd(), plugins, () => {}, { unattended: true, textOnly: true });
+    assert.ok(!flags.some(flag => flag.includes("mcp_servers.ai_deck_computer.url")));
+  } finally { engine?.close(); replacement.mock.restore(); delete require.cache[modulePath]; }
+});
+
+test("one-shot Claude reviewers send image blocks instead of dropping their attachments", async () => {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const filename = path.join(os.tmpdir(), "deck-review-image-" + require("node:crypto").randomUUID() + ".png");
+  fs.writeFileSync(filename, Buffer.from("fixture-image"));
+  let input, flags;
+  const replace = mock.method(require("node:child_process"), "spawn", (_exe, args) => {
+    flags = args;
+    return new FakeCli((_child, text) => { input = JSON.parse(text); }, child => {
+      queueMicrotask(() => { child.send({ type: "result", subtype: "success", result: "red", is_error: false, session_id: "review" }); child.kill(); });
+    });
+  });
+  const modulePath = require.resolve("../desktop/engines.cjs"); delete require.cache[modulePath];
+  try {
+    const runner = require(modulePath).runClaude("fixture.exe", process.cwd(), "Read image", [], null, () => {},
+      { role: "review", persistSession: false, images: [{ filename, name: "sample.png", kind: "image" }] });
+    assert.equal((await runner.done).status, "completed");
+    assert.equal(flags[flags.indexOf("--input-format") + 1], "stream-json");
+    assert.equal(input.message.content[1].type, "image");
+    assert.equal(input.message.content[1].source.data, Buffer.from("fixture-image").toString("base64"));
+  } finally { replace.mock.restore(); delete require.cache[modulePath]; fs.rmSync(filename, { force: true }); }
+});
+
+test("Claude model metadata tolerates a cold start and returns before delayed CLI shutdown", async () => {
+  const processes = require("node:child_process");
+  let child;
+  let ended = false;
+  const replace = mock.method(processes, "spawn", () => (child = new FakeCli(null, () => { ended = true; })));
+  const filename = require.resolve("../desktop/engines.cjs");
+  delete require.cache[filename];
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { inspectClaude } = require(filename);
+    const pending = inspectClaude("fixture.exe", process.cwd());
+    mock.timers.tick(12_000);
+    const response = { models: [{ value: "opus", supportsEffort: true }] };
+    child.send({ type: "control_response", response: { request_id: "deck-inspect", subtype: "success", response } });
+    assert.deepEqual(await pending, response);
+    assert.equal(ended, true);
+    assert.equal(child.stdout.readableEnded, false);
+    let closed = false;
+    child.once("close", () => { closed = true; });
+    mock.timers.tick(3500);
+    assert.equal(closed, true);
+  } finally {
+    child?.kill();
+    mock.timers.reset();
+    replace.mock.restore();
+    delete require.cache[filename];
+  }
+});
+
 test("Codex routes an approval, streams content, and reports provider usage", async () => {
   const processes = require("node:child_process");
   let decision;
@@ -659,4 +730,8 @@ test("only interactive writer turns can use elevated permission presets", () => 
   assert.equal(mode(args("full", { writePaths: ["src"] })), "default");
   assert.equal(mode(args("full", { role: "review" })), "default");
   assert.equal(mode(args("full", { interactive: false })), "acceptEdits");
+  const nativeScreen = args("full", { computer: true, nativeComputer: true, persistSession: true });
+  assert.equal(mode(nativeScreen), "bypassPermissions");
+  assert.equal(nativeScreen.includes("--no-session-persistence"), false);
+  assert.equal(args("full", { computer: true }).includes("--no-session-persistence"), true);
 });

@@ -4,6 +4,11 @@ export function sessionKey({ provider, repo, id }) {
   return JSON.stringify([provider ?? "deck", provider ? "" : repo, id]);
 }
 
+// Run-pool identity is separate from the JSON key used for saved UI selections.
+export function nativeJobKey({ provider, id }) {
+  return "native:" + provider + ":" + id;
+}
+
 export function confirmedSessionSelection(payload) {
   const { confirmed, entries } = payload ?? {};
   if (confirmed !== true || !Array.isArray(entries) || !entries.length || entries.length > maxSessionSelection) {

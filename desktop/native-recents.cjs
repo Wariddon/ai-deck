@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { nativeChatDelivery } = require("./native-chat-delivery.mjs");
 
 const recentLimit = 40;
 const messageLimit = 32;
@@ -249,17 +250,6 @@ async function findClaudeSession(root, id) {
 function parseLine(line) {
   if (!line) return null;
   try { return JSON.parse(line); } catch { return null; }
-}
-
-function nativeChatDelivery({ prompt, previousIds }, messages) {
-  const index = messages.findIndex(({ id, role, text }) => role === "user" && text === prompt && !previousIds.has(id));
-  if (index < 0) return;
-  for (let newer = index - 1; newer >= 0; newer--) {
-    const { id, role } = messages[newer];
-    if (role === "user") break;
-    if (role === "assistant" && !previousIds.has(id)) return "replied";
-  }
-  return "saved";
 }
 
 module.exports = { listCodexSessions, readCodexSession, listClaudeSessions, readClaudeSession, findClaudeSession, nativeChatDelivery };

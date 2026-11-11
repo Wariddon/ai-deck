@@ -6,7 +6,7 @@ import {
 import { AgentMark, Brand } from "./AgentIdentity.jsx";
 import { runModelProfile } from "../desktop/agent-settings.mjs";
 import { autoTeamPlanNeedsBaseCheck, routeMode } from "../desktop/usage-routing.mjs";
-import { maxSessionSelection, sessionKey } from "../desktop/session-selection.mjs";
+import { maxSessionSelection, nativeJobKey, sessionKey } from "../desktop/session-selection.mjs";
 import { sessionTeamMode } from "../desktop/session-team.mjs";
 import { agentRole, separateEdits, steerableDraft } from "../desktop/collaboration.mjs";
 import { SessionButton } from "./SessionTools.jsx";
@@ -139,6 +139,7 @@ export function Sidebar({ repositories, workspace, busy, jobs = [], openRepo, op
   const sessionRow = (session) => {
     if (selection) return <div className="thread-native-entry" key={key(session)}>{selectableRow(session, <Brand agent={session.provider} size={15} />)}</div>;
     const isPinned = pinned.has(key(session));
+    const job = jobs.find((job) => job.key === nativeJobKey(session));
     return <div className="thread-native-entry" key={key(session)}>
       <button className="thread-side-row thread-native-row" type="button" disabled={busy} aria-label={agentNames[session.provider] + ": " + session.title}
         aria-current={currentNative && key(currentNative) === key(session) ? "page" : undefined}
@@ -146,7 +147,8 @@ export function Sidebar({ repositories, workspace, busy, jobs = [], openRepo, op
         onClick={() => openNativeChat(session)}>
         <Brand agent={session.provider} size={15} />
         <span className="thread-native-title">{session.title}</span>
-        {jobs.some((job) => job.key === "native:" + session.provider + ":" + session.id) && <span className="thread-job-spinner" role="status" aria-label="Working" />}
+        {job && (job.state === "waiting" ? <IconClock size={14} className="thread-job-waiting" role="img" aria-label={job.reason || "Waiting"} />
+          : <span className="thread-job-spinner" role="status" aria-label={job.needsInput ? "Waiting for your input" : "Working"} />)}
       </button>
       <button className="icon-button thread-native-pin" type="button" disabled={busy} aria-pressed={isPinned}
         aria-label={(isPinned ? "Unpin " : "Pin ") + session.title} title={isPinned ? "Unpin session" : "Pin session"} onClick={() => pinSession(session)}><IconPin size={13} /></button>

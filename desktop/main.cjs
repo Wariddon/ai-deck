@@ -6,6 +6,8 @@ const { fileURLToPath, pathToFileURL } = require("node:url");
 const { createHash, randomUUID } = require("node:crypto");
 const { setTimeout: delay } = require("node:timers/promises");
 const { RunPool, KeyedMutex } = require("./run-pool.cjs");
+const { createUpdateMonitor, createUpdateReader, updateExecutable, updateProducts } = require("./software-updates.mjs");
+const { nativeAttachmentInput, nativeAttachmentPrefix, nativeMessageAttachments } = require("./native-attachments.mjs");
 const { recoverWaitingJob } = require("./waiting-jobs.cjs");
 const { capture, CodexEngine, runClaude, inspectClaude, claudeSettings, claudeFileTools, claudeProjectPlugins } = require("./engines.cjs");
 const { codexCatalog, claudeCatalog, effectiveAgentSettings, normalizeAgentSettings, catalogModel, runModelProfile } = require("./agent-settings.mjs");
@@ -15,12 +17,13 @@ const { freshReviewPrompt, mergeReviewFindings, sharedBriefPrompt } = require(".
 const { inspectManagedWorktree } = require("./managed-worktree.cjs");
 const { createProjectTools, projectToolName } = require("./project-tools.cjs");
 const { newRun, recordEvent, recordSteer, finishRun, clearPendingReview, restoreWorkspace, retainRuns, evidenceText, timeStage, recordStageEvent } = require("./run-history.cjs");
-const { newTask, taskTitle, ensureTasks, selectedTask: storedTask, taskSummary, runView, workspaceView: storedWorkspaceView, canDrain } = require("./tasks.cjs");
+const { newTask, taskTitle, ensureTasks, selectedTask: storedTask, taskSummary, runView, workspaceView: storedWorkspaceView, canDrain, hidePlanNotice } = require("./tasks.cjs");
+const { replanContext, replanLinks } = require("./replan-links.mjs");
 const { reviewSnapshot, supplementalReviewDiff, eligibleReviewPath, changedReviewPaths, shareableDiffPath, readNewSource } = require("./review-snapshot.cjs");
 const { codeGraphQuery } = require("./code-graph-query.mjs");
 const { readCodeGraph, codeGraphEvidence, assignmentGraphEvidence, closeCodeGraph } = require("./code-graph-worker.cjs");
 const { decideGraph, routeLocalIntent, fallbackMessageIntent, decideReview, reviewChecks } = require("./decision-shadow.mjs");
-const { confirmedSessionSelection } = require("./session-selection.mjs");
+const { confirmedSessionSelection, nativeJobKey } = require("./session-selection.mjs");
 const { projectHead, copyOnBase, transferPreview } = require("./worktree-update.cjs");
 const { safeLink, recordPanelEvidence, taskRows, supportedImage, worktreeImage, confinedImage } = require("./task-panel.cjs");
 const { runFlow } = require("./team-flow.cjs");
@@ -57,6 +60,7 @@ const { agentOutput, agentRole, autoTeam, buildThenReview, changeWorkflow, defau
 const { isActionFollowup, messageIntentPrompt, readMessageIntent } = require("./message-intent.mjs");
 const { codexPermissions, permissionModes, sessionTeamPermissionModes, supportsRunPermissions } = require("./run-permissions.mjs");
 const { nativePermissionMode, changeNativePermission, nativeTurnPolicy, nativeWorkInstructions } = require("./native-chat-policy.mjs");
+const { nativeModelSettings, nativeModelStamp, changeNativeModels } = require("./native-chat-models.mjs");
 const { comparisonMetrics, discussionPrompt, economySummary, previousAskContext, previousDiscussion, previousMessageExchange, recordedSummaryLeader, teamAgentName, teamLeaderPrompt, verifiedTeamSummary } = require("./team-result.mjs");
 const { criteriaReplyFormat, newReviewChecks, recordCriteria, reviewCriteria, savedCriterionChecks, savedEvidenceCheckpoint, testCommandText, verifiedCheck, withCriterionEvidence } = require("./team-criteria.mjs");
 const { teamReviewGuidance } = require("./team-review-skill.cjs");
@@ -97,6 +101,7 @@ let trayWindowState;
 let trayWindowFrame;
 const traySleepDelay = 15_000;
 let storage;
+let softwareUpdates;
 
 let voiceMic;
 let voiceJob;
@@ -111,6 +116,7 @@ let quitting = false;
 let connectionCheck;
 let resetOffer;
 const modelCatalogs = new Map();
+const modelCatalogReads = new Map();
 const teamChatsWorkspace = "Team chats";
 const nativeRecents = new Map();
 const nativeHistory = new Map();
@@ -145,7 +151,7 @@ const runPool = new RunPool({
   limit: () => storage?.lowMemory ? 1 : 2,
   headroom: () => os.freemem(),
   blocked: () => quitting || maintenance || Boolean(connectionCheck),
-  changed: () => { if (!quitting) emit(null, { type: "jobs-changed", jobs: runPool.snapshot() }); },
+  changed: () => { if (runPool.size) softwareUpdates?.abort(); if (!quitting) emit(null, { type: "jobs-changed", jobs: runPool.snapshot() }); },
   failed: (scope, error) => {
     // Original-chat RPCs report errors to their own caller; do not emit an
     // unscoped failure that could clear another chat's Working state.
@@ -163,6 +169,7 @@ function selectedTask(workspace) {
 function workspaceView(workspace) {
   const scope = runPool.scope;
   const view = storedWorkspaceView(scope?.workspace === workspace && scope.task ? { ...workspace, currentTask: scope.task.id } : workspace);
+  if (view?.runHistory.at(-1)?.teamPlan) view.replanLinks = replanLinks(storage.workspaces, workspace.repo, selectedTask(workspace));
   const job = view && runPool.get("task:" + view.taskId);
   job?.deltas?.flush();
   return job?.liveMessages?.size ? { ...view, liveRows: [...job.liveMessages.values()] } : view;
@@ -186,10 +193,10 @@ function taskLocks(task) {
   for (const cwd of [task.worktree, task.claudeWorktree]) if (cwd) locks.push("folder:" + canonicalJobFolder(cwd));
   const link = task.linkedSession;
   if (link) {
-    for (const provider of ["codex", "claude"]) if (link.refs?.[provider]) locks.push("native:" + provider + ":" + link.refs[provider]);
+    for (const provider of ["codex", "claude"]) if (link.refs?.[provider]) locks.push(nativeJobKey({ provider, id: link.refs[provider] }));
     if (link.folderMode === "original" && link.repo) locks.push("folder:" + canonicalJobFolder(link.repo));
   }
-  for (const chat of Object.values(task.sessionTeamChats ?? {})) locks.push("native:" + chat.provider + ":" + chat.id);
+  for (const chat of Object.values(task.sessionTeamChats ?? {})) locks.push(nativeJobKey(chat));
   if (task.codexThread) locks.push("native:codex:" + task.codexThread);
   if (task.claudeSession) locks.push("native:claude:" + task.claudeSession);
   return locks;
@@ -249,6 +256,7 @@ function loadState() {
   data.rolePresets ??= [];
   data.nativePins ??= [];
   data.nativeChatPermissions ??= {};
+  data.nativeChatModels ??= {};
   data.schedules = (data.schedules ?? []).map((schedule) => restoreSchedule(schedule));
   data.appearance = normalizeAppearance(data.appearance);
   data.preferences = normalizeDeckPreferences(data.preferences);
@@ -267,7 +275,7 @@ function save() {
 
 function emit(agent, payload) {
   const scope = runPool.scope;
-  const scoped = scope && !["jobs-changed", "connections", "state-changed", "notification-click"].includes(payload.type)
+  const scoped = scope && !["jobs-changed", "connections", "state-changed", "notification-click", "software-updates"].includes(payload.type)
     ? { taskId: scope.task?.id, repo: scope.workspace?.repo, runId: scope.job?.run?.id } : {};
   if (window && !window.isDestroyed()) window.webContents.send("deck:event", { agent, ...scoped, ...payload });
 }
@@ -404,9 +412,7 @@ async function createWindow() {
   });
   next.on("hide", () => {
     cancelVoice();
-    computerGrant = null;
-    windowCapture = undefined;
-    revokeComputer(currentJob());
+    endWindowShares();
     quotaRead?.abort();
     watchRead?.abort();
     scheduleTraySleep();
@@ -414,17 +420,13 @@ async function createWindow() {
   next.on("show", cancelTraySleep);
   next.on("closed", () => {
     if (window !== next) return;
-    revokeComputer(currentJob());
-    computerGrant = null;
-    windowCapture = undefined;
+    endWindowShares();
     cancelVoice();
     cancelTraySleep();
     window = null;
   });
   next.on("minimize", () => {
-    revokeComputer(currentJob());
-    computerGrant = null;
-    windowCapture = undefined;
+    endWindowShares();
   });
   next.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   next.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -545,6 +547,7 @@ function requireIdle({ allowConnectionCheck = false, allowJobs = false, allowOth
   recentLoader.cancel();
   quotaRead?.abort();
   watchRead?.abort();
+  softwareUpdates?.abort();
 }
 
 async function git(cwd, args, options) {
@@ -967,7 +970,7 @@ function effectiveCodexPlugins(workspace, readOnly, unattended) {
 }
 
 async function withProjectTools(job, workspace, cwd, agent, plugins, toolFree = false) {
-  if (toolFree || job.stopping || job.computer || workspace.chatOnly || job.task.linkedSession) return plugins;
+  if (toolFree || job.stopping || workspace.chatOnly || job.task.linkedSession && !job.computer) return plugins;
   job.projectToolController ??= new AbortController();
   job.projectToolServices ??= new Map();
   let service = job.projectToolServices.get(cwd);
@@ -979,7 +982,8 @@ async function withProjectTools(job, workspace, cwd, agent, plugins, toolFree = 
       observe: (entry) => {
         (job.run.projectTools ??= []).push(entry);
         if (job.run.projectTools.length > 60) job.run.projectTools.shift();
-        report(entry.agent, job.task, job.run, { type: "activity", key: "tool:" + entry.sha256.slice(0, 16), text: entry.summary + " · " + entry.source });
+        const event = { type: "activity", key: "tool:" + entry.sha256.slice(0, 16), text: entry.summary + " · " + entry.source };
+        if (job.nativeEvents) job.nativeEvents(event); else report(entry.agent, job.task, job.run, event);
       } });
     job.projectToolServices.set(cwd, service);
   }
@@ -993,7 +997,7 @@ async function withProjectTools(job, workspace, cwd, agent, plugins, toolFree = 
 function projectToolPrompt(job, cwd, agent, prompt) {
   const service = job.projectToolServices?.get(cwd);
   if (!service) return prompt;
-  return [prompt, "AI Deck provides ai_deck_project MCP read tools for the exact task checkout. Use git_read for Git evidence and code_read for targeted symbol/reference lookup when helpful. File edits still use your native edit tools and current permissions. Use github_read only when the user requested GitHub/PR/issue/CI evidence. Do not start extra agents, switch projects or install another copy of these services.", service.context(agent)].filter(Boolean).join("\n\n");
+  return [prompt, "AI Deck provides ai_deck_project MCP read tools for the exact task folder. Use file_read for real numbered source lines, file_search for literal text search, git_read for Git evidence and code_read for targeted symbol/reference lookup. These tools cannot edit files or leave this task folder. File edits still use your native edit tools and current permissions. Use github_read only when the user requested GitHub/PR/issue/CI evidence. Do not start extra agents, switch projects or install another copy of these services.", service.context(agent)].filter(Boolean).join("\n\n");
 }
 
 function closeProjectTools(job) {
@@ -1034,6 +1038,7 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
   const transient = quiet || wrapUp || freshReview || job.run.autoTeam || job.intentReview || Boolean(job.run.followupRunId) || job.run.collaboration?.options?.context.history === false;
   const unattended = Boolean(job.scheduled || job.intentReview || quiet);
   const plugins = await withProjectTools(job, workspace, cwd, agent, effectiveCodexPlugins(workspace, readOnly, unattended), quiet || Boolean(job.run.resumedEvidence));
+  if (job.nativeEvents && job.computer?.plugin) plugins.push(job.computer.plugin);
   if (plugins.some(plugin => plugin.name === projectToolName)) prompt = projectToolPrompt(job, cwd, agent, prompt);
   const allowed = new Set(plugins.filter((plugin) => plugin.enabled !== false && plugin.scope !== "claude").map((plugin) => plugin.name));
   const nativeExtensions = !readOnly && !unattended && workspace.inheritCodexMcp === true;
@@ -1041,6 +1046,7 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
   if (job.stopping) return { status: "interrupted" };
   const launch = (disabledServers) => new CodexEngine(connections.codex.path, cwd, plugins,
     job.nativeEvents ?? summaryEvents ?? ((event) => report(agent, task, job.run, event)), { unattended, nativeExtensions, nativeHooks: !unattended, disabledServers, textOnly: quiet,
+      approvedWindowTools: Boolean(job.nativeEvents && job.computer?.plugin),
       ...(job.computer && { callWindowTool: (name, args) => callCodexWindowTool(job.computer.tools, name, args) }) });
   let engine = job.codex = launch();
   try {
@@ -1048,7 +1054,7 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
     if (job.stopping) return { status: "interrupted" };
     const isolatedMember = job.run.mode === sessionTeamMode;
     const rosterMember = isolatedMember && !transient ? job.run.sessionTeam.members.find(({ id }) => id === agent) : null;
-    const noEscalation = unattended || Boolean(job.computer || (job.run.autoTeam || isolatedMember) && readOnly);
+    const noEscalation = unattended || Boolean(job.computer && !job.nativeEvents || (job.run.autoTeam || isolatedMember) && readOnly);
     const preferences = { ...job.run.agents[agent].settings, unattended: noEscalation, images: summaryEvents ? [] : job.images, permissionMode: job.run.permissionMode };
     const threadField = { plan: "codexPlanThread", review: "codexReviewThread",
       write: job.writeScopeStamp ? "codexParallelThread" : "codexThread" }[role];
@@ -1083,7 +1089,7 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
       preserveNativeModel ? undefined : baseConfig?.model_reasoning_effort);
     const { approvalPolicy, approvalsReviewer, sandbox } = codexPermissions(preferences.permissionMode, cwd, readOnly, noEscalation);
     const config = { cwd, approvalPolicy, approvalsReviewer, sandbox,
-      ...(job.nativeEvents && !readOnly && { developerInstructions: nativeWorkInstructions(job.run.permissionMode) }),
+      ...(job.nativeEvents && (!readOnly || job.computer) && { developerInstructions: [!readOnly && nativeWorkInstructions(job.run.permissionMode), job.computer && nativeComputerInstructions].filter(Boolean).join("\n") }),
       ...(model ? { model } : {}), ...(effort ? { config: { model_reasoning_effort: effort } } : {}) };
     const thread = resume.id
       ? await engine.request(resume.fork ? "thread/fork" : "thread/resume", { ...config, threadId: resume.id, excludeTurns: true })
@@ -1953,6 +1959,7 @@ function messageIntentKey(task, draft) {
 function stopTransientTurn(job) {
   if (!job) return;
   job.stopping = true;
+  revokeComputer(job);
   closeProjectTools(job);
   if (job.nativeEvents) {
     job.nativeEvents({ type: "stopping" });
@@ -3818,6 +3825,9 @@ async function scheduleTick() {
 async function refreshConnections() {
   if (!connectionCheck) {
     requireIdle();
+    for (const read of modelCatalogReads.values()) read.controller.abort();
+    modelCatalogReads.clear();
+    modelCatalogs.clear();
     connectionCheck = (async () => {
       const check = async (agent) => {
         const started = Date.now();
@@ -4330,7 +4340,7 @@ async function previewNativeSession(payload) {
       if (!next || page.messages.some(({ text }) => !query || text.toLocaleLowerCase().includes(query))) break;
     }
     rememberNativeHistory(key, next);
-    return { messages, hasOlder: next !== null, skipped, ...(chat && { chat }) };
+    return { messages: nativeMessageAttachments(messages, storage.nativeAttachmentMessages, key), hasOlder: next !== null, skipped, ...(chat && { chat }) };
   }
   if (entry.provider === "codex") return inspectCodexHistory((engine) => load((next) => readCodexSession(engine, entry.id, next)));
   maintenance = true;
@@ -4498,7 +4508,7 @@ async function createBlockedPlanDraft(payload) {
     throw new Error("The plan or the destination branch changed. Choose the repository again.");
   }
   const workspace = existing ?? ensureTasks(restoreWorkspace({ repo: target.repo, notes: [], plugins: [], instructions: "", readOnly: false }));
-  return createReplanDraft(workspace, existing ? newTask() : selectedTask(workspace), existing, original, run, target);
+  return createReplanDraft(workspace, existing ? newTask() : selectedTask(workspace), existing, original, run, target, source.repo);
 }
 
 async function listBlockedPlanBases(payload) {
@@ -4520,10 +4530,10 @@ async function createBlockedPlanBaseDraft(payload) {
       target.commit === (run.teamPlan.git?.head ?? run.teamPlan.base)) {
     throw new Error("The plan or the selected base changed. Reopen the base picker.");
   }
-  return createReplanDraft(workspace, newTask(), workspace, original, run, target);
+  return createReplanDraft(workspace, newTask(), workspace, original, run, target, workspace.repo);
 }
 
-function createReplanDraft(workspace, task, existing, original, run, target) {
+function createReplanDraft(workspace, task, existing, original, run, target, sourceRepo) {
   const images = run.images ?? [];
   resolveAttachments(imageDirectory(), images);
   const mode = planPair(run.mode) ? run.mode : "auto-team";
@@ -4533,8 +4543,8 @@ function createReplanDraft(workspace, task, existing, original, run, target) {
   task.nativeHandoff = { target, ...(origin && { source: origin }),
     ...(sources?.length && { sources, attachOnFirstRun: true }) };
   task.forkedFrom = original.title;
-  task.forkContext = "The earlier plan needs verification on this checkout. Verify paths and claims against the current files.\n\n" +
-    (run.teamPlan.text ?? "").slice(0, 5000);
+  task.replanSource = { repo: sourceRepo, taskId: original.id, runId: run.id };
+  task.forkContext = replanContext(run.teamPlan);
   return openHandoffDraft(workspace, task, existing);
 }
 
@@ -4639,28 +4649,58 @@ async function nativeChatSnapshot(entry) {
   return { cwd, page, link, revision: digest([entry.id, cwd, page.revision]) };
 }
 
-function nativeChatPreview(entry, { cwd, page, revision }) {
+function nativeChatPreview(entry, { cwd, page, revision }, { completedJob } = {}) {
   const key = nativeSessionKey(entry);
   rememberNativeHistory(key, page.cursor);
   const attempt = nativeChatAttempts.get(key);
   const delivery = attempt && nativeChatDelivery(attempt, page.messages);
   if (delivery || !page.active) nativeChatAttempts.delete(key);
-  return { messages: page.messages, hasOlder: page.cursor !== null, skipped: page.skipped,
-    ...(delivery && { delivered: { prompt: attempt.prompt, status: delivery, revision } }),
-    chat: { revision, available: Boolean(cwd), active: Boolean(page.active) || Boolean(runPool.get("native:" + key)),
-      pending: (() => { const job = runPool.get("native:" + key); return job && { requestId: job.requestId,
-        prompt: job.prompt, events: job.nativeLog ?? [], waiting: job.waiting }; })(),
+  const modelSettings = nativeModelSettings(storage.nativeChatModels, entry, cwd);
+  const pooled = runPool.get(nativeJobKey(entry));
+  const job = pooled === completedJob ? undefined : pooled;
+  return { messages: nativeMessageAttachments(page.messages, storage.nativeAttachmentMessages, key), hasOlder: page.cursor !== null, skipped: page.skipped,
+    ...(delivery && { delivered: { prompt: attempt.displayPrompt ?? attempt.prompt, requestId: attempt.requestId, status: delivery, revision } }),
+    chat: { revision, available: Boolean(cwd), active: Boolean(page.active) || Boolean(job),
+      pending: job && { requestId: job.requestId, prompt: job.prompt, events: job.nativeLog ?? [], waiting: job.waiting,
+        ...(job.computer && { window: { title: job.nativeComputer?.title, ended: job.computer.closed } }) },
+      modelSettings, modelStamp: nativeModelStamp(entry, cwd, modelSettings),
       permissionMode: nativePermissionMode(storage.nativeChatPermissions, entry, cwd), cwd } };
+}
+
+async function saveNativeChatModels(payload) {
+  requireIdle({ allowJobs: true });
+  const entry = nativeSession(payload);
+  const key = nativeJobKey(entry);
+  if (entry.archived || runPool.get(key)) throw new Error("Wait for this chat to finish before changing its model settings.");
+  maintenance = true;
+  try {
+    const snapshot = await nativeChatSnapshot(entry);
+    const current = nativeModelSettings(storage.nativeChatModels, entry, snapshot.cwd);
+    if (!snapshot.cwd || snapshot.page.active || runPool.get(key) || snapshot.revision !== payload.revision ||
+        nativeModelStamp(entry, snapshot.cwd, current) !== payload.modelStamp) {
+      throw new Error("This chat or its settings changed. Refresh messages before saving models.");
+    }
+    const cached = modelCatalogs.get(entry.provider);
+    const connection = connections[entry.provider];
+    const catalog = cached && connection && cached.exe === connection.path && cached.version === connection.version && cached.authMethod === connection.authMethod ? cached.catalog : undefined;
+    const previous = storage.nativeChatModels;
+    storage.nativeChatModels = changeNativeModels(previous, entry, snapshot.cwd, payload.options, catalog);
+    try { save(); } catch (error) { storage.nativeChatModels = previous; throw error; }
+    const modelSettings = nativeModelSettings(storage.nativeChatModels, entry, snapshot.cwd);
+    return { modelSettings, modelStamp: nativeModelStamp(entry, snapshot.cwd, modelSettings) };
+  } finally { maintenance = false; }
 }
 
 async function saveNativeChatPermission(payload) {
   requireIdle({ allowJobs: true });
   const entry = nativeSession(payload);
   if (entry.archived) throw new Error("Restore this chat before changing its permissions.");
+  const key = nativeJobKey(entry);
+  if (runPool.get(key)) throw new Error("Wait for this chat to finish before changing its permissions.");
   maintenance = true;
   try {
     const snapshot = await nativeChatSnapshot(entry);
-    if (!snapshot.cwd || snapshot.page.active || snapshot.revision !== payload.revision) {
+    if (!snapshot.cwd || snapshot.page.active || runPool.get(key) || snapshot.revision !== payload.revision) {
       throw new Error("Refresh the messages before changing this chat's permissions.");
     }
     const previous = storage.nativeChatPermissions;
@@ -4671,34 +4711,52 @@ async function saveNativeChatPermission(payload) {
 }
 
 function nativeChatControl(payload, kind) {
-  const key = "native:" + payload.provider + ":" + payload.id;
+  const key = nativeJobKey(payload);
   const job = runPool.get(key);
   if (!job || job.sessionKey !== payload.provider + ":" + payload.id || job.requestId !== payload.requestId || job.stopping) {
     throw new Error("This original chat turn has ended. Refresh the messages.");
   }
-  if (kind === "stop" && runPool.cancel(key)) return { stopped: true };
+  if (kind === "stop" && runPool.cancel(key)) return { stopped: true, cancelledBeforeStart: true };
   if (kind === "stop") {
     stopTransientTurn(job);
     job.nativeEvents({ type: "stopping" });
     return { stopped: true };
   }
+  if (kind === "unshare") {
+    if (!job.computer) throw new Error("This turn has no shared window.");
+    revokeComputer(job);
+    return { acknowledged: true };
+  }
   if (job.controls.get(payload.key) !== kind) throw new Error("This request is no longer waiting for a response.");
   const runner = job[payload.provider];
-  const accepted = kind === "approval" ? runner?.decide(payload.key, payload.accept === true) : runner?.answer(payload.key, payload.answers);
+  const computerDecision = kind === "approval" && job.computer?.decisions.get(payload.key);
+  const accepted = computerDecision ? (computerDecision(payload.accept === true), true)
+    : kind === "approval" ? runner?.decide(payload.key, payload.accept === true) : runner?.answer(payload.key, payload.answers);
   if (!accepted) throw new Error("The provider did not accept this response. Refresh the messages.");
   job.controls.delete(payload.key);
   job.nativeEvents({ type: "control-resolved", key: payload.key, decision: kind === "approval" ? payload.accept === true ? "Approved once" : "Declined" : "Answered" });
   return { acknowledged: true };
 }
 
-function sendNativeChat(payload) {
+async function sendNativeChat(payload) {
   const entry = nativeSession(payload);
-  const mode = nativePermissionMode(storage.nativeChatPermissions, entry, entry.cwd);
-  const key = "native:" + nativeSessionKey(entry);
+  const cwd = await fs.promises.realpath(entry.cwd).catch(() => null);
+  if (!cwd) throw new Error("The recorded folder is unavailable. Refresh this original chat.");
+  const settings = nativeModelSettings(storage.nativeChatModels, entry, cwd);
+  const modelStamp = nativeModelStamp(entry, cwd, settings);
+  if (payload.modelStamp && payload.modelStamp !== modelStamp) throw new Error("This chat's model settings changed. Refresh before sending.");
+  const mode = nativePermissionMode(storage.nativeChatPermissions, entry, cwd);
+  const key = nativeJobKey(entry);
   const locks = [key];
-  if (mode !== "chat" && entry.cwd) locks.push("folder:" + canonicalJobFolder(entry.cwd));
+  const target = payload.computerToken ? checkedNativeComputerGrant(payload.computerToken, entry, cwd, mode) : null;
+  if (target) locks.push("computer");
+  if (mode !== "chat") locks.push("folder:" + canonicalJobFolder(cwd));
   const job = { sessionKey: nativeSessionKey(entry), requestId: payload.requestId, prompt: payload.prompt,
-    waiting: true, controls: new Map(), nativeLog: [], approvals: [] };
+    waiting: true, controls: new Map(), nativeLog: [], approvals: [], nativeModelSnapshot: { cwd, settings, modelStamp },
+    ...(target && { nativeComputer: target, computer: { closed: false, decisions: new Map() } }) };
+  resolveAttachments(imageDirectory(), payload.images ?? []);
+  payload = { ...payload, images: structuredClone(payload.images ?? []) };
+  job.images = payload.images;
   // Native send's promise stays attached to its own caller, even while it waits for a slot.
   let resolve, reject;
   const done = new Promise((a, b) => { resolve = a; reject = b; });
@@ -4719,13 +4777,18 @@ async function sendNativeChatInternal(payload) {
   const key = nativeSessionKey(entry);
   if (nativeChatAttempts.has(key)) throw new Error("Refresh the messages to check the previous send before trying again.");
   const agent = entry.provider;
-  const prompt = validatePrompt(payload.prompt);
+  const userPrompt = validatePrompt(payload.prompt);
+  const images = resolveAttachments(imageDirectory(), payload.images ?? []);
+  const prompt = nativeAttachmentInput(userPrompt, payload.requestId, images);
+  if ((storage.nativeAttachmentMessages ?? []).some((record) => record.sessionKey === key && record.requestId === payload.requestId)) {
+    throw new Error("Refresh messages to check this previously sent attachment message.");
+  }
   if (typeof payload.requestId !== "string" || !/^[a-z\d-]{16,80}$/iu.test(payload.requestId)) throw new Error("Refresh this chat before sending.");
   if (!routeMode(agent, connectionView()).available.length) {
     throw new Error(teamProviders[agent] + " needs a connection and available usage. Check Connections and Usage.");
   }
-  const settings = effectiveAgentSettings(storage.agentSettings, undefined, agent);
   const job = runPool.scope.job;
+  const { settings, modelStamp, cwd: settingsCwd } = job.nativeModelSnapshot;
   job.run = { agents: { [agent]: { settings } } };
   job.nativeEvents = (event) => {
     if (job.nativeLog.length >= 80) job.nativeLog.shift();
@@ -4739,6 +4802,10 @@ async function sendNativeChatInternal(payload) {
   try {
     const before = await nativeChatSnapshot(entry);
     if (!before.cwd) throw new Error("The recorded folder is unavailable. Restore it to continue this chat.");
+    if (!samePath(before.cwd, settingsCwd) || nativeModelStamp(entry, before.cwd,
+        nativeModelSettings(storage.nativeChatModels, entry, before.cwd)) !== modelStamp) {
+      throw new Error("This waiting chat's model settings changed. Refresh before sending.");
+    }
     if (before.page.active || before.revision !== payload.revision) {
       throw new Error("This chat has changed or is still working. Refresh the messages before sending.");
     }
@@ -4751,17 +4818,30 @@ async function sendNativeChatInternal(payload) {
     job.run.greeting = policy.readOnly;
     job.run.permissionMode = mode;
     if (job.stopping) throw new Error("AI Deck is closing.");
-    const attempt = { prompt, previousIds: new Set(before.page.messages.map(({ id }) => id)) };
+    const attempt = { prompt, displayPrompt: userPrompt, ...(images.length && { wirePrefix: nativeAttachmentPrefix(job.requestId) }), requestId: job.requestId, previousIds: new Set(before.page.messages.map(({ id }) => id)) };
+    job.images = images;
+    if (images.length) {
+      storage.nativeAttachmentMessages = [...(storage.nativeAttachmentMessages ?? []), { sessionKey: key, requestId: job.requestId, prompt: userPrompt, images: payload.images }].slice(-256);
+      save();
+    }
     nativeChatAttempts.set(key, attempt);
     if (nativeChatAttempts.size > 16) nativeChatAttempts.delete(nativeChatAttempts.keys().next().value);
     timer = setTimeout(() => stopTransientTurn(job), policy.readOnly ? 90_000 : 15 * 60_000);
     job.task = { linkedSession: before.link };
+    if (job.nativeComputer) {
+      const target = checkedNativeComputerGrant(payload.computerToken, entry, before.cwd, mode);
+      computerGrant = null;
+      job.run.computer = target;
+      await connectComputer(job, target);
+    }
     let outcome;
     try {
-      if (agent === "codex") outcome = await codexTurn(job, { repo: before.cwd, plugins: [] }, before.cwd, prompt,
+      if (agent === "codex") outcome = await codexTurn(job, { repo: before.cwd, plugins: [], chatOnly: policy.readOnly }, before.cwd, prompt,
         policy.readOnly, policy.readOnly ? "review" : "write", agent);
       else {
-        job.claude = runClaude(connections.claude.path, before.cwd, prompt, [], entry.id, job.nativeEvents, { ...settings, ...policy.claude });
+        job.claude = runClaude(connections.claude.path, before.cwd, prompt, job.computer ? [job.computer.plugin] : [], entry.id, job.nativeEvents,
+          { ...settings, ...policy.claude, images, ...(job.computer && { computer: true, nativeComputer: true, persistSession: true,
+            role: policy.readOnly ? "review" : "write", systemPrompt: [policy.claude.systemPrompt, nativeComputerInstructions].filter(Boolean).join("\n") }) });
         outcome = await job.claude.done;
       }
     } catch (error) {
@@ -4780,9 +4860,12 @@ async function sendNativeChatInternal(payload) {
     if (!after || !nativeChatDelivery(attempt, after.page.messages)) {
       throw new Error("AI Deck could not confirm this send. Refresh the messages before trying again.");
     }
-    return { ...nativeChatPreview(entry, after), outcome: { status: job.stopping ? "interrupted" : outcome?.status, error: outcome?.error } };
+    return { ...nativeChatPreview(entry, after, { completedJob: job }), outcome: { status: job.stopping ? "interrupted" : outcome?.status,
+      error: outcome?.error, settings: { ...settings } } };
   } finally {
     clearTimeout(timer);
+    revokeComputer(job);
+    closeProjectTools(job);
     job.controls.clear();
     job.nativeEvents({ type: "finished" });
     if (nativeChatJobs.get(key) === job) nativeChatJobs.delete(key);
@@ -5700,6 +5783,10 @@ function applySettingsImport(payload) {
   return viewState();
 }
 
+function modelConnectionKey(connection) {
+  return JSON.stringify([connection?.path, connection?.version, connection?.authMethod, connection?.status]);
+}
+
 async function providerModels({ agent, refresh } = {}) {
   requireAgent(agent);
   await connectionCheck;
@@ -5708,11 +5795,19 @@ async function providerModels({ agent, refresh } = {}) {
   const ready = connection?.status === "ready" && fs.existsSync(connection.path);
   if (!refresh && ready && cached?.exe === connection.path && cached.version === connection.version &&
       cached.authMethod === connection.authMethod && Date.now() - cached.at < 300_000) return cached.catalog;
-  requireIdle();
-  maintenance = true;
-  try {
+  const pending = modelCatalogReads.get(agent);
+  if (pending?.key === modelConnectionKey(connection)) return pending.promise;
+  requireIdle({ allowJobs: true });
+  pending?.controller.abort();
+  const read = { key: modelConnectionKey(connection), controller: new AbortController() };
+  read.promise = (async () => {
     if (!ready) {
-      connection = connections[agent] = await probe(agent);
+      const checked = await probe(agent);
+      if (read.controller.signal.aborted || connections[agent] !== connection || connectionCheck) {
+        throw new Error("The provider connection changed. Refresh models again.");
+      }
+      connection = connections[agent] = checked;
+      read.key = modelConnectionKey(connection);
       accountQuotas.delete(agent);
       quotaAttempts.delete(agent);
       emit(null, { type: "connections", connections: connectionView() });
@@ -5724,13 +5819,16 @@ async function providerModels({ agent, refresh } = {}) {
       const [models, config] = await Promise.all([engine.request("model/list", { limit: 100 }),
         engine.request("config/read", { includeLayers: false }).catch(() => null)]);
       return codexCatalog(models.data, config?.config);
-    }, { exe: connection.path, nativeExtensions: false, nativeHooks: false })
-      : claudeCatalog(await inspectClaude(connection.path, os.tmpdir()));
+    }, { exe: connection.path, nativeExtensions: false, nativeHooks: false, signal: read.controller.signal })
+      : claudeCatalog(await inspectClaude(connection.path, os.tmpdir(), false, { signal: read.controller.signal }));
+    if (read.controller.signal.aborted || modelConnectionKey(connections[agent]) !== read.key) {
+      throw new Error("The provider connection changed. Refresh models again.");
+    }
     modelCatalogs.set(agent, { exe: connection.path, version: connection.version, authMethod: connection.authMethod, at: Date.now(), catalog });
     return catalog;
-  } finally {
-    maintenance = false;
-  }
+  })().finally(() => { if (modelCatalogReads.get(agent) === read) modelCatalogReads.delete(agent); });
+  modelCatalogReads.set(agent, read);
+  return read.promise;
 }
 
 function saveAgentSettings({ agent, scope, repo, taskId, options } = {}) {
@@ -5914,8 +6012,18 @@ function checkAttachmentTask(taskId) {
   if (selectedTask(workspaceRequired()).id !== taskId) throw new Error("The task changed before the files were attached.");
 }
 
-async function chooseTaskAttachments(payload) {
+function checkAttachmentOwner(payload) {
+  if (payload?.native) {
+    const entry = nativeSession(payload.native);
+    if (entry.archived) throw new Error("Restore this chat before attaching files.");
+    return "native:" + nativeSessionKey(entry);
+  }
   checkAttachmentTask(payload?.taskId);
+  return "task:" + payload.taskId;
+}
+
+async function chooseTaskAttachments(payload) {
+  checkAttachmentOwner(payload);
   const selection = await dialog.showOpenDialog(window, {
     title: "Attach files",
     properties: ["openFile", "multiSelections"],
@@ -5924,14 +6032,15 @@ async function chooseTaskAttachments(payload) {
   return addTaskAttachments({ ...payload, sources: selection.filePaths.map((filename) => ({ filename })) });
 }
 
-async function addTaskAttachments({ taskId, sources, existing } = {}) {
-  checkAttachmentTask(taskId);
+async function addTaskAttachments({ taskId, native, sources, existing } = {}) {
+  const owner = { taskId, native };
+  checkAttachmentOwner(owner);
   const attachments = await storeAttachments(imageDirectory(), sources, existing, (progress) => {
-    if (selected()?.currentTask === taskId) emit(null, { type: "attachment-ocr", taskId, ...progress });
+    emit(null, { type: "attachment-ocr", ...(native ? { native } : { taskId }), ...progress });
   });
-  if (selected()?.currentTask !== taskId) {
+  try { checkAttachmentOwner(owner); } catch (error) {
     for (const { id } of attachments) discardDraftAttachment(id);
-    throw new Error("The task changed before the files were attached.");
+    throw error;
   }
   return attachments;
 }
@@ -5943,7 +6052,7 @@ async function addChatQuote({ taskId, author, text, existing } = {}) {
 }
 
 async function pasteClipboardFiles(payload) {
-  checkAttachmentTask(payload?.taskId);
+  checkAttachmentOwner(payload);
   if (process.platform !== "win32" || clipboard.readText()) return [];
   const script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; " +
     "ConvertTo-Json -Compress -InputObject @([Windows.Forms.Clipboard]::GetFileDropList() | ForEach-Object { [string]$_ })";
@@ -5953,11 +6062,12 @@ async function pasteClipboardFiles(payload) {
   return files.length ? addTaskAttachments({ ...payload, sources: files.map((filename) => ({ filename })) }) : [];
 }
 
-async function captureWindows({ chromeOnly = false } = {}) {
-  const taskId = selectedTask(workspaceRequired()).id;
-  const request = windowCapture = { taskId, chromeOnly, windows: [] };
+async function captureWindows({ chromeOnly = false, native } = {}) {
+  const owner = native ? { native } : { taskId: selectedTask(workspaceRequired()).id };
+  const ownerKey = checkAttachmentOwner(owner);
+  const request = windowCapture = { ...owner, owner, ownerKey, chromeOnly, windows: [] };
   const sources = await desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 0, height: 0 } });
-  if (windowCapture !== request || selectedTask(workspaceRequired()).id !== taskId) throw new Error("Open the capture picker again for this task.");
+  if (windowCapture !== request || checkAttachmentOwner(owner) !== ownerKey) throw new Error("Open the capture picker again for this chat.");
   const windows = sources.filter(({ id, name }) => id.startsWith("window:") && name?.trim()).slice(0, 100)
     .map(({ id, name }) => ({ id, name: name.slice(0, 160) }))
     .filter(({ name }) => !chromeOnly || /\bGoogle Chrome\b/iu.test(name));
@@ -5987,14 +6097,14 @@ async function chromeWindowThumbnail({ handle, identity, view }, { width, height
 async function previewWindowCapture(id, { chromeTarget } = {}) {
   const request = windowCapture;
   const selectedWindow = request?.windows.find((source) => source.id === id);
-  if (!selectedWindow || request.taskId !== selectedTask(workspaceRequired()).id) {
+  if (!selectedWindow || checkAttachmentOwner(request.owner) !== request.ownerKey) {
     throw new Error("Refresh the window list before capturing.");
   }
   delete request.preview;
   const size = { width: 1280, height: 800 };
   const thumbnail = chromeTarget && await chromeWindowThumbnail(chromeTarget, size);
   const source = thumbnail ? { name: selectedWindow.name, thumbnail } : await windowThumbnail(id, size);
-  if (windowCapture !== request || request.taskId !== selectedTask(workspaceRequired()).id) throw new Error("Open the capture picker again.");
+  if (windowCapture !== request || checkAttachmentOwner(request.owner) !== request.ownerKey) throw new Error("Open the capture picker again.");
   if (!source) throw new Error("Couldn't capture this window. Restore it on the desktop and refresh the list.");
   if (!chromeTarget && source.name?.slice(0, 160) !== selectedWindow.name) throw new Error("The window changed. Refresh the list and select it again.");
   const bytes = source.thumbnail.toPNG();
@@ -6004,10 +6114,9 @@ async function previewWindowCapture(id, { chromeTarget } = {}) {
 }
 
 async function attachWindowCapture({ token, existing } = {}) {
-  const task = selectedTask(workspaceRequired());
   const request = windowCapture;
-  if (request?.taskId !== task.id || !request.preview || token !== request.preview.token) throw new Error("Preview this window again before attaching.");
-  const [image] = await addTaskAttachments({ taskId: task.id, existing, sources: [{ ...request.preview, image: true }] });
+  if (!request?.preview || token !== request.preview.token || checkAttachmentOwner(request.owner) !== request.ownerKey) throw new Error("Preview this window again before attaching.");
+  const [image] = await addTaskAttachments({ ...request.owner, existing, sources: [{ ...request.preview, image: true }] });
   if (windowCapture === request) windowCapture = undefined;
   return image;
 }
@@ -6049,12 +6158,16 @@ async function armComputer({ token, agent, access = "browse" } = {}) {
   requireAgent(agent);
   requireIdle();
   checkWindowAccess();
-  const workspace = workspaceRequired();
-  const task = selectedTask(workspace);
   const request = windowCapture;
-  if (task.linkedSession || request?.taskId !== task.id || request.preview?.token !== token || !request.preview?.identity) {
-    throw new Error("Preview a window from an AI Deck task before sharing it.");
+  if (!request?.preview?.identity || request.preview.token !== token || checkAttachmentOwner(request.owner) !== request.ownerKey) {
+    throw new Error("Preview a window from this chat before sharing it.");
   }
+  const native = request.native && nativeSession(request.native);
+  const workspace = native ? null : workspaceRequired();
+  const task = workspace && selectedTask(workspace);
+  if (native && native.provider !== agent || task?.linkedSession) throw new Error("Choose the provider of this original chat, or share from an AI Deck task.");
+  const cwd = native && await fs.promises.realpath(native.cwd);
+  const permission = native && nativePermissionMode(storage.nativeChatPermissions, native, cwd);
   if (connections[agent]?.status !== "ready") throw new Error("Connect the selected provider before sharing a window.");
   const source = request.windows.find(({ id }) => id === request.preview.id);
   const handle = windowHandle(source.id);
@@ -6063,15 +6176,16 @@ async function armComputer({ token, agent, access = "browse" } = {}) {
   const { identity, application, view } = await windowsUi({ action: "identify", handle, identity: request.preview.identity, view: request.preview.view });
   const chrome = application === "chrome";
   if (request.chromeOnly && !chrome) throw new Error("Choose a Google Chrome window.");
-  if (access !== "browse" && (access !== "edit" || !chrome || workspace.readOnly)) {
+  if (access !== "browse" && (access !== "edit" || !chrome || (native ? permission === "chat" : workspace.readOnly))) {
     throw new Error("Browse and edit needs a Chrome window and a writable project.");
   }
   verifySharedWindow(handle, identity);
   requireIdle();
   checkWindowAccess();
-  if (request !== windowCapture || task.id !== selectedTask(workspaceRequired()).id) throw new Error("Preview the window again.");
+  if (request !== windowCapture || checkAttachmentOwner(request.owner) !== request.ownerKey) throw new Error("Preview the window again.");
   windowCapture = undefined;
-  const grant = { ...target, identity, view, agent, chrome, access, mode: computerMode(agent, access), taskId: task.id, token: randomUUID(), expires: Date.now() + 5 * 60_000 };
+  const grant = { ...target, identity, view, agent, chrome, access, mode: computerMode(agent, access),
+    ...(native ? { nativeKey: nativeSessionKey(native), cwd, permission } : { taskId: task.id }), token: randomUUID(), expires: Date.now() + 5 * 60_000 };
   computerGrant = grant;
   const { token: grantToken, title, taskId, expires, mode } = grant;
   return { token: grantToken, agent, title, taskId, expires, mode, chrome, access };
@@ -6086,6 +6200,17 @@ function checkedComputerGrant(token, task, mode, forbidden) {
   return grant;
 }
 
+const nativeComputerInstructions = "The user shared one window for this turn. Use ai_deck_computer screenshot and inspect tools to check it, and request one-action approval for UI changes. This share does not grant other windows or increase file permissions. Keep using this original chat; do not open a new agent or session.";
+function checkedNativeComputerGrant(token, entry, cwd, permission) {
+  const grant = computerGrant;
+  if (!grant || grant.token !== token || grant.nativeKey !== nativeSessionKey(entry) || grant.agent !== entry.provider ||
+      !samePath(grant.cwd, cwd) || grant.permission !== permission || grant.expires <= Date.now()) {
+    throw new Error("Share the window again from this original chat with its current permissions.");
+  }
+  checkWindowAccess();
+  return grant;
+}
+
 function revokeComputer(job) {
   const computer = job?.computer;
   if (!computer || computer.closed) return;
@@ -6093,7 +6218,16 @@ function revokeComputer(job) {
   computer.tools?.close();
   computer.server?.close();
   for (const resolve of computer.decisions.values()) resolve(false);
-  if (runPool.has(job) && !quitting) emit(null, { type: "computer-ended", runId: job.run.id });
+  if (runPool.has(job) && !quitting) {
+    if (job.nativeEvents) job.nativeEvents({ type: "window-share-ended" });
+    else if (job.run?.id) emit(null, { type: "computer-ended", runId: job.run.id });
+  }
+}
+
+function endWindowShares() {
+  computerGrant = null;
+  windowCapture = undefined;
+  for (const job of runPool.all()) revokeComputer(job);
 }
 
 async function connectComputer(job, target) {
@@ -6102,7 +6236,7 @@ async function connectComputer(job, target) {
   if (!enabled()) throw new Error("Window access ended before the agent started.");
   await verifyComputerTarget(target);
   if (!enabled()) throw new Error("Window access ended before the agent started.");
-  const send = (event) => report(target.agent, job.task, job.run, event);
+  const send = job.nativeEvents ?? ((event) => report(target.agent, job.task, job.run, event));
   const tools = computer.tools = createWindowTools({ target, enabled, readWindow: (image) => currentComputerWindow(target, image),
     report: (text) => send({ type: "activity", text: "Computer Use · " + text }),
     approve: (action) => new Promise((resolve) => {
@@ -6122,11 +6256,12 @@ async function connectComputer(job, target) {
         note: "Approve one action in the shared window. The request expires after 45 seconds." });
     }),
   });
-  if (target.agent === "claude") {
+  if (target.agent === "claude" || job.nativeEvents) {
     computer.server = await startComputerServer(tools);
     if (!enabled()) { computer.server.close(); throw new Error("Window access ended before the agent started."); }
     computer.plugin = computer.server.plugin;
   }
+  job.nativeEvents?.({ type: "window-share-started", title: target.title });
 }
 
 async function previewTaskAttachment(payload) {
@@ -6145,6 +6280,8 @@ async function previewTaskAttachment(payload) {
 function discardDraftAttachment(id) {
   const { filename } = storedAttachment(imageDirectory(), id);
   const usesImage = (entry) => entry?.images?.some((image) => image.id === id);
+  if ((storage.nativeAttachmentMessages ?? []).some(usesImage)) return;
+  for (const job of runPool.all()) if (usesImage(job)) return;
   for (const workspace of Object.values(storage.workspaces)) {
     for (const task of workspace.tasks) {
       if (usesImage(task.savedDraft) || usesImage(task.recoveryDraft?.draft) || task.queue.some(usesImage) ||
@@ -6398,6 +6535,15 @@ async function runVoice(payload, operation) {
 
 app.whenReady().then(() => {
   storage = loadState();
+  softwareUpdates = createUpdateMonitor({
+    saved: storage.softwareUpdates,
+    read: createUpdateReader({ capture, executable: (name) => updateExecutable(name, findExecutable,
+      process.platform === "win32" ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Microsoft", "WindowsApps", "winget.exe") : undefined),
+      claudeChannel: async () => (await readClaudeSettings(providerSettingsFiles.claude))?.autoUpdatesChannel === "stable" ? "stable" : "latest" }),
+    persist: (snapshot) => { const previous = storage.softwareUpdates; storage.softwareUpdates = snapshot; try { save(); } catch (error) { storage.softwareUpdates = previous; throw error; } },
+    changed: (updates) => { if (!quitting) emit(null, { type: "software-updates", updates }); },
+    canCheck: () => !quitting && !runPool.size && !maintenance && !connectionCheck && !voiceJob && !nativeHookJob,
+  });
   nativeTheme.themeSource = storage.preferences.theme;
   if (process.platform === "win32") {
     app.setAppUserModelId(notificationAppId);
@@ -6429,6 +6575,16 @@ app.whenReady().then(() => {
   wire("test-notification", () => {
     if (!showDeckNotification("This is a test notification.")) throw new Error("Windows notifications are unavailable.");
     return true;
+  });
+  wire("software-updates", (payload) => payload?.check ? softwareUpdates.check({ force: payload.force === true }) : softwareUpdates.view());
+  wire("read-software-updates", (versions) => softwareUpdates.markRead(versions));
+  wire("open-software-update", async (id) => {
+    const product = updateProducts.find((item) => item.id === id);
+    if (!product) throw new Error("Choose a supported app update.");
+    const item = softwareUpdates.view().items.find((entry) => entry.id === id);
+    const url = id === "codex-cli" && item.bundled ? updateProducts[0].url : product.url;
+    await shell.openExternal(url);
+    return softwareUpdates.markRead({ [id]: item.latest });
   });
   wire("preview-settings-import", previewSettingsImport);
   wire("apply-settings-import", applySettingsImport);
@@ -6496,9 +6652,11 @@ app.whenReady().then(() => {
   wire("code-graph", inspectCodeGraph);
   wire("native-chat-send", sendNativeChat);
   wire("save-native-chat-permission", saveNativeChatPermission);
+  wire("save-native-chat-models", saveNativeChatModels);
   wire("native-chat-approve", (payload) => nativeChatControl(payload, "approval"));
   wire("native-chat-answer", (payload) => nativeChatControl(payload, "question"));
   wire("native-chat-stop", (payload) => nativeChatControl(payload, "stop"));
+  wire("native-chat-unshare", (payload) => nativeChatControl(payload, "unshare"));
   wire("native-session-pin", pinNativeSession);
   wire("native-session-action", changeNativeSession);
   wire("deck-task-action", changeDeckTask);
@@ -6791,6 +6949,15 @@ app.whenReady().then(() => {
   wire("task-panel", inspectTaskPanel);
   wire("task-panel-change", changeTaskPanel);
   wire("task-panel-item", openTaskPanelItem);
+  wire("hide-plan-notice", (payload) => {
+    requireIdle({ allowOtherJobs: true });
+    const task = selectedTask(workspaceRequired());
+    if (task.id !== payload?.taskId) throw new Error("Open the same chat before hiding its plan note.");
+    const previous = task.hiddenPlanNoticeId;
+    hidePlanNotice(task, payload.runId);
+    try { save(); } catch (error) { task.hiddenPlanNoticeId = previous; throw error; }
+    return viewState();
+  });
   wire("team-plan-decision", (payload) => {
     requireIdle();
     const workspace = workspaceRequired();
@@ -6977,6 +7144,8 @@ app.on("window-all-closed", () => {
 app.on("second-instance", showWindow);
 app.on("before-quit", () => {
   recentLoader.cancel();
+  softwareUpdates?.abort();
+  for (const read of modelCatalogReads.values()) read.controller.abort();
   closeCodeGraph();
   stopTransientTurn(intentJob);
   for (const job of nativeChatJobs.values()) stopTransientTurn(job);

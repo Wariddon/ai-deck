@@ -148,18 +148,21 @@ public static class DeckChromeFocus {
       $kind = $properties.ControlType.ProgrammaticName.Replace('ControlType.', '')
       $invokePattern = $null
       $valuePattern = $null
+      $scrollPattern = $null
       $canInvoke = $properties.IsEnabled -and $kind -in @('Button', 'Hyperlink', 'MenuItem', 'ListItem', 'TabItem') -and
         $element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)
       $canSet = $properties.IsEnabled -and $kind -in @('Edit', 'Document', 'ComboBox') -and
         $element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern) -and !$valuePattern.Current.IsReadOnly
-      if (($canInvoke -or $canSet) -and $element -ne $root) {
+      $canScroll = $properties.IsEnabled -and $element.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$scrollPattern)
+      $canKey = $properties.IsEnabled -and $properties.IsKeyboardFocusable
+      if (($canInvoke -or $canSet -or $canScroll -or $canKey) -and $element -ne $root) {
         $runtimeId = $element.GetRuntimeId() -join '.'
         $label = if ($name) { $name.Substring(0, [Math]::Min($name.Length, 160)) } else { $kind }
         $automationId = $properties.AutomationId
         $signature = "$runtimeId|$kind|$automationId|$name"
         $key = Get-Stamp $signature
         if ($request.action -eq 'inspect') {
-          $controls.Add(@{ key = $key; label = $label; kind = $kind; invoke = [bool]$canInvoke; set = [bool]$canSet })
+          $controls.Add(@{ key = $key; label = $label; kind = $kind; invoke = [bool]$canInvoke; set = [bool]$canSet; scroll = [bool]$canScroll; keyInput = [bool]$canKey })
         } elseif ($request.key -eq $key) {
           if ($request.view -and (Get-ChromeView $root) -ne $request.view) {
             Finish @{ error = 'The selected Chrome tab or page changed. Inspect it again.' }
@@ -170,6 +173,41 @@ public static class DeckChromeFocus {
           }
           if ($request.action -eq 'set' -and $canSet) {
             $valuePattern.SetValue([string]$request.text)
+            Finish @{ applied = $true }
+          }
+          if ($request.action -eq 'scroll' -and $canScroll) {
+            $none = [Windows.Automation.ScrollAmount]::NoAmount
+            $back = [Windows.Automation.ScrollAmount]::LargeDecrement
+            $forward = [Windows.Automation.ScrollAmount]::LargeIncrement
+            switch ($request.direction) {
+              'up' { $scrollPattern.Scroll($none, $back) }
+              'down' { $scrollPattern.Scroll($none, $forward) }
+              'left' { $scrollPattern.Scroll($back, $none) }
+              'right' { $scrollPattern.Scroll($forward, $none) }
+              default { Finish @{ error = 'Choose a supported scroll direction.' } }
+            }
+            Finish @{ applied = $true }
+          }
+          if ($request.action -eq 'press_key' -and $canKey) {
+            $keys = @{ Enter='{ENTER}'; Tab='{TAB}'; 'Shift+Tab'='+{TAB}'; Escape='{ESC}'; ArrowUp='{UP}'; ArrowDown='{DOWN}'; ArrowLeft='{LEFT}'; ArrowRight='{RIGHT}'; PageUp='{PGUP}'; PageDown='{PGDN}'; Home='{HOME}'; End='{END}' }
+            if (!$keys.ContainsKey([string]$request.keyName)) { Finish @{ error = 'Choose one supported navigation key.' } }
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DeckControlFocus {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr handle);
+}
+'@
+            $handle = [IntPtr]::new([long]$request.handle)
+            [void][DeckControlFocus]::SetForegroundWindow($handle)
+            if ([DeckControlFocus]::GetForegroundWindow() -ne $handle) { Finish @{ error = 'Bring the shared window to the front.' } }
+            $element.SetFocus()
+            if ([DeckControlFocus]::GetForegroundWindow() -ne $handle -or !$element.Current.HasKeyboardFocus -or $element.Current.IsPassword) {
+              Finish @{ error = 'The shared control lost focus.' }
+            }
+            [Windows.Forms.SendKeys]::SendWait($keys[[string]$request.keyName])
             Finish @{ applied = $true }
           }
           Finish @{ error = 'The control no longer supports this action.' }

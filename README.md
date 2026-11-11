@@ -2,7 +2,17 @@
 
 AI Deck is a Windows desktop workspace for running Codex CLI and Claude Code in the same task. It includes team workflows, session roles, shared skills, usage reporting, in-chat approvals and Git worktrees.
 
-Current desktop version: **0.9.142**. See [validation and release scope](docs/validation.md) for the checks performed and their limits.
+Current desktop version: **0.9.151**. See [validation and release scope](docs/validation.md) for the checks performed and their limits.
+
+An older incomplete plan appears as a quiet note while the chat stays available. Hide it to keep the composer clear; the saved plan and its evidence stay in Run history. Related chats open the existing continuation and preserve both drafts. Hiding a note does not approve edits or change the project checkout.
+
+The header bell checks for Codex and Claude desktop/engine updates while idle. Desktop availability comes from the Windows catalog; CLI releases come from the publishers’ package catalogs, respecting Claude’s stable channel. It remembers read versions, opens the official update page, and never installs updates or sends model prompts automatically. Unknown or offline checks do not create new update alerts.
+
+Delayed file imports merge into the latest Recents draft when switching away and back. Minimize or hide ends all window shares, and a running original chat offers **Stop sharing** separately from Stop. Ordinary typing does not rewrite attachment metadata or send model prompts.
+
+Original Recents chats now accept pasted/dropped images and documents through the same local extraction and OCR pipeline as team tasks. Their attachment drafts survive reopening the app, and delivery is matched to a unique request in the original native conversation. Use the paperclip for files, screenshot preview or a one-turn window share. A window share does not increase file permissions.
+
+Both reviewers can search task text and read source lines through bounded read-only MCP tools. Computer Use also exposes accessible scrolling and navigation keys, with fresh controls and one-action approval. It operates one selected window at a time; arbitrary coordinate dragging, simultaneous desktop control, provider cloud workspaces and account memory synchronization are not implemented.
 
 ## Quick start on Windows
 
@@ -28,6 +38,8 @@ Start a task, then choose another chat or **New task** in the sidebar. The earli
 The app runs up to two independent jobs at once by default, or one with **Low RAM** enabled. Additional jobs wait for a slot or available memory. Jobs that use the same original provider conversation or overlapping writable folders wait for each other. Project tasks use their own Git worktrees, and members inside a team keep their configured execution order. Waiting project requests recover as paused messages after restart; they are not sent again automatically.
 
 Original Codex and Claude conversations retain their provider session IDs. The app verifies the recorded folder and transcript before each send. Choose the permission mode below the composer when you want file or command tools; **Chat only** does not require Git.
+
+The model button beside permissions sets **Model**, **Effort** and **Speed** for the original chat. The list comes from the connected provider; Fast is enabled only for reported model/account support. Choices are saved per provider, native conversation ID and verified folder. Leaving a field at its chat default preserves the original CLI behavior. Changes apply on the next send and do not create a new conversation or change its permissions.
 
 ## Automatic Git and code tools
 

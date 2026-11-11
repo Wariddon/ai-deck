@@ -1,5 +1,7 @@
 export function nativeChatEvent(state, event) {
   const controls = state.controls ?? [];
+  if (event.type === "window-share-started") return { ...state, windowTitle: event.title, windowEnded: false };
+  if (event.type === "window-share-ended") return { ...state, windowEnded: true };
   if (event.type === "approval" || event.type === "question") return { ...state,
     controls: [...controls.filter(({ key }) => key !== event.key), event].slice(-16) };
   if (["control-resolved", "approval-cancelled", "finished"].includes(event.type)) return { ...state,

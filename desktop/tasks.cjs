@@ -48,7 +48,7 @@ function taskAttention(task) {
   const runs = task.runHistory;
   const latest = runs.at(-1);
   if (latest && !latest.finishedAt) return;
-  if (latest?.teamPlan && latest.teamPlan.state !== "ready") return { label: "Plan needs your input", runId: latest.id };
+  if (latest?.teamPlan && latest.teamPlan.state !== "ready" && task.hiddenPlanNoticeId !== latest.id) return { label: "Plan note available", runId: latest.id };
   const plan = runs.findLast((run) => run.finishedAt && unresolvedTeamPlan(run) && run.teamPlan.applyStatus !== "running");
   if (plan) return { label: "Saved plan awaiting a decision", runId: plan.id };
   const review = runs.findLast((run) => run.finishedAt && run.reviewPending);
@@ -79,4 +79,13 @@ function canDrain(run, stopped, paused) {
   return statuses.includes("completed") && statuses.every((status) => status === "completed" || status === "skipped");
 }
 
-module.exports = { newTask, taskTitle, ensureTasks, selectedTask, taskSummary, taskAttention, runView, workspaceView, canDrain };
+function hidePlanNotice(task, runId) {
+  const run = task.runHistory.at(-1);
+  if (!run?.finishedAt || run.id !== runId || !run.teamPlan || run.teamPlan.state === "ready") {
+    throw new Error("This plan note changed. Open this chat again.");
+  }
+  // Hide the notice only; keep the saved plan, evidence and approval state.
+  task.hiddenPlanNoticeId = runId;
+}
+
+module.exports = { newTask, taskTitle, ensureTasks, selectedTask, taskSummary, taskAttention, runView, workspaceView, canDrain, hidePlanNotice };

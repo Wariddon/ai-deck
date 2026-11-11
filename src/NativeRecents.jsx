@@ -1,12 +1,15 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { IconArrowUp, IconDots, IconGitBranch, IconRefresh, IconPlayerStop, IconShieldCheck } from "@tabler/icons-react";
-import { agentNames, Brand, projectName, PermissionPicker, QuestionCard } from "./TeamThread.jsx";
+import { agentNames, Brand, projectName, PermissionPicker, QuestionCard, ImageChips } from "./TeamThread.jsx";
 import { nativePermissionModes } from "../desktop/native-chat-policy.mjs";
 import { nativeChatEvent } from "./native-chat-events.mjs";
 import { commandSummary } from "./command-activity.mjs";
 import { discussionMode } from "../desktop/collaboration.mjs";
 import { ChatMarkdown } from "./ChatMarkdown.jsx";
 import { ControlPopover } from "./ControlPopover.jsx";
+import { NativeModelPicker } from "./NativeModelPicker.jsx";
+import { ComposerAttachments } from "./ComposerAttachments.jsx";
+import { useNativeAttachments } from "./NativeAttachments.jsx";
 
 function recentForkMessages(messages = []) {
   const recent = [];
@@ -54,10 +57,13 @@ const handoffModes = {
 };
 
 export function NativeChat({ preview, job, busy, ready, error, initialDraft, keepDraft, older, sendChat, refresh,
-  transfer, openProject, restore, back, sendOnEnter, api, choosePermission }) {
+  transfer, openProject, restore, back, sendOnEnter, api, choosePermission, chooseModels }) {
   const { session, chat, messages, hasOlder, skipped, sourceTaskId, delivered } = preview;
   const name = agentNames[session.provider];
   const [draft, setDraft] = useState(initialDraft);
+  const draftValue = useRef(initialDraft);
+  const draftEdits = useRef(0);
+  const submittedDraft = useRef(chat?.pending && { requestId: chat.pending.requestId, edits: 0 });
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const sending = useRef(false);
@@ -65,22 +71,42 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [pending, setPending] = useState(chat?.pending?.prompt ?? "");
   const turn = useRef(chat?.pending?.requestId ?? null);
-  const [activity, setActivity] = useState(() => (chat?.pending?.events ?? []).reduce(nativeChatEvent, {}));
+  const [activity, setActivity] = useState(() => (chat?.pending?.events ?? []).reduce(nativeChatEvent,
+    { windowTitle: chat?.pending?.window?.title, windowEnded: chat?.pending?.window?.ended }));
   const [responding, setResponding] = useState(false);
   const [controlError, setControlError] = useState("");
+  const [savingModels, setSavingModels] = useState(false);
   const feed = useRef(null);
   const input = useRef(null);
   const search = useRef(null);
   const follow = useRef(true);
   const readOnly = Boolean(sourceTaskId || session.archived);
-  const canSend = !readOnly && ready && chat?.available && !chat.active && !chat.unverified;
+  const attachments = useNativeAttachments({ api, session, busy: busy || Boolean(pending) || readOnly,
+    onEdited: () => { draftEdits.current++; keepDraft(draftValue.current); },
+    canEdit: Boolean(chat?.permissionMode && chat.permissionMode !== "chat"),
+    onDelivered: (text) => clearSentDraft(text, draftEdits.current) });
+  const canSend = !readOnly && ready && chat?.available && !chat.active && !chat.unverified && !savingModels;
   const term = query.trim().toLocaleLowerCase();
   const visible = messages?.filter(({ text }) => !term || text.toLocaleLowerCase().includes(term)).reverse();
 
+  const refreshAfterTurn = useEffectEvent(refresh);
+  const restorePendingTurn = useEffectEvent(() => {
+    const saved = chat?.pending;
+    if (saved?.requestId && saved.requestId !== turn.current) {
+      turn.current = saved.requestId;
+      submittedDraft.current = { requestId: saved.requestId, edits: 0 };
+      setPending(saved.prompt);
+      setActivity((saved.events ?? []).reduce(nativeChatEvent, { windowTitle: saved.window?.title, windowEnded: saved.window?.ended }));
+    } else if (chat && !saved && !chat.active && !sending.current) {
+      turn.current = null;
+      setPending("");
+    }
+  });
+  useEffect(() => { restorePendingTurn(); }, [chat?.pending?.requestId, chat?.active]);
   useEffect(() => api.onEvent((data) => {
     if (data.type !== "native-chat-event" || data.provider !== session.provider || data.sessionId !== session.id || data.requestId !== turn.current) return;
     setActivity((current) => nativeChatEvent(current, data.event));
-    if (data.event.type === "finished") { setPending(""); turn.current = null; void refresh(); }
+    if (data.event.type === "finished") { setPending(""); turn.current = null; void refreshAfterTurn(); }
   }), [api, session.provider, session.id]);
 
   async function control(command, payload = {}) {
@@ -88,7 +114,12 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
     setResponding(true);
     setControlError("");
     try {
-      await api[command]({ provider: session.provider, id: session.id, requestId: turn.current, ...payload });
+      const result = await api[command]({ provider: session.provider, id: session.id, requestId: turn.current, ...payload });
+      if (result?.cancelledBeforeStart) {
+        turn.current = null; setPending("");
+        setActivity((current) => ({ ...nativeChatEvent(current, { type: "finished" }), cancelled: true }));
+        void refreshAfterTurn();
+      }
     } catch (reason) { setControlError(String(reason.message ?? reason)); }
     finally { setResponding(false); }
   }
@@ -101,14 +132,21 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
     if (searching) search.current?.focus({ preventScroll: true });
   }, [searching]);
 
-  const clearDeliveredDraft = useEffectEvent((prompt) => {
-    if (draft.trim() !== prompt) return;
+  function clearSentDraft(prompt, edits) {
+    if (draftValue.current.trim() !== prompt || draftEdits.current !== edits) return;
+    draftValue.current = "";
     setDraft("");
     keepDraft("");
+  }
+  const clearDeliveredDraft = useEffectEvent((delivery) => {
+    if (delivery.discardDraft === false) return;
+    const submitted = submittedDraft.current;
+    clearSentDraft(delivery.prompt, submitted?.requestId === delivery.requestId ? submitted.edits : 0);
   });
   useEffect(() => {
-    if (delivered) clearDeliveredDraft(delivered.prompt);
+    if (delivered) clearDeliveredDraft(delivered);
   }, [delivered]);
+  useEffect(() => { attachments.delivered(messages); }, [messages]);
 
   useLayoutEffect(() => {
     if (follow.current && !term && feed.current) feed.current.scrollTop = feed.current.scrollHeight;
@@ -116,22 +154,28 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
 
   async function send(event) {
     event.preventDefault();
-    const text = draft.trim();
+    const text = draft.trim() || (attachments.images.length ? "Describe the attached files and images." : "");
     if (!text || busy || sending.current || !canSend) return;
+    if (!draft.trim()) { draftValue.current = text; setDraft(text); keepDraft(text); }
     sending.current = true;
     follow.current = true;
     setSearching(false);
     setQuery("");
     setPending(text);
     turn.current = crypto.randomUUID();
+    const edits = draftEdits.current;
+    submittedDraft.current = { requestId: turn.current, edits };
     setActivity({});
     setControlError("");
     try {
-      if (await sendChat(text, chat.revision, { requestId: turn.current, permissionMode: chat.permissionMode ?? "chat" }) && mounted.current) {
-        setDraft("");
-        keepDraft("");
+      if (attachments.images.length) attachments.begin(turn.current, text);
+      if (await sendChat(text, chat.revision, { requestId: turn.current, permissionMode: chat.permissionMode ?? "chat", modelStamp: chat.modelStamp,
+        images: attachments.images, computerToken: attachments.shared?.token }) && mounted.current) {
+        clearSentDraft(text, edits);
       }
-    } finally {
+    } catch (reason) { if (mounted.current) setControlError(String(reason.message ?? reason)); }
+    finally {
+      attachments.revoke();
       sending.current = false;
       if (mounted.current) { turn.current = null; setPending(""); }
     }
@@ -142,6 +186,7 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
     : chat.unverified ? "Refresh messages before sending."
       : !chat.available ? "The recorded folder is unavailable. Restore it to continue this chat."
         : delivered?.status === "saved" ? "Message saved in the original chat. Refresh to check for a reply."
+        : activity.cancelled ? "Waiting message cancelled. Your draft is kept."
         : chat.active ? "The original chat is working. Refresh when it finishes."
           : !ready ? name + " needs a connection and available usage."
             : preview.outcome?.status === "interrupted" ? "Stopped. Refresh to check the original chat before retrying."
@@ -186,8 +231,9 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
         onClick={() => { follow.current = false; void older(term); }}>{term ? "Search older messages" : "Load older messages"}</button>}
       {skipped && <p className="setting-detail">Some very large transcript records were skipped.</p>}
       {visible?.length === 0 && <p className="setting-detail">{term ? "No matches in loaded messages." : "No readable messages in this chat."}</p>}
-      {visible?.map(({ id, role, text }) => role === "user"
-        ? <article className="thread-prompt" key={id} aria-label="You"><div className="thread-prompt-body"><p>{text}</p></div></article>
+      {visible?.map(({ id, role, text, images }) => role === "user"
+        ? <article className="thread-prompt" key={id} aria-label="You"><div className="thread-prompt-body"><p>{text}</p>
+          <ImageChips images={images} preview={attachments.preview} /></div></article>
         : <article className="deck-native-reply" key={id}>
           <div className="thread-session-provider"><Brand agent={session.provider} size={16} /><strong>{name}</strong></div>
           <ChatMarkdown text={text} />
@@ -215,28 +261,44 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
     <div className="thread-compose-wrap">
       {error && <p className="live-error" role="alert">{error}</p>}
       {controlError && <p className="live-error" role="alert">{controlError}</p>}
-      {!readOnly && <form className="thread-composer" onSubmit={send}>
-        <textarea ref={input} value={draft} onChange={(event) => { setDraft(event.target.value); keepDraft(event.target.value); }}
+      {attachments.error && <p className="live-error" role="alert">{attachments.error}</p>}
+      {!readOnly && <form className="thread-composer" onSubmit={send} onDrop={attachments.drop} onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}>
+        <ComposerAttachments images={attachments.images} thumbnail={attachments.thumbnail} preview={attachments.preview} remove={attachments.remove} busy={busy || Boolean(pending) || attachments.adding} />
+        {attachments.adding && <p className="setting-detail" role="status">{attachments.progress || "Adding files. Scanned documents use local OCR…"}</p>}
+        {attachments.shared && !pending && <div className="thread-actions" role="status"><span className="setting-detail">Window shared for next turn · {attachments.shared.title}</span>
+          <button type="button" className="button small" onClick={attachments.revoke}>Stop sharing</button></div>}
+        {pending && activity.windowTitle && <div className="thread-actions" role="status"><span className="setting-detail">
+          {activity.windowEnded ? "Window access ended" : "Window shared"} · {activity.windowTitle}</span>
+          {!activity.windowEnded && <button type="button" className="button small" disabled={responding}
+            onClick={() => control("native-chat-unshare")}>Stop sharing</button>}</div>}
+        <textarea ref={input} value={draft} onChange={(event) => {
+          draftEdits.current++; attachments.edited();
+          draftValue.current = event.target.value;
+          setDraft(event.target.value); keepDraft(event.target.value);
+        }}
           rows={1} maxLength={18000} aria-label="Message in original chat" placeholder={"Message " + name + "…"} readOnly={Boolean(pending)}
-          onKeyDown={(event) => {
+          onPaste={attachments.paste} onKeyDown={(event) => {
             if (event.key !== "Enter" || event.shiftKey || event.altKey || event.nativeEvent.isComposing || event.keyCode === 229 ||
                 !(sendOnEnter || event.ctrlKey)) return;
             event.preventDefault();
             if (!event.repeat) event.currentTarget.form.requestSubmit();
           }} />
         <div className="thread-compose-actions deck-native-compose-actions">
-          <div className="thread-actions deck-native-compose-settings"><span className="thread-session-provider"><Brand agent={session.provider} size={15} />{name}</span>
+          <div className="thread-actions deck-native-compose-settings">{attachments.controls}<span className="thread-session-provider"><Brand agent={session.provider} size={15} />{name}</span>
             <PermissionPicker mode={chat?.permissionMode ?? "chat"} choices={nativePermissionModes} busy={busy || Boolean(pending)}
               unavailable={!chat?.available || chat.active || chat.unverified ? "Refresh to verify this chat's folder before changing permissions." : undefined}
               scope={"Saved for this original chat. Folder: " + (chat?.cwd ?? session.cwd ?? "Unavailable")}
               choose={choosePermission} />
+            <NativeModelPicker provider={session.provider} chat={chat} busy={busy || Boolean(pending)} api={api}
+              save={chooseModels} onSaving={setSavingModels} />
           </div>
           <div className="thread-actions deck-native-compose-submit">{pending && <button className="button small" type="button"
             disabled={responding || activity.stopping} onClick={() => control("native-chat-stop")}><IconPlayerStop size={15} />Stop</button>}
           <button className="button primary small" type="submit"
-            disabled={busy || !canSend || !draft.trim()}>Send<IconArrowUp size={15} /></button></div>
+            disabled={busy || attachments.adding || !canSend || !draft.trim() && !attachments.images.length}>Send<IconArrowUp size={15} /></button></div>
         </div>
       </form>}
+      {attachments.dialog}
       <p className="thread-hint" role="status">{pending ? "Sending to " + name + "…" : hint}</p>
     </div>
   </section>;

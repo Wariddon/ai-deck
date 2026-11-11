@@ -6,10 +6,15 @@ const { stdioClient, remoteClient } = require("./mcp-client.cjs");
 const { startComputerServer } = require("./computer-use.cjs");
 const { readCodeGraph, codeGraphEvidence } = require("./code-graph-worker.cjs");
 const { shareableDiffPath } = require("./review-snapshot.cjs");
+const { readTaskFile, searchTaskFiles } = require("./read-files.cjs");
 
 const projectToolName = "ai_deck_project";
 const field = (description, maxLength = 200) => ({ type: "string", description, maxLength });
 const definitions = [
+  { name: "file_read", description: "Read a text file in the current task folder, with real line numbers. Read-only; no shell or edits. Use this to verify files not included in a teammate's diff.",
+    inputSchema: { type: "object", properties: { file: field("Task-relative file", 500), line: { type: "integer", minimum: 1 }, lines: { type: "integer", minimum: 1, maximum: 300 } }, required: ["file"], additionalProperties: false } },
+  { name: "file_search", description: "Search task text files for a literal phrase and return paths and line numbers. Read-only and bounded; excludes generated, sensitive and external paths.",
+    inputSchema: { type: "object", properties: { query: field("Literal phrase", 160) }, required: ["query"], additionalProperties: false } },
   { name: "git_read", description: "Read the current task checkout's Git status, tracked diff or recent history. Never commits, pushes, switches or resets.",
     inputSchema: { type: "object", properties: { action: { enum: ["status", "diff", "log"], type: "string" }, file: field("Optional repository-relative file for diff.", 300) }, required: ["action"], additionalProperties: false } },
   { name: "code_read", description: "Use Serena to find a code symbol or its references in this task's checkout. Supply a relative file to focus the search; references require it. Returns current source evidence without editing files.",
@@ -102,7 +107,9 @@ function createProjectTools({ cwd, git, gitExe, runtimeRoot, signal, allowInstal
   }
   async function call(name, args, agent) {
     active(); let value;
-    if (name === "git_read") {
+    if (name === "file_read") value = await readTaskFile(root, args, signal);
+    else if (name === "file_search") value = await searchTaskFiles(root, args, signal);
+    else if (name === "git_read") {
       if (!["status", "diff", "log"].includes(args.action)) throw new Error("Choose a Git read operation.");
       const file = args.file && !fs.existsSync(path.join(root, args.file))
         ? shareableDiffPath(args.file) && args.file.length <= 300 ? args.file : (() => { throw new Error("Choose a source path inside this task's checkout."); })()
@@ -122,7 +129,7 @@ function createProjectTools({ cwd, git, gitExe, runtimeRoot, signal, allowInstal
     else throw new Error("This project tool is unavailable.");
     active(); const text = value.text.slice(0, 16000);
     const sha256 = createHash("sha256").update(text).digest("hex");
-    const summary = name + " · " + args.action + (args.symbol ? " · " + args.symbol : args.number ? " · #" + args.number : "");
+    const summary = name + " · " + (args.action ?? args.file ?? args.query ?? "read") + (args.symbol ? " · " + args.symbol : args.number ? " · #" + args.number : "");
     const record = { agent, tool: name, source: value.source, summary, sha256, at: new Date().toISOString() };
     observations.push({ ...record, text }); if (observations.length > 12) observations.shift();
     observe(record); report(summary + " · " + value.source);

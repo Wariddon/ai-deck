@@ -2,7 +2,7 @@ import { permissionModes } from "./run-permissions.mjs";
 
 export const nativePermissionModes = ["chat", ...permissionModes];
 
-function folderKey(cwd) {
+export function nativeFolderKey(cwd) {
   if (typeof cwd !== "string" || !cwd) return "";
   const normalized = cwd.replaceAll("\\", "/").replace(/\/$/u, "");
   return /^(?:[a-z]:|\/\/)/iu.test(normalized) ? normalized.toLocaleLowerCase("en-US") : normalized;
@@ -10,7 +10,7 @@ function folderKey(cwd) {
 
 export function nativePermissionMode(saved, session, cwd) {
   const record = saved?.[session.provider + ":" + session.id];
-  return cwd && folderKey(record?.cwd) === folderKey(cwd) && nativePermissionModes.includes(record?.mode) ? record.mode : "chat";
+  return cwd && nativeFolderKey(record?.cwd) === nativeFolderKey(cwd) && nativePermissionModes.includes(record?.mode) ? record.mode : "chat";
 }
 
 export function changeNativePermission(saved, session, cwd, mode) {

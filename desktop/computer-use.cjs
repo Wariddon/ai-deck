@@ -12,6 +12,12 @@ const definitions = [
   ["set_text", "Ask the user to approve replacing the text in an editable control in the shared window.", {
     controlId, text: { type: "string", maxLength: 600, description: "Exact replacement text." },
   }, ["controlId", "text"]],
+  ["scroll", "Ask the user to approve scrolling an accessible control from the latest inspect result.", {
+    controlId, direction: { type: "string", enum: ["up", "down", "left", "right"] },
+  }, ["controlId", "direction"]],
+  ["press_key", "Ask the user to approve one navigation key in a focused accessible control. No global or system shortcuts.", {
+    controlId, key: { type: "string", enum: ["Enter", "Tab", "Shift+Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"] },
+  }, ["controlId", "key"]],
 ].map(([name, description, properties, required]) => ({
   name, description, inputSchema: { type: "object", properties, required, additionalProperties: false },
   annotations: { readOnlyHint: required.length === 0, destructiveHint: required.length > 0, openWorldHint: required.length > 0 },
@@ -124,6 +130,20 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
       }
       const control = Number.isSafeInteger(args.controlId) && controls[args.controlId - 1];
       const set = name === "set_text";
+      if (name === "scroll" || name === "press_key") {
+        const scrolling = name === "scroll";
+        const allowed = scrolling ? ["up", "down", "left", "right"]
+          : ["Enter", "Tab", "Shift+Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"];
+        const value = scrolling ? args.direction : args.key;
+        if (!control || !(scrolling ? control.scroll : control.keyInput) || !allowed.includes(value)) throw new Error("Inspect and choose a control that supports this navigation.");
+        const summary = (scrolling ? "Scroll " + value : "Press " + value) + " in “" + control.label + "”";
+        const view = inspectedView;
+        if (!await approve({ summary, window: title })) return { ...textResult("The user did not approve this action."), isError: true };
+        ensureActive(); await readWindow(false); ensureActive(); controls = [];
+        await query(scrolling ? "scroll" : "press_key", { key: control.key, view, ...(scrolling ? { direction: value } : { keyName: value }) });
+        report(summary + " · completed in " + title);
+        return textResult("Navigation completed. Inspect or capture the window again before the next action.");
+      }
       if (!control || (set ? !control.set : !control.invoke)) throw new Error("Inspect the window and choose a control that supports this action.");
       if (set && (typeof args.text !== "string" || args.text.length > 600 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(args.text))) {
         throw new Error("Replacement text must contain up to 600 printable characters.");

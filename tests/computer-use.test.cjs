@@ -2,6 +2,26 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { createWindowTools, startComputerServer, windowHandle, codexWindowTools, callCodexWindowTool } = require("../desktop/computer-use.cjs");
 
+test("shared-window scrolling and navigation keys require fresh controls and approval", async () => {
+  const actions = []; let approved = false;
+  const tools = createWindowTools({ target: { handle: "12", identity: "34/56", title: "Fixture" }, enabled: () => true,
+    readWindow: async () => ({ title: "Fixture" }), approve: async () => approved, report() {},
+    ui: async request => { if (request.action === "inspect") return { controls: [{ key: "list", label: "Results", scroll: true, keyInput: true }] };
+      actions.push(request); return {}; } });
+  try {
+    await assert.rejects(tools.call("scroll", { controlId: 1, direction: "down" }), /Inspect/);
+    await tools.call("inspect", {});
+    assert.equal((await tools.call("scroll", { controlId: 1, direction: "down" })).isError, true);
+    assert.equal(actions.length, 0); approved = true;
+    await assert.rejects(tools.call("press_key", { controlId: 1, key: "Alt+F4" }), /Inspect/);
+    await tools.call("scroll", { controlId: 1, direction: "down" });
+    assert.equal(actions[0].action, "scroll"); assert.equal(actions[0].direction, "down");
+    await assert.rejects(tools.call("press_key", { controlId: 1, key: "Enter" }), /Inspect/);
+    await tools.call("inspect", {}); await tools.call("press_key", { controlId: 1, key: "Tab" });
+    assert.equal(actions[1].keyName, "Tab"); assert.equal(actions[1].identity, "34/56");
+  } finally { tools.close(); }
+});
+
 test("Chrome navigation rejects unsafe URLs and aborts after switching between tabs with the same title", async () => {
   const title = "Same page title";
   let view = "first-tab";
@@ -89,7 +109,8 @@ test("the computer MCP endpoint is scoped to a private route and rejects browser
   try {
     const init = await (await post("initialize", { protocolVersion: "2025-06-18" })).json();
     assert.equal(init.result.protocolVersion, "2025-06-18");
-    assert.equal((await (await post("tools/list")).json()).result.tools.length, 4);
+    assert.deepEqual((await (await post("tools/list")).json()).result.tools.map(tool => tool.name),
+      ["screenshot", "inspect", "invoke", "set_text", "scroll", "press_key"]);
     assert.equal((await post("tools/call", { name: "invoke" }, { origin: "http://example.org" })).status, 404);
     assert.equal((await post("tools/call", { name: "invoke" }, {}, new URL("/wrong", endpoint))).status, 404);
     const result = await (await post("tools/call", { name: "set_text", arguments: { controlId: 1, text: "ไทย" } })).json();

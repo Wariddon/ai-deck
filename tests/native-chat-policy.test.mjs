@@ -52,4 +52,9 @@ test("native activity replaces updates, bounds memory, and resolves controls at 
   assert.equal(state.controls[0].decision, undefined);
   state = nativeChatEvent(state, { type: "finished" });
   assert.equal(state.controls[0].decision, "Turn ended");
+  state = nativeChatEvent(state, { type: "window-share-started", title: "Shared QA window" });
+  assert.equal(state.windowEnded, false);
+  state = nativeChatEvent(state, { type: "window-share-ended" });
+  assert.equal(state.windowEnded, true);
+  assert.equal(state.windowTitle, "Shared QA window");
 });

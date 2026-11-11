@@ -102,7 +102,7 @@ function updateTurnUsage(active, total, last) {
 }
 
 class CodexEngine {
-  constructor(exe, cwd, plugins, emit, { unattended = false, nativeExtensions = true, nativeHooks = true, disabledServers = [], callWindowTool, textOnly = false } = {}) {
+  constructor(exe, cwd, plugins, emit, { unattended = false, nativeExtensions = true, nativeHooks = true, disabledServers = [], callWindowTool, textOnly = false, approvedWindowTools = false } = {}) {
     this.emit = emit;
     this.pending = new Map();
     this.approvals = new Map();
@@ -112,7 +112,7 @@ class CodexEngine {
     this.sequence = 0;
     const overrides = [
       ...(process.platform === "win32" ? ["-c", "features.prefer_mxc=true"] : []),
-      ...pluginArguments(unattended ? [] : plugins),
+      ...pluginArguments(unattended ? approvedWindowTools ? plugins.filter(plugin => plugin.name === computerName) : [] : plugins),
       ...(!nativeExtensions || unattended ? ["-c", "features.plugins=false"] : []),
       ...(!nativeHooks ? ["-c", "features.hooks=false"] : []),
       ...(unattended ? ["-c", 'web_search="disabled"'] : []),
@@ -446,7 +446,7 @@ function claudeArguments(plugins, resume, options = {}) {
     "-p", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
     "--setting-sources", "", "--no-chrome",
     ...(options.hookSettings ? ["--include-hook-events"] : []),
-    ...(options.accountUsage || options.computer || options.persistSession === false ? ["--no-session-persistence"] : []),
+    ...(options.accountUsage || options.computer && options.persistSession !== true || options.persistSession === false ? ["--no-session-persistence"] : []),
     ...(options.accountUsage ? [] : ["--disable-slash-commands"]),
     "--tools", claudeFileTools(role, interactive, options.allowCommands).join(","),
     "--permission-mode", mode, "--strict-mcp-config",
@@ -458,15 +458,16 @@ function claudeArguments(plugins, resume, options = {}) {
     ...(fallbackModel ? ["--fallback-model", fallbackModel] : []),
     ...(options.hookSettings ? ["--settings", options.hookSettings] : Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : []),
     ...(interactive ? ["--input-format", "stream-json", "--replay-user-messages", "--permission-prompts", "host"] : []),
+    ...(!interactive && options.images?.some(({ kind }) => kind !== "text") ? ["--input-format", "stream-json"] : []),
     ...(tools.length && !interactive ? ["--allowedTools", tools.join(",")] : []),
     ...(resume ? ["--resume", resume] : []),
     ...(resume && options.forkSession ? ["--fork-session"] : []),
   ];
 }
 
-function claudePermissionMode({ interactive, role, permissionMode, computer, writePaths, approvedWorkspaceEdits }) {
+function claudePermissionMode({ interactive, role, permissionMode, computer, nativeComputer, writePaths, approvedWorkspaceEdits }) {
   if (!interactive) return role === "write" ? "acceptEdits" : "dontAsk";
-  if (role === "write" && !computer && !writePaths && !approvedWorkspaceEdits) {
+  if (role === "write" && (!computer || nativeComputer) && !writePaths && !approvedWorkspaceEdits) {
     if (permissionMode === "full") return "bypassPermissions";
     if (permissionMode === "auto") return "auto";
   }
@@ -492,15 +493,17 @@ function inspectClaude(exe, cwd, accountUsage = false, { signal } = {}) {
     let report;
     let sent = false;
     let completed = false;
+    let exitTimer;
     const write = (data) => child.stdin.write(JSON.stringify(data) + "\n");
     const timer = setTimeout(() => {
       reject(new Error(missing));
       child.kill();
-    }, accountUsage ? 18_000 : 10_000);
-    child.once("error", reject);
+    }, accountUsage ? 18_000 : 20_000);
+    child.once("error", (error) => { clearTimeout(timer); clearTimeout(exitTimer); reject(error); });
     child.stdin.on("error", (error) => { reject(error); child.kill(); });
     child.once("close", (code) => {
       clearTimeout(timer);
+      clearTimeout(exitTimer);
       if (accountUsage && code === 0 && completed && report) resolve(report);
       else if (!accountUsage && Array.isArray(response?.models)) resolve(response);
       else reject(new Error(missing));
@@ -508,6 +511,14 @@ function inspectClaude(exe, cwd, accountUsage = false, { signal } = {}) {
     lineReader(child, (message) => {
       if (message.response?.request_id === "deck-inspect") {
         response = message.response.response;
+        if (!accountUsage && Array.isArray(response?.models)) {
+          // Metadata is ready even if the CLI takes time to shut down after EOF.
+          clearTimeout(timer);
+          exitTimer = setTimeout(() => child.kill(), processExitGraceMs);
+          child.stdin.end();
+          resolve(response);
+          return;
+        }
         if (accountUsage && !sent && response?.commands?.some((command) => command.name === "usage")) {
           sent = true;
           write({ type: "user", message: { role: "user", content: "/usage" }, parent_tool_use_id: null, session_id: "" });
@@ -578,7 +589,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
   const nativeToolReview = permissionMode === "auto" || permissionMode === "bypassPermissions";
   const fullAccess = permissionMode === "bypassPermissions";
   if (role === "review") {
-    prompt += "\n\nIn AI Deck's review role, built-in filesystem and shell tools are unavailable. Use the supplied evidence for reviews and state any gaps. If the user is greeting you, reply with a brief greeting and stop. For other questions that need no repository inspection, answer directly. Never print tool invocations as a substitute for running a tool.";
+    prompt += "\n\nIn AI Deck's review role, built-in filesystem and shell tools are unavailable. When ai_deck_project file_read/file_search or shared-window MCP tools are provided, use them for current source or screen evidence; do not claim all file or screen tools are unavailable. Use the supplied evidence for reviews and state any gaps. If the user is greeting you, reply with a brief greeting and stop. For other questions that need no repository inspection, answer directly. Never print tool invocations as a substitute for running a tool.";
   }
   const scopedEdits = interactive && role === "write" && options.approvedWorkspaceEdits === true;
   const isEdit = (tool) => tool === "Edit" || tool === "Write";
@@ -915,7 +926,9 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     }).catch((error) => { stderr = error.message; child.kill(); });
   } else {
     emit({ type: "provider-call" });
-    child.stdin.end(attachmentInput(prompt, options.images ?? []), "utf8");
+    child.stdin.end(options.images?.some(({ kind }) => kind !== "text")
+      ? JSON.stringify({ type: "user", message: { role: "user", content: claudeInput(prompt, options.images) }, parent_tool_use_id: null }) + "\n"
+      : attachmentInput(prompt, options.images ?? []), "utf8");
   }
   const done = new Promise((resolve) => {
     child.once("error", (error) => resolve({ status: "failed", error: error.message, sessionId }));
