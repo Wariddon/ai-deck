@@ -1,4 +1,5 @@
 export const permissionModes = ["ask", "auto", "full"];
+export const sessionTeamPermissionModes = permissionModes;
 
 const writerWorkflows = new Set(["codex", "claude-write", "team", "claude-team", "build-review", "claude-build-review"]);
 

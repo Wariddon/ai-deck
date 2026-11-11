@@ -67,7 +67,7 @@ function taskRows(task, gitImages = []) {
     for (const entry of run.panelImages ?? []) outputs.push({ id: entry.id, kind: "image", name: "Generated image",
       detail: path.basename(entry.filename), agent: entry.agent });
     for (const image of [...(run.images ?? []), ...(run.timeline ?? []).flatMap((entry) => entry.images ?? [])]) {
-      sources.push({ id: "attachment:" + image.id, kind: "image", name: image.name, detail: "Task attachment" });
+      sources.push({ id: "attachment:" + image.id, kind: image.kind === "text" ? "file" : "image", name: image.name, detail: "Task attachment" });
     }
     for (const note of run.panelContext ?? (run.skills ?? []).map((skill) => ({ ...skill, source: "Skill" }))) {
       sources.push({ id: "note:" + note.id, kind: "file", name: note.name, detail: note.source + " · Shared context" });

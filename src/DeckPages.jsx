@@ -1,34 +1,23 @@
 import { useState } from "react";
 import {
   IconBook, IconChartBar, IconClock, IconExternalLink, IconGitPullRequest,
-  IconHome2, IconInbox, IconLayoutGrid, IconPuzzle, IconSettings,
+  IconHome2, IconLayoutGrid, IconPuzzle, IconSettings,
 } from "@tabler/icons-react";
 import { agentNames, modeLabel, projectName } from "./TeamThread.jsx";
-import { activeUsageLimit } from "../desktop/usage-routing.mjs";
-import { planResultCanBeConfirmed } from "../desktop/collaboration.mjs";
 import { nextOccurrence } from "../desktop/schedule-time.mjs";
-import { DeckLoading } from "./DeckLoading.jsx";
 
 const pages = [
   ["workspace", "Workspace", IconHome2],
-  ["inbox", "Team inbox", IconInbox],
   ["scheduled", "Scheduled", IconClock],
-  ["changes", "Git & Review", IconGitPullRequest],
-  ["context", "Knowledge", IconBook],
-  ["plugins", "Skills & Plugins", IconPuzzle],
   ["usage", "Usage", IconChartBar],
-  ["features", "Feature map", IconLayoutGrid],
   ["settings", "Settings", IconSettings],
 ];
 
-export function DeckNav({ current, go, footer, inboxCount }) {
+export function DeckNav({ current, go, footer }) {
   return <nav className="deck-nav" aria-label="AI Deck">
     {pages.map(([key, label, Icon]) => <button type="button" className="icon-button" key={key} aria-label={label}
-      title={key === "inbox" && inboxCount ? label + " · " + inboxCount + " waiting" : label}
-      aria-describedby={key === "inbox" && inboxCount ? "deck-inbox-count" : undefined}
+      title={label}
       aria-current={current === key ? "page" : undefined} onClick={() => go(key)}><Icon size={19} />
-      {key === "inbox" && inboxCount > 0 && <span className="deck-nav-count" id="deck-inbox-count"
-        aria-label={inboxCount + " waiting"}>{inboxCount > 9 ? "9+" : inboxCount}</span>}
     </button>)}
     {footer && <div className="deck-nav-footer">{footer}</div>}
   </nav>;
@@ -42,68 +31,6 @@ export function WorkbenchPage({ title, description, scope, actions, children, hi
     </header>
     {children}
   </section>;
-}
-
-const inboxFilters = {
-  all: ["All"],
-  plans: ["Plans", "approval", "plan-input"],
-  reviews: ["Reviews", "review"],
-  handoffs: ["Usage handoffs", "usage"],
-  queued: ["Paused queues", "queue"],
-};
-
-function inboxLabel(row) {
-  if (row.kind === "plan-input") return ({ "needs-input": "Plan needs your input", unclassified: "Plan needs revision", blocked: "Plan blocked" })[row.planState];
-  if (row.kind === "approval" && planResultCanBeConfirmed(row.applyStatus)) return "Implementation needs review";
-  if (row.kind === "approval" && row.applyStatus === "limited") return "Implementation paused at usage limit";
-  if (row.kind === "approval" && row.applyStatus === "blocked") return "Implementation blocked";
-  if (row.kind === "approval" && row.applyStatus === "interrupted") return "Implementation stopped";
-  return ({ approval: "Plan awaits approval", review: "Review pending", usage: "Usage handoff available", queue: "Queue paused" })[row.kind];
-}
-
-export function TeamInbox({ rows, loading, error, busy, connections, now, refresh, open }) {
-  const [filter, setFilter] = useState("all");
-  const [repo, setRepo] = useState("");
-  const projects = [...new Set(rows.map((row) => row.repo))];
-  const selectedRepo = projects.includes(repo) ? repo : "";
-  const entries = rows.filter((row) => !selectedRepo || row.repo === selectedRepo);
-  const visible = entries.filter((row) => filter === "all" || inboxFilters[filter].includes(row.kind));
-  return <WorkbenchPage title="Team inbox" scope="All projects" description="Review saved plans, pending reviews, usage handoffs and paused queues."
-    actions={<button className="button small" disabled={loading} onClick={refresh}>Refresh</button>}>
-    <div className="thread-actions deck-inbox-filters">
-      <nav className="deck-settings-tabs" aria-label="Team inbox filters">
-        {Object.entries(inboxFilters).map(([key, [label, ...kinds]]) => <button key={key} aria-current={filter === key ? "page" : undefined}
-          onClick={() => setFilter(key)}>{label} · {key === "all" ? entries.length : entries.filter((row) => kinds.includes(row.kind)).length}</button>)}
-      </nav>
-      {projects.length > 1 && <select aria-label="Filter inbox by project" value={selectedRepo} onChange={(event) => setRepo(event.target.value)}>
-        <option value="">All projects</option>
-        {projects.map((path) => <option key={path} value={path}>{projectName(path)}</option>)}
-      </select>}
-    </div>
-    {error && <p className="live-error" role="alert">{error}</p>}
-    {loading && <DeckLoading>{rows.length ? "Refreshing team tasks…" : "Checking team tasks…"}</DeckLoading>}
-    {!loading && !visible.length && !error && <div className="deck-box"><h2>Nothing waiting here</h2>
-      <p className="setting-detail">Tasks appear when they need a decision or have follow-up work.</p></div>}
-    <div className="deck-inbox-list">
-      {visible.map((row) => {
-        const connection = connections[row.to];
-        const hold = row.to && (activeUsageLimit(connection?.usageLimit, now) ? agentNames[row.to] + " is at a usage limit"
-          : connection?.status !== "ready" ? agentNames[row.to] + " needs a connection" : "");
-        const plan = row.kind === "approval" || row.kind === "plan-input";
-        return <article className="deck-box" key={row.id}>
-          <div className="deck-page-heading">
-            <div><span className="deck-kicker">{inboxLabel(row)} · {projectName(row.repo)}</span><h2>{row.title}</h2></div>
-            <button className="button small" disabled={busy} onClick={() => open(row)}>{plan ? "Open plan" : "Open task"}</button>
-          </div>
-          {row.prompt && row.prompt !== row.title && <p className="setting-detail">{row.prompt}</p>}
-          <p className="setting-detail">{[row.from && agentNames[row.from], row.to && agentNames[row.to]].filter(Boolean).join(" → ")}
-            {row.count && (row.count === 1 ? "1 queued message" : row.count + " queued messages")}
-            {row.updatedAt && <time dateTime={row.updatedAt}> · {formatDate(row.updatedAt)}</time>}</p>
-          {(row.unavailable || hold) && <p className="usage-hold">{row.unavailable || hold}</p>}
-        </article>;
-      })}
-    </div>
-  </WorkbenchPage>;
 }
 
 export function ProjectEmpty({ message, choose, busy }) {

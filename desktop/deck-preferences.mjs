@@ -1,10 +1,12 @@
 export const defaultDeckPreferences = {
-  theme: "system", notifications: "off", attentionNotifications: false, sendOnEnter: true, voiceLanguage: "th", readReplies: true,
+  theme: "system", notifications: "always", attentionNotifications: false, sendOnEnter: true, voiceLanguage: "th", readReplies: true,
+  localReviewRules: true, localGraphRules: true, localIntentRules: true,
 };
 
 const choices = {
   theme: ["system", "light", "dark"], notifications: ["off", "background", "always"], attentionNotifications: [false, true],
   sendOnEnter: [false, true], voiceLanguage: ["th", "en"], readReplies: [false, true],
+  localReviewRules: [false, true], localGraphRules: [false, true], localIntentRules: [false, true],
 };
 
 export function normalizeDeckPreferences(value) {

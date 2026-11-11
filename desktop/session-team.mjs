@@ -4,6 +4,7 @@ export const sessionTeamMode = "session-team";
 export const teamProviders = { codex: "Codex", claude: "Claude Code", gemini: "Gemini", ollama: "Ollama" };
 export const teamPositions = { plan: "Planner", write: "Builder", review: "Reviewer", summarize: "Coordinator" };
 export const nativeTeamProvider = (provider) => provider === "codex" || provider === "claude";
+export const sessionTeamHasWriter = (members = []) => members.some(({ provider, position }) => position === "write" && nativeTeamProvider(provider));
 
 export function sessionTeamTree(members) {
   const nodes = new Map(members.map((member) => [member.id, { member, children: [] }]));
@@ -102,7 +103,8 @@ export function normalizeSessionTeam(value) {
   if (summaryMemberId && !members.some(({ id }) => id === summaryMemberId)) throw new Error("Choose a team member for the wrap-up.");
   return { members, ...(topology === "tree" && { topology, ...(value.parallelBranches === true && { parallelBranches: true }),
     ...(summaryMemberId && { summaryMemberId }) }), shareContext: value.shareContext === true, shareDiff: value.shareDiff === true,
-    shareReports: value.shareReports === true, useByDefault: value.useByDefault === true };
+    shareReports: value.shareReports === true, freshReview: true, useByDefault: value.useByDefault === true,
+    ...(value.interaction === "discuss" && { interaction: "discuss" }) };
 }
 
 export function sessionMemberBlock({ provider }, { connections, geminiConfigured, now }) {
@@ -132,7 +134,9 @@ export function sessionMemberInputs({ member, team, userPrompt, projectPrompt, p
   const reportInputs = includeReports ? handoffs : handoffs.filter(({ projectData }) => projectData === false);
   // Reports inherit their inputs' visibility even when an external model wrote them.
   const projectData = Boolean(includeProject || member.instructions || diff || includeReports && prior || reportInputs.some((report) => report.projectData));
-  return { prompt: includeProject ? projectPrompt : userPrompt, prior: includeReports ? prior : "", handoffs: reportInputs, diff, projectData };
+  return { prompt: includeProject ? projectPrompt : userPrompt,
+    prior: includeReports && !(team.freshReview !== false && member.position === "review") ? prior : "",
+    handoffs: reportInputs, diff, projectData };
 }
 
 export function sessionMemberPrompt({ prompt, member, members, topology, prior = "", handoffs = [], diff = "", withheld = false, summary }) {

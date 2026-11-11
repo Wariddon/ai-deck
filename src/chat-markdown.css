@@ -1,0 +1,66 @@
+.thread-app .deck-markdown {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.thread-app .deck-markdown > * { margin-block: 0; }
+.thread-app .deck-markdown > * + * { margin-block-start: .65em; }
+.thread-app .deck-markdown :is(h1, h2, h3, h4, h5, h6) {
+  color: inherit;
+  font-size: 1em;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: normal;
+}
+.thread-app .deck-markdown :is(h1, h2) { font-size: 1.15em; }
+.thread-app .deck-markdown p { white-space: pre-wrap; }
+.thread-app .deck-markdown :is(ol, ul) { padding-inline-start: 1.6em; }
+.thread-app .deck-markdown li + li { margin-block-start: .25em; }
+.thread-app .deck-markdown blockquote {
+  margin-inline: 0;
+  padding-inline-start: .8em;
+  border-inline-start: 2px solid var(--line);
+  color: var(--muted);
+}
+.thread-app .deck-markdown code { font-size: .94em; }
+.thread-app .deck-markdown :not(pre) > code {
+  padding: .05em .25em;
+  border-radius: 3px;
+  background: var(--raised);
+}
+.deck-code-block, .deck-markdown-table {
+  max-inline-size: 100%;
+  contain: inline-size;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.deck-code-block { background: var(--raised); }
+.deck-code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 6px 3px 9px; border-bottom: 1px solid var(--line); }
+.deck-code-language { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-xs); }
+.deck-code-actions { display: flex; flex: none; gap: 2px; }
+.thread-app .deck-code-actions .icon-button { width: 24px; height: 24px; }
+.thread-app .deck-code-block pre {
+  max-inline-size: 100%;
+  margin: 0;
+  padding: .65em .8em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.thread-app .deck-code-block[data-wrap="off"] pre {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.deck-markdown-table { overflow: auto; }
+:is(.deck-code-block pre, .deck-markdown-table) { overscroll-behavior-x: contain; }
+.deck-markdown-table table { width: 100%; border-collapse: collapse; }
+.deck-markdown-table :is(th, td) {
+  min-width: 6em;
+  padding: .4em .65em;
+  border-block-end: 1px solid var(--line);
+  border-inline-end: 1px solid var(--line);
+  vertical-align: top;
+}
+.deck-markdown-table th { background: var(--raised); text-align: start; }
+.deck-markdown-table :is(th, td):last-child { border-inline-end: 0; }
+.deck-markdown-table tbody tr:last-child td { border-block-end: 0; }

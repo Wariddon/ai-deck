@@ -473,7 +473,7 @@ test("Claude answers a clarification before requesting a foreground check", { ti
   }
 });
 
-test("Claude edit and plan use restricted file tools and cannot inherit MCP", () => {
+test("Claude writers receive selected MCP tools while planners receive declared read tools", () => {
   const { claudeArguments } = require("../desktop/engines.cjs");
   const plugin = { name: "test", url: "https://example.invalid/mcp", tools: ["patch"] };
   const write = claudeArguments([plugin], "write-session", { role: "write", model: "sonnet", effort: "high" });
@@ -484,9 +484,26 @@ test("Claude edit and plan use restricted file tools and cannot inherit MCP", ()
   assert.equal(arg(write, "--permission-mode"), "acceptEdits");
   assert.equal(arg(plan, "--permission-mode"), "dontAsk");
   assert.ok(write.includes("--restricted") && plan.includes("--restricted"));
-  assert.deepEqual(JSON.parse(arg(write, "--mcp-config")), { mcpServers: {} });
+  assert.deepEqual(JSON.parse(arg(write, "--mcp-config")), { mcpServers: { test: { type: "http", url: plugin.url } } });
+  assert.deepEqual(JSON.parse(arg(plan, "--mcp-config")), { mcpServers: {} });
+  const read = claudeArguments([{ ...plugin, tools: ["read", "patch"], readTools: ["read"] }], null, { role: "plan" });
+  assert.equal(arg(read, "--allowedTools"), "mcp__test__read");
   assert.equal(arg(write, "--model"), "sonnet");
   assert.equal(arg(write, "--resume"), "write-session");
+});
+
+test("one-shot Claude conversations keep streaming with no tools, MCP or saved session", () => {
+  const { claudeArguments } = require("../desktop/engines.cjs");
+  const plugin = { name: "test", url: "https://example.invalid/mcp", tools: ["patch"] };
+  const args = claudeArguments([plugin], null, { role: "test", persistSession: false });
+  const arg = (flag) => args[args.indexOf(flag) + 1];
+  assert.equal(arg("--tools"), "");
+  assert.equal(arg("--setting-sources"), "");
+  assert.equal(arg("--permission-mode"), "dontAsk");
+  assert.equal(arg("--output-format"), "stream-json");
+  assert.deepEqual(JSON.parse(arg("--mcp-config")), { mcpServers: {} });
+  for (const flag of ["--restricted", "--no-session-persistence", "--include-partial-messages"]) assert.ok(args.includes(flag));
+  assert.ok(!args.includes("--input-format") && !args.includes("--permission-prompts"));
 });
 
 test("Claude surfaces Bash hook requests and records the result only after approval", { timeout: 5000 }, async () => {

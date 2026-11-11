@@ -84,6 +84,8 @@ test("Claude project layers preserve provenance and the lowest effort cap withou
     assert.deepEqual(sources[1].hooks, [{ event: "Stop", groups: 1 }]);
     assert.doesNotMatch(JSON.stringify({ config, sources }), /private-command/u);
     assert.deepEqual(claudeDeckRows(config, origins, defaultDeckPreferences).map(({ id, value }) => [id, value]),
+      [["deck.notifications", "always"], ["deck.attentionNotifications", true]]);
+    assert.deepEqual(claudeDeckRows(config, origins, { ...defaultDeckPreferences, notifications: "off" }).map(({ id, value }) => [id, value]),
       [["deck.notifications", "background"], ["deck.attentionNotifications", true]]);
     const applied = applySettingsSelection({ providers: { claude: result } }, ["claude.language"], {}, { claude: { model: "opus", effort: "low" } });
     assert.deepEqual(applied.claude, { model: "opus", effort: "low", speed: "", fallbackModel: "", outputStyle: "", language: "ไทย" });

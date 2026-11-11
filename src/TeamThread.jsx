@@ -1,67 +1,54 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  IconArrowRight, IconChevronRight, IconFolder, IconGitBranch, IconMessage, IconPhoto, IconPin, IconPlus, IconRefresh, IconTrash,
-  IconCheck, IconChevronDown, IconHandStop, IconHistory, IconShieldCheck, IconShieldExclamation, IconTerminal2, IconX,
+  IconArrowRight, IconChevronRight, IconFileText, IconFolder, IconGitBranch, IconMessage, IconPhoto, IconPin, IconPlus, IconRefresh, IconTrash,
+  IconCheck, IconChevronDown, IconClock, IconHandStop, IconHistory, IconShieldCheck, IconShieldExclamation, IconTerminal2, IconX,
 } from "@tabler/icons-react";
 import { AgentMark, Brand } from "./AgentIdentity.jsx";
 import { runModelProfile } from "../desktop/agent-settings.mjs";
-import { routeMode } from "../desktop/usage-routing.mjs";
+import { autoTeamPlanNeedsBaseCheck, routeMode } from "../desktop/usage-routing.mjs";
 import { maxSessionSelection, sessionKey } from "../desktop/session-selection.mjs";
+import { sessionTeamMode } from "../desktop/session-team.mjs";
 import { agentRole, separateEdits, steerableDraft } from "../desktop/collaboration.mjs";
 import { SessionButton } from "./SessionTools.jsx";
-import { TeamHandoffs, TeamRunResult } from "./TeamHandoff.jsx";
+import { AutoTeamAssignments, TeamAnswerPreview, TeamHandoffs, TeamRunResult } from "./TeamHandoff.jsx";
 import { commandSummary, groupWorkActivity } from "./command-activity.mjs";
 import { OnDemandDetails, WorkSteps } from "./WorkActivity.jsx";
 import { conversationTurns } from "./timeline-rows.mjs";
 import { ControlPopover } from "./ControlPopover.jsx";
 import { RunReceipt } from "./RunReceipt.jsx";
+import { ChatTurnRail } from "./ChatNavigation.jsx";
+import { ChatMarkdown } from "./ChatMarkdown.jsx";
 
 export const agentNames = { codex: "Codex", claude: "Claude Code" };
 export { Brand };
 
 const permissions = {
+  chat: { label: "Chat only", icon: IconMessage, description: "Continue the original chat without file or command tools." },
   ask: { label: "Ask for approval", icon: IconHandStop, description: "Show approval cards for actions that need permission." },
   auto: { label: "Approve for me", icon: IconShieldCheck, description: "Use Codex or Claude Code’s automatic reviewer where available." },
   full: { label: "Full access", icon: IconShieldExclamation, description: "Let the writer use files and the internet with your Windows account access." },
 };
 
-export function PermissionPicker({ mode, unavailable, busy, working, choose, learn }) {
-  const selected = Object.hasOwn(permissions, mode) ? mode : "ask";
+export function PermissionPicker({ mode, choices = ["ask", "auto", "full"], unavailable, restriction, scope, busy, working, choose, learn }) {
+  const selected = choices.includes(mode) ? mode : choices[0];
   const SelectedIcon = permissions[selected].icon;
-  const close = (menu) => {
-    menu.open = false;
-    menu.querySelector("summary").focus();
-  };
-  return <details className="thread-composer-tools thread-permission-picker"
-    onBlur={(event) => {
-      if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-    }}
-    onKeyDown={(event) => {
-      if (event.key !== "Escape" || !event.currentTarget.open) return;
-      event.preventDefault();
-      event.stopPropagation();
-      close(event.currentTarget);
-    }}>
-    <summary className="button small" aria-label={"Change permissions · " + permissions[selected].label}
-      data-permission={unavailable ? undefined : selected}>
-      <SelectedIcon size={15} />{unavailable ? "Permissions" : permissions[selected].label}<IconChevronDown size={12} />
-    </summary>
-    <div className="thread-composer-menu thread-permissions-menu" role="group" aria-label="Change permissions">
+  return <div className="thread-permission-picker" data-permission={unavailable || restriction ? undefined : selected}>
+    <ControlPopover title={"Change permissions · " + permissions[selected].label} label={unavailable || restriction ? "Permissions" : permissions[selected].label}
+      className="thread-permissions-menu" icon={<SelectedIcon size={15} />}>
       <div className="thread-permissions-heading"><span>How should agent actions be approved?</span>
-        <button type="button" className="thread-text-button" onClick={learn}>Learn more</button></div>
-      {Object.entries(permissions).map(([key, { label, icon: Icon, description }]) => (
-        <button key={key} type="button" className="button thread-permission-option" data-permission={key}
-          disabled={busy || Boolean(unavailable)} aria-pressed={selected === key} onClick={(event) => {
-            close(event.currentTarget.closest("details"));
-            if (selected !== key) choose(key);
-          }}>
+        {learn && <button type="button" className="thread-text-button" onClick={learn}>Learn more</button>}</div>
+      {choices.map((key) => {
+        const { label, icon: Icon, description } = permissions[key];
+        return <button key={key} type="button" className="button thread-permission-option" data-permission={key}
+          disabled={busy || Boolean(unavailable)} aria-pressed={selected === key} onClick={() => { if (selected !== key) choose(key); }}>
           <Icon size={17} /><span><strong>{label}</strong><small>{description}</small></span>
           {selected === key && <IconCheck size={16} />}
-        </button>
-      ))}
-      <p>{unavailable || (working ? "Saved for the next run. This run keeps its permissions." : "Saved for this task. Applies to the writer on the next run.")}</p>
-    </div>
-  </details>;
+        </button>;
+      })}
+      <p>{unavailable || restriction || (working ? "Saved for the next run. This run keeps its permissions."
+        : scope || "Saved for this task. Applies to the writer on the next run.")}</p>
+    </ControlPopover>
+  </div>;
 }
 
 export const modeNames = {
@@ -79,16 +66,17 @@ export function modeLabel(mode, lowMemory) {
   if (lowMemory && mode === "claude-parallel-write") return "Separate edits · Claude first";
   return modeNames[mode];
 }
+
 const roleTitle = { plan: "Plan", review: "Review", write: "Implement" };
 
-export function AssignmentEvidence({ mode, teamwork, label = "Role assignment", lowMemory, open = false }) {
-  const agents = routeMode(mode, {}).requested;
+export function AssignmentEvidence({ mode, teamwork, planner = teamwork?.planner, label = "Role assignment", lowMemory, open = false }) {
+  const agents = mode === "auto-team" && planner === "claude" ? ["claude", "codex"] : routeMode(mode, {}).requested;
   if (!agents.length) return null;
   return <details className="deck-assignment-evidence" open={open || undefined}>
     <summary>{label} · {modeLabel(mode, lowMemory)}</summary>
     <div className="deck-assignment-content">
-      {agents.map((agent) => <div key={agent}>
-        <strong>{agentNames[agent]} · {mode === "auto-team" ? agent === "codex" ? "Propose" : "Check & assign" : roleTitle[agentRole(mode, agent)]}</strong>
+      {agents.map((agent, index) => <div key={agent}>
+        <strong>{agentNames[agent]} · {mode === "auto-team" ? index ? "Check & assign" : "Propose" : roleTitle[agentRole(mode, agent)]}</strong>
         <p>{teamwork?.[agent] || "Uses the task prompt."}</p>
         {separateEdits(mode) && teamwork?.[agent + "Paths"] && <p className="setting-detail">Write paths · {teamwork[agent + "Paths"].split(/\r?\n/u).join(", ")}</p>}
       </div>)}
@@ -100,7 +88,7 @@ export function AssignmentEvidence({ mode, teamwork, label = "Role assignment", 
 
 export const projectName = (repo) => repo.split(/[\\/]/u).at(-1);
 
-export function Sidebar({ repositories, workspace, busy, openRepo, openTask, newTask, nativeRecents, pins, pullSessions, previewSession, pinSession, manageSession,
+export function Sidebar({ repositories, workspace, busy, jobs = [], openRepo, openTask, newTask, nativeRecents, currentNative, pins, pullSessions, openNativeChat, pinSession, manageSession,
   selection, setSelection, reviewDeletion, hidden, backToChat }) {
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState("all");
@@ -109,7 +97,8 @@ export function Sidebar({ repositories, workspace, busy, openRepo, openTask, new
   const selectionAnchor = useRef(null);
   const term = query.trim().toLocaleLowerCase();
   const matches = (task, repo) => Boolean(task.archived) === archived && (!term || `${task.title} ${projectName(repo)}`.toLocaleLowerCase().includes(term));
-  const recent = repositories.flatMap((project) => project.tasks.filter((task) => matches(task, project.repo)).map((task) => ({ ...task, repo: project.repo })))
+  const recent = repositories.filter((project) => archived || project.repo !== workspace?.repo)
+    .flatMap((project) => project.tasks.filter((task) => matches(task, project.repo)).map((task) => ({ ...task, repo: project.repo })))
     .sort((a, b) => (b.openedAt ?? "").localeCompare(a.openedAt ?? "")).slice(0, term ? 30 : 8);
   const { sessions, errors, loading, pulled, error } = nativeRecents;
   const key = (session) => session.provider + ":" + session.id;
@@ -152,10 +141,12 @@ export function Sidebar({ repositories, workspace, busy, openRepo, openTask, new
     const isPinned = pinned.has(key(session));
     return <div className="thread-native-entry" key={key(session)}>
       <button className="thread-side-row thread-native-row" type="button" disabled={busy} aria-label={agentNames[session.provider] + ": " + session.title}
+        aria-current={currentNative && key(currentNative) === key(session) ? "page" : undefined}
         title={[agentNames[session.provider], session.title, session.project, session.updatedAt ? new Date(session.updatedAt).toLocaleString() : ""].filter(Boolean).join(" · ")}
-        onClick={() => archived ? manageSession(session) : previewSession(session)}>
+        onClick={() => openNativeChat(session)}>
         <Brand agent={session.provider} size={15} />
         <span className="thread-native-title">{session.title}</span>
+        {jobs.some((job) => job.key === "native:" + session.provider + ":" + session.id) && <span className="thread-job-spinner" role="status" aria-label="Working" />}
       </button>
       <button className="icon-button thread-native-pin" type="button" disabled={busy} aria-pressed={isPinned}
         aria-label={(isPinned ? "Unpin " : "Pin ") + session.title} title={isPinned ? "Unpin session" : "Pin session"} onClick={() => pinSession(session)}><IconPin size={13} /></button>
@@ -163,13 +154,18 @@ export function Sidebar({ repositories, workspace, busy, openRepo, openTask, new
     </div>;
   };
   const taskRow = (task, repo, project = false) => {
+    const job = jobs.find((item) => item.taskId === task.id);
     const entry = { ...task, repo };
     if (selection && !project) return <div className="thread-native-entry" key={repo + ":" + task.id}>{selectableRow(entry, <IconMessage size={14} />)}</div>;
     return <div className="thread-native-entry" key={repo + ":" + task.id}>
       <button className={"thread-side-row thread-native-row" + (project ? " thread-task-row" : "")} type="button" disabled={busy}
-        aria-current={workspace?.taskId === task.id ? "page" : undefined} title={task.title}
+        aria-current={!currentNative && workspace?.taskId === task.id ? "page" : undefined} title={[task.title, task.attention?.label].filter(Boolean).join(" · ")}
         onClick={() => archived ? manageSession(entry) : openTask(repo, task.id)}>
-        <IconMessage size={14} /><span className="thread-native-title">{task.title}</span>{task.queued > 0 && <small>{task.queued}</small>}
+        <IconMessage size={14} /><span className="thread-native-title">{task.title}</span>
+        {job && (job.state === "waiting" ? <IconClock size={14} className="thread-job-waiting" role="img" aria-label={job.reason} />
+          : <span className="thread-job-spinner" role="status" aria-label={job.needsInput ? "Waiting for your input" : "Working"} data-input={job.needsInput || undefined} />)}
+        {!job && task.attention && <IconClock className="thread-task-attention" size={13} role="img" aria-label={task.attention.label} />}
+        {task.queued > 0 && <small>{task.queued}</small>}
       </button>
       <SessionButton entry={entry} busy={busy} manage={manageSession} />
     </div>;
@@ -191,14 +187,14 @@ export function Sidebar({ repositories, workspace, busy, openRepo, openTask, new
             onClick={reviewDeletion}><IconTrash size={14} />Delete selected</button>
         </div>
       </div>}
-      <div className="thread-side-heading"><span>Projects</span><button className="icon-button" aria-label="Open repository" title="Open repository" disabled={busy} onClick={openRepo}><IconFolder size={17} /></button></div>
+      <div className="thread-side-heading"><span>{repositories.some((project) => project.chatOnly) ? "Projects and team chats" : "Projects"}</span><button className="icon-button" aria-label="Open repository" title="Open repository" disabled={busy} onClick={openRepo}><IconFolder size={17} /></button></div>
       {!repositories.length && <p className="thread-side-empty">Open a Git repo to start.</p>}
       {repositories.map((project) => {
         const current = workspace?.repo === project.repo;
         return (
           <div className="thread-project" key={project.repo}>
             <button className="thread-side-row" type="button" title={project.repo} disabled={busy || current} onClick={() => openTask(project.repo, project.currentTask)}>
-              <IconFolder size={16} /><span>{projectName(project.repo)}</span><IconChevronRight size={12} />
+              {project.chatOnly ? <IconMessage size={16} /> : <IconFolder size={16} />}<span>{projectName(project.repo)}</span><IconChevronRight size={12} />
             </button>
             {current && !archived && project.tasks.filter((task) => matches(task, project.repo)).map((task) => taskRow(task, project.repo, true))}
           </div>
@@ -231,7 +227,8 @@ export function Sidebar({ repositories, workspace, busy, openRepo, openTask, new
             </div>
           </ControlPopover>
         </div>
-        {!pulled && !loading && !error && <p className="thread-side-empty">Open Recents to pull local chats.</p>}
+        {loading && !sessions.length && <p className="thread-side-empty" role="status">Loading recent chats…</p>}
+        {!pulled && !loading && !error && <p className="thread-side-empty">Recent chats refresh when the app is ready.</p>}
         {error && <p className="thread-side-empty" role="alert">{error}</p>}
         {(pulled || pins.length > 0) && <>
           {favorites.length > 0 && <>
@@ -255,7 +252,7 @@ export function Sidebar({ repositories, workspace, busy, openRepo, openTask, new
   );
 }
 
-function QuestionCard({ row, busy, answer }) {
+export function QuestionCard({ row, busy, answer }) {
   const [selections, setSelections] = useState({});
   const [custom, setCustom] = useState({});
   const [other, setOther] = useState({});
@@ -313,10 +310,11 @@ function QuestionCard({ row, busy, answer }) {
 
 export function ImageChips({ images, preview, remove, busy }) {
   if (!images?.length) return null;
-  return <div className="thread-image-chips" aria-label="Attached images">
+  return <div className="thread-image-chips" aria-label="Attachments">
     {images.map((image) => <span key={image.id} className="thread-image-chip">
       <button type="button" className="thread-text-button" disabled={busy} title={image.name}
-        aria-label={"Preview " + image.name} onClick={() => preview(image)}><IconPhoto size={15} /><span>{image.name}</span></button>
+        aria-label={"Preview " + image.name} onClick={() => preview(image)}>
+        {image.kind === "text" ? <IconFileText size={15} /> : <IconPhoto size={15} />}<span>{image.name}</span></button>
       {remove && <button type="button" className="icon-button" disabled={busy} aria-label={"Remove " + image.name}
         onClick={() => remove(image.id)}><IconX size={14} /></button>}
     </span>)}
@@ -327,7 +325,7 @@ function FeedRow({ row, run, busy, decide, answer, preview, summaryAction, profi
   const replyRef = useRef(null);
   if (row.kind === "team-result") return <TeamRunResult run={row.run} work={chat ? undefined : row.work} summaryAction={summaryAction} chat={chat} followup={followup} />;
   if (row.kind === "prompt") return <div className="thread-prompt"><div className="thread-prompt-body">
-    <p>{row.text}</p><ImageChips images={row.images} preview={preview} busy={busy} />
+    <p data-chat-quote="You">{row.text}</p><ImageChips images={row.images} preview={preview} busy={busy} />
   </div></div>;
   if (row.kind === "question") return <QuestionCard row={row} busy={busy} answer={answer} />;
   if (row.kind === "approval") {
@@ -348,19 +346,27 @@ function FeedRow({ row, run, busy, decide, answer, preview, summaryAction, profi
         <ImageChips images={row.images} preview={preview} busy={busy} /></div>
     </article>;
   }
+  const plan = row.planDecision;
+  const unverifiedBase = plan && autoTeamPlanNeedsBaseCheck(run);
+  const reply = row.kind === "message" && <>
+    {unverifiedBase && <p className="setting-detail">Verify the checkout before applying this plan.</p>}
+    <ChatMarkdown className="thread-message" replyRef={replyRef} quote={agent} text={row.text} />
+    {!unverifiedBase && plan?.assignments && <AutoTeamAssignments assignments={plan.assignments} />}
+  </>;
+  const badge = row.discussionConclusion ? "Team conclusion" : row.planDecision !== undefined ? "Team decision" : null;
   if (chat && row.kind === "message") return <article className="thread-chat-reply" aria-label={agent}>
     <div className="thread-chat-author">
       <AgentMark provider={row.provider ?? row.agent} />
       <strong>{agent}</strong>{row.to && <span> → {agentNames[row.to]}</span>}
-      {row.discussionConclusion && <span className="source-pill">Team conclusion</span>}
+      {badge && <span className="source-pill">{badge}</span>}
       <RunReceipt run={run} agent={row.agent} profile={profile} reply={row.text} replyRef={replyRef} followup={followup} />
     </div>
-    <p className="thread-message" ref={replyRef}>{row.text}</p>
+    {reply}
   </article>;
   return <article className={`thread-event ${row.provider ?? row.agent}`}>
     <span className="thread-avatar" aria-hidden="true"><AgentMark provider={row.provider ?? row.agent} /></span>
     <div><div className="thread-byline"><strong>{agent}</strong>{row.to && <span className="setting-detail thread-discussion-peer"> → {agentNames[row.to]}</span>}
-      {row.discussionConclusion && <span className="source-pill">Team conclusion</span>}
+      {badge && <span className="source-pill">{badge}</span>}
       {row.kind === "message" && <RunReceipt run={run} agent={row.agent} profile={profile} reply={row.text} replyRef={replyRef} followup={followup} />}</div>
       {row.kind === "work-activity"
         ? <OnDemandDetails className="thread-work-activity" summary={<>{row.steps.length} {row.steps.length === 1 ? "work step" : "work steps"}
@@ -369,7 +375,8 @@ function FeedRow({ row, run, busy, decide, answer, preview, summaryAction, profi
           </OnDemandDetails>
         : row.kind === "activity"
         ? <OnDemandDetails summary={<><IconTerminal2 size={14} />{row.text.split("\n")[0].slice(0, 150)}</>}><pre>{row.text}</pre></OnDemandDetails>
-        : <p className="thread-message" ref={replyRef}>{row.text}</p>}
+        : row.kind === "message" ? reply
+        : <p className="thread-message">{row.text}</p>}
     </div>
   </article>;
 }
@@ -406,14 +413,14 @@ export function ChatTimestamp({ at, previousAt }) {
   return <time className="thread-chat-time" dateTime={date.toISOString()}>{day} · {timeOnly.format(date)}</time>;
 }
 
-function ChatTurn({ turn, previousAt, active, rowProps }) {
+function ChatTurn({ turn, previousAt, active, rowProps, teamPreview }) {
   const { run, prompt, work, rows } = turn;
   const startedAt = run?.startedAt ?? prompt?.startedAt;
   const handoffs = active && run?.collaboration?.handoffs;
   const expandable = work.length > 0 || handoffs?.length > 0;
   const showWork = active || Boolean(run?.finishedAt) || expandable;
   const timer = <WorkTime startedAt={startedAt} finishedAt={run?.finishedAt} working={active} />;
-  return <div className="thread-chat-turn">
+  return <div className="thread-chat-turn" data-run-id={turn.id} tabIndex={-1}>
     {prompt && <>
       <ChatTimestamp at={startedAt} previousAt={previousAt} />
       <FeedRow row={prompt} {...rowProps} chat />
@@ -427,16 +434,19 @@ function ChatTurn({ turn, previousAt, active, rowProps }) {
         {handoffs?.length > 0 && <TeamHandoffs handoffs={handoffs} />}
       </OnDemandDetails> : <div className="thread-chat-work-label">{timer}</div>}
     </div>}
-    {rows.map((row) => <FeedRow key={row.id} row={row} run={run} {...rowProps} chat
+    {rows.map((row) => teamPreview && row.kind === "message" ? null : <FeedRow key={row.id} row={row} run={run} {...rowProps} chat
       profile={row.profile ?? runModelProfile(run?.agents[row.agent])} />)}
+    {teamPreview && <TeamAnswerPreview preview={teamPreview} />}
   </div>;
 }
 
-function Feed({ rows, runs, runById, activeRunId, name, busy, decide, answer, preview, empty, summaryAction, followup }) {
+function Feed({ rows, runs, runById, activeRunId, name, busy, decide, answer, preview, empty, summaryAction, followup, teamPreview, notifiedTurn }) {
   const element = useRef(null);
   const follow = useRef(true);
   const scrollPosition = useRef(0);
+  const scrollFrame = useRef(null);
   const [atEnd, setAtEnd] = useState(true);
+  const [currentTurn, setCurrentTurn] = useState(null);
   const grouped = useMemo(() => runs ? conversationTurns(rows, runs) : groupWorkActivity(rows), [rows, runs]);
   const rowProps = { busy, decide, answer, preview, summaryAction, followup };
   function scrollToEnd() {
@@ -445,34 +455,75 @@ function Feed({ rows, runs, runById, activeRunId, name, busy, decide, answer, pr
     feed.scrollTop = feed.scrollHeight;
     scrollPosition.current = feed.scrollTop;
   }
+  function followOnFrame() {
+    if (!follow.current || scrollFrame.current !== null) return;
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      if (follow.current && element.current) scrollToEnd();
+    });
+  }
   function jump() {
     follow.current = true;
     setAtEnd(true);
+    setCurrentTurn(null);
     scrollToEnd();
   }
+  function jumpToTurn(id, focus = true) {
+    const turn = element.current?.querySelector(`[data-run-id="${CSS.escape(id)}"]`);
+    if (!turn) return;
+    follow.current = false;
+    setCurrentTurn(id);
+    if (focus) turn.focus({ preventScroll: true });
+    turn.scrollIntoView({ block: "start" });
+  }
   useLayoutEffect(() => {
-    if (follow.current) scrollToEnd();
-  }, [rows]);
+    followOnFrame();
+  }, [rows, teamPreview]);
+  useLayoutEffect(() => {
+    if (!notifiedTurn) return;
+    const turn = element.current?.querySelector(`[data-run-id="${CSS.escape(notifiedTurn.runId)}"]`);
+    if (!turn) return;
+    const latest = turn === element.current.lastElementChild;
+    follow.current = latest;
+    turn.focus({ preventScroll: true });
+    turn.scrollIntoView({ block: "end" });
+    setAtEnd(latest);
+  }, [notifiedTurn]);
   useEffect(() => {
-    const observer = new ResizeObserver(() => {
-      if (follow.current) scrollToEnd();
-    });
+    const observer = new ResizeObserver(followOnFrame);
     observer.observe(element.current);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+      scrollFrame.current = null;
+    };
   }, []);
   return (
-    <section className="thread-feed-wrap" aria-label={name}>
+    <section className={"thread-feed-wrap" + (runs && grouped.length > 1 ? " has-chat-rail" : "")} aria-label={name}>
+      {runs && <ChatTurnRail turns={grouped} current={currentTurn ?? grouped.at(-1)?.id} jump={jumpToTurn} />}
       <div className={runs ? "thread-feed thread-chat-feed" : "thread-feed"} role="log" aria-label={name} ref={element} onScroll={(event) => {
-        const { scrollHeight, clientHeight, scrollTop } = event.currentTarget;
+        const feed = event.currentTarget;
+        const { scrollHeight, clientHeight, scrollTop } = feed;
         const nearEnd = scrollHeight - clientHeight - scrollTop < 36;
         if (!nearEnd && scrollTop === scrollPosition.current) return;
         scrollPosition.current = scrollTop;
         follow.current = nearEnd;
         setAtEnd(follow.current);
+        if (runs && nearEnd) setCurrentTurn(null);
+        else if (runs) {
+          const top = feed.getBoundingClientRect().top + 48;
+          let current;
+          for (const turn of feed.children) {
+            if (current && turn.getBoundingClientRect().top > top) break;
+            current = turn.dataset.runId;
+          }
+          setCurrentTurn(current);
+        }
       }}>
         {grouped.length ? grouped.map((item, index) => runs
           ? <ChatTurn key={item.id} turn={item} active={item.id === activeRunId}
-            previousAt={grouped[index - 1]?.run?.startedAt} rowProps={rowProps} />
+            previousAt={grouped[index - 1]?.run?.startedAt} rowProps={rowProps}
+            teamPreview={teamPreview?.runId === item.id ? teamPreview : undefined} />
           : <FeedRow key={item.id} row={item} {...rowProps}
             run={runById?.get(item.id.split(":", 1)[0])}
             profile={item.profile ?? runModelProfile(runById?.get(item.id.split(":", 1)[0])?.agents[item.agent])} />)
@@ -483,7 +534,7 @@ function Feed({ rows, runs, runById, activeRunId, name, busy, decide, answer, pr
   );
 }
 
-export function Activity({ split, taskId, rows, runs, activeRunId, busy, decide, answer, preview, result, summaryAction, followup }) {
+export function Activity({ split, taskId, rows, runs, activeRunId, busy, decide, answer, preview, result, summaryAction, followup, teamPreview, notifiedTurn }) {
   const [selectedLane, setSelectedLane] = useState("codex");
   const runById = useMemo(() => split && new Map(runs.map((run) => [run.id, run])), [split, runs]);
   const laneRows = useMemo(() => split && Object.fromEntries(Object.keys(agentNames).map((agent) => [agent,
@@ -499,13 +550,14 @@ export function Activity({ split, taskId, rows, runs, activeRunId, busy, decide,
         <Feed name={name + " activity"} rows={laneRows[agent]} runById={runById} busy={busy} decide={decide} answer={answer} preview={preview} followup={followup} empty="No activity yet." />
       </section>
     ))}
-    {result && <div className="thread-split-answer"><TeamRunResult run={result} summaryAction={summaryAction} followup={followup} /></div>}
+    {(teamPreview || result) && <div className="thread-split-answer">{teamPreview ? <TeamAnswerPreview preview={teamPreview} />
+      : <TeamRunResult run={result} summaryAction={summaryAction} followup={followup} />}</div>}
   </div>;
   return <Feed key={taskId} name="Team timeline" rows={rows} runs={runs} activeRunId={activeRunId} busy={busy} decide={decide}
-    answer={answer} preview={preview} summaryAction={summaryAction} followup={followup} empty="Send a task to start the team conversation." />;
+    answer={answer} preview={preview} summaryAction={summaryAction} followup={followup} teamPreview={teamPreview} notifiedTurn={notifiedTurn} empty="Send a task to start the team conversation." />;
 }
 
-export function Queue({ items, working, activeMode, steerAgents, busy, steer, remove, next, lowMemory, preview }) {
+export function Queue({ items, working, activeMode, steerAgents, sessionTeamSteer, busy, steer, remove, next, lowMemory, preview }) {
   if (!items.length) return null;
   return <section className="thread-queue" aria-label="Queued messages">
     <div className="thread-queue-heading"><strong>{working ? "Queued messages" : "Queue paused"}</strong>
@@ -515,8 +567,12 @@ export function Queue({ items, working, activeMode, steerAgents, busy, steer, re
       <div className="thread-queue-row" key={item.id}>
         <div>{item.prompt && <p>{item.prompt}</p>}{item.steering && <small>Steer acknowledgement uncertain · review before resending</small>}
           <ImageChips images={item.images} preview={preview} busy={busy} />
-          <AssignmentEvidence mode={item.mode} teamwork={item.teamworkSnapshot ?? item.teamwork} label="Queued roles" lowMemory={lowMemory} /></div>
+          {item.askAgent ? <small>Ask {agentNames[item.askAgent]}</small> :
+            <AssignmentEvidence mode={item.mode} teamwork={item.teamworkSnapshot ?? item.teamwork} label="Queued roles" lowMemory={lowMemory} />}</div>
         <div className="thread-actions">
+          {sessionTeamSteer && steerableDraft(item, sessionTeamMode) &&
+            <button type="button" className="button small" disabled={busy} title={"Steer " + sessionTeamSteer.name}
+              onClick={() => steer(item.id, sessionTeamSteer.agent, sessionTeamSteer)}>Steer</button>}
           {steerableDraft(item, activeMode) && steerAgents.map((agent) =>
             <button key={agent} type="button" className="button small" disabled={busy} onClick={() => steer(item.id, agent)}>
               {agent === "codex" ? "Steer Codex" : "Send to Claude"}

@@ -1,30 +1,41 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   IconArrowRight, IconArrowUp, IconArrowsMaximize, IconFolder, IconGitBranch, IconHistory, IconLayoutColumns,
-  IconLayoutSidebar, IconLayoutSidebarRight, IconListDetails, IconPlayerStop, IconPlug, IconPlus, IconPuzzle, IconSettings, IconStack2, IconX,
-  IconAdjustmentsHorizontal, IconBrandChrome, IconChevronDown, IconCpu, IconPaperclip, IconPhoto, IconTarget, IconUsers,
+  IconLayoutSidebar, IconLayoutSidebarRight, IconListDetails, IconPlayerStop, IconPlug, IconPlus, IconPuzzle, IconStack2, IconX,
+  IconAdjustmentsHorizontal, IconChevronDown, IconCpu, IconMessage, IconPaperclip, IconTarget, IconUsers,
 } from "@tabler/icons-react";
-import { activeUsageLimit, continuationFor, linkedUsageRecovery, providerUsesApi, quotaBadgeWindow, routeMode, singleAgentFallback } from "../desktop/usage-routing.mjs";
+import { activeUsageLimit, autoTeamPlanNeedsBaseCheck, continuationFor, linkedUsageRecovery, messageIntentAgents, providerUsesApi, quotaBadgeWindow, routeMode, singleAgentFallback } from "../desktop/usage-routing.mjs";
 import { appearanceOptions, defaultAppearance } from "../desktop/appearance.mjs";
 import { defaultPanelWidths, panelLayout } from "../desktop/panel-layout.mjs";
 import { defaultDeckPreferences } from "../desktop/deck-preferences.mjs";
 import { PanelDivider } from "./PanelDivider.jsx";
 import { ControlPopover } from "./ControlPopover.jsx";
+import { CodeGraph } from "./CodeGraph.jsx";
+import { TeamRunCompare } from "./TeamRunCompare.jsx";
 import { DeckLoading } from "./DeckLoading.jsx";
+import { StartupScreen } from "./StartupScreen.jsx";
+import { memberStatusNote, memberUsageNote } from "../desktop/member-outcome.mjs";
+import { changeTeamDirection, supportsTeamDirection, teamDirection } from "../desktop/team-direction.mjs";
+import { TeamDirectionPicker } from "./TeamDirectionPicker.jsx";
+import { ComposerAttachments } from "./ComposerAttachments.jsx";
 import { catalogModel, effectiveAgentSettings, effortLabels, efforts, reasoningSummaries } from "../desktop/agent-settings.mjs";
 import { agentOutput, agentRole, autoTeam, buildThenReview, changeWorkflow, defaultDraftMode, defaultTeamMode, effectiveTeamwork, handoffTeamwork, legacyEmptyDraftMode, planPair, separateEdits, separateEditsIssue, teamConversation,
-  steerableDraft, steerMode, unresolvedTeamPlan, planResultCanBeConfirmed } from "../desktop/collaboration.mjs";
+  needsAutomaticAssignments, needsMessageIntent, supportsDirectQuestion, supportsMessageIntent, steerableDraft, steerMode, unresolvedTeamPlan, planResultCanBeConfirmed } from "../desktop/collaboration.mjs";
 import { Activity, AssignmentEvidence, Brand, ImageChips, PermissionPicker, Queue, Sidebar, WorkTime, agentNames as names, modeLabel, modeNames, projectName } from "./TeamThread.jsx";
-import { supportsRunPermissions } from "../desktop/run-permissions.mjs";
+import { sessionTeamPermissionModes, supportsRunPermissions } from "../desktop/run-permissions.mjs";
+import { ChatQuoteActions } from "./ChatNavigation.jsx";
+import { ChatMarkdown } from "./ChatMarkdown.jsx";
 import { recordedSummaryLeader } from "../desktop/team-result.mjs";
-import { appendLiveRow, retainTimelineRows } from "./timeline-rows.mjs";
-import { DeckNav, FeatureMap, ProjectEmpty, Scheduled, TeamInbox, WorkbenchPage } from "./DeckPages.jsx";
+import { appendLiveDeltas, appendLiveRow, applyRunUpdate, frameDeltas, retainTimelineRows } from "./timeline-rows.mjs";
+import { DeckNav, FeatureMap, ProjectEmpty, Scheduled, WorkbenchPage } from "./DeckPages.jsx";
 import { ReviewEvidence, ReviewFiles, ReviewFreshness, ReviewTarget, RunEvidence, RunScope, WorktreeComparison } from "./RunReadiness.jsx";
-import { CommandMenu, LibrarySkillPreview, LocalSkillLibrary, SharedSkills, SkillPicker, TeamPlan, TeamPlanButton, parseSlash, slashCommands } from "./Collaboration.jsx";
+import { CommandMenu, LibrarySkillPreview, LocalSkillLibrary, SharedSkills, SkillPicker, TeamPlan, parseSlash, slashCommands } from "./Collaboration.jsx";
 import { TaskPanel, TaskPanelEntry } from "./TaskPanel.jsx";
 import { BatchSessionDeletion, LinkAttachment, SessionActions, SessionButton, WindowAttachment } from "./SessionTools.jsx";
 import { sessionKey } from "../desktop/session-selection.mjs";
-import { HandoffLocation, NativeSession } from "./NativeRecents.jsx";
+import { HandoffLocation, HandoffSources, NativeChat, NativeChatTransfer } from "./NativeRecents.jsx";
+import { latestReportedRun } from "./usage-view.mjs";
+import { idleRefresh } from "./idle-refresh.mjs";
 import { EditLinkedNext, LinkedTimeline, LinkedSend, LinkedSource, linkedModeNames } from "./LinkedSessions.jsx";
 import { EditLinkedChecklist, LinkedChecklist, LinkedTransfer } from "./LinkedWorkflow.jsx";
 import { linkedRecoveryDraft } from "./linked-timeline.mjs";
@@ -34,14 +45,16 @@ import { VoiceChat } from "./VoiceChat.jsx";
 import { ArchivedSettings, DeckHooks, RequiredChecks, SettingSelect, SettingsCard, SettingsCenter, SettingsImport, SettingsInventory, SettingsLinks } from "./SettingsCenter.jsx";
 import { NativeHooks } from "./NativeHooks.jsx";
 import { SessionTeamEditor, SessionProviders, SessionTeamProgress, SessionTeamScope, TeamMap } from "./SessionTeam.jsx";
-import { sessionTeamMode, sessionMemberBlock, sessionTeamIssue, teamProviders, teamPositions } from "../desktop/session-team.mjs";
+import { sessionTeamMode, sessionMemberBlock, sessionTeamHasWriter, sessionTeamIssue, teamProviders, teamPositions } from "../desktop/session-team.mjs";
 import { reviewPolicies, reviewPolicy, smartTextPath, teamRunOptions } from "../desktop/team-handoff.mjs";
 import { TeamDecisions, TeamRunOptions } from "./TeamRunOptions.jsx";
-import { displayedTeamRun, TeamBriefRecord, TeamHandoffs, TeamRunResult, withDiscussionPeers, withTeamResults } from "./TeamHandoff.jsx";
+import { DecisionShadowReceipt, LocalDecisionReceipt, TeamBriefRecord, TeamHandoffs, TeamRunResult } from "./TeamHandoff.jsx";
+import { createTimelineProjector, displayedTeamRun } from "./timeline-projection.mjs";
 import "./team-thread.css";
 
 const connectionLabels = { ready: "Signed in", signIn: "Sign-in needed", missing: "CLI missing", wrongExecutable: "Wrong executable", unavailable: "Unavailable", upgrade: "Update CLI" };
 const statusLabels = { queued: "Waiting to start", preparing: "Preparing workspace", running: "Working", completed: "Complete", failed: "Failed", interrupted: "Stopped", "awaiting-approval": "Awaiting approval", dismissed: "Dismissed", skipped: "Skipped", limited: "Usage limit reached" };
+const startupNotice = "Some startup checks took too long. Available accounts are ready; refresh missing history or usage when needed.";
 const format = new Intl.NumberFormat("en-US");
 const estimateUsd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 6 });
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
@@ -78,7 +91,8 @@ function restoredActivity(workspace) {
       const id = run.id + ":" + agent + ":" + key;
       const record = run.agents[agent];
       const member = record?.memberName ? { memberName: record.memberName, provider: record.provider } : {};
-      if (kind === "steer") rows.push({ id, agent, kind: "steered", text: item.text, images: item.images });
+      if (kind === "steer") rows.push({ id, agent, kind: "steered", text: item.text, images: item.images,
+        memberName: record?.memberName, provider: record?.provider });
       else if (kind === "handoff") rows.push({ id, agent, ...member, kind: "activity", handoff: true, text: item.text });
       else if (kind === "limit" && record?.usageLimit) rows.push({ ...limitRow(id, agent, record.usageLimit), ...member });
       else if (kind === "message") {
@@ -559,20 +573,22 @@ function AccountUsage({ agent, detail, connection, load, openProvider, reset, re
   const report = (account?.fetchedAt ?? 0) > (detail?.fetchedAt ?? 0) ? account : detail;
   const windows = report?.windows?.length ? report.windows : connection?.quota;
   const lastReport = report?.fetchedAt ?? windows?.reduce((latest, row) => Math.max(latest, row.observedAt ?? 0), 0);
-  const empty = api ? "Open the API usage dashboard for billing and account usage." : report
+  const previousWindow = !quotaBadgeWindow(agent, connection, now) && windows?.some((window) => Number.isFinite(window.usedPercent));
+  const empty = api ? "Open the API usage dashboard for billing and account usage." : previousWindow
+    ? "The saved quota window has expired. Refresh for current limits." : report
     ? "The provider returned no quota windows." : "Refresh to read the current account limits.";
   const headline = quotaBadgeWindow(agent, connection, now);
   return <section className="deck-status deck-quota deck-account-usage">
     <div className="live-connection-title"><Brand agent={agent} size={18} /><strong>{names[agent]} account</strong>
-      {(detail?.plan || connection?.plan) && <span className="source-pill">{detail?.plan ?? connection.plan}</span>}
+      {(report?.plan || connection?.plan) && <span className="source-pill">{report?.plan ?? connection.plan}</span>}
     </div>
     <div className="deck-account-headline" data-level={headline?.usedPercent >= 80 ? "warning" : "normal"}>
-      <strong>{headline ? format.format(headline.usedPercent) + "% used" : api ? "API account" : "Quota not reported"}</strong>
-      <span>{headline?.resetAt ? "Resets " + dateFormat.format(headline.resetAt) + " · " + remainingTime(headline.resetAt, now)
+      <strong>{loading ? "Checking current quota…" : headline ? format.format(headline.usedPercent) + "% used" : api ? "API account" : previousWindow ? "Saved quota expired" : "Quota unavailable"}</strong>
+      <span>{loading ? "You can keep using AI Deck while this account is checked." : headline?.resetAt ? "Resets " + dateFormat.format(headline.resetAt) + " · " + remainingTime(headline.resetAt, now)
         : headline ? "Reset time unavailable" : api ? "Usage is reported in the provider dashboard" : empty}</span>
     </div>
     <div className="live-buttons">
-      <button className="button small" disabled={busy || api || connection?.status !== "ready"} onClick={() => load(agent)}>Refresh {codex ? "Codex" : "Claude"}</button>
+      <button className="button small" disabled={busy || loading || api || connection?.status !== "ready"} onClick={() => load(agent)}>Refresh {codex ? "Codex" : "Claude"}</button>
       <button className="button small" onClick={() => openProvider(page + "-usage")}>{api ? "API usage" : "Account usage"} ↗</button>
       <button className="button small" onClick={() => openProvider(page + "-billing")}>{api ? "API billing" : "Billing & invoices"} ↗</button>
     </div>
@@ -596,14 +612,13 @@ function AccountUsage({ agent, detail, connection, load, openProvider, reset, re
     {codex && detail?.resetToken && <button className="button small" disabled={busy}
       onClick={() => reset(detail.resetToken)}>{detail.resetPending ? "Check previous reset" : "Use Codex reset credit"}</button>}
     {codex && resetNotice && <p role="status">{resetNotice}</p>}
-    {!codex && !api && <p className="setting-detail">If your account offers a free reset, use it in <button className="thread-text-button"
-      onClick={() => openProvider("claude-usage")}>Claude Usage ↗</button>.</p>}
-    {lastReport > 0 && <p className="setting-detail">Reported {dateFormat.format(lastReport)}</p>}
+    {lastReport > 0 && <p className="setting-detail">{previousWindow ? "Last saved report " : "Reported "}{dateFormat.format(lastReport)}</p>}
   </section>;
 }
 
-function Usage({ reported, runs, connections, now, busy, loadingAgent, retry, details, load, openProvider, reset, resetNotice, usageError, section, choose }) {
+function Usage({ reported, runs, title, connections, now, busy, loadingAgent, retry, details, load, openProvider, reset, resetNotice, usageError, section, choose, loadComparison }) {
   const [selectedRun, setSelectedRun] = useState("");
+  const [comparison, setComparison] = useState(null);
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 30_000);
@@ -617,10 +632,14 @@ function Usage({ reported, runs, connections, now, busy, loadingAgent, retry, de
   return (
     <>
       <div className="usage-switcher" role="group" aria-label="Usage view">
-        <button className="button" type="button" aria-pressed={section === "task"} onClick={() => choose("task")}>Task usage</button>
         <button className="button" type="button" aria-pressed={section === "accounts"} onClick={() => choose("accounts")}>Account limits</button>
+        <button className="button" type="button" aria-pressed={section === "task"} onClick={() => choose("task")}>Task usage</button>
+        <button className="button" type="button" aria-pressed={section === "compare"} onClick={async () => {
+          choose("compare"); setComparison(null); setComparison(await loadComparison() ?? []);
+        }}>Compare runs</button>
       </div>
-      {section === "accounts" ? <section className="usage-section" aria-label="Account limits">
+      {section === "compare" ? (comparison ? <TeamRunCompare runs={comparison} /> : <p role="status">Loading saved runs…</p>)
+        : section === "accounts" ? <section className="usage-section" aria-label="Account limits">
         {usageError && <p className="live-error" role="alert">{usageError}</p>}
         <div className="deck-tool-grid deck-account-grid">
         {Object.keys(names).map((agent) => <AccountUsage key={agent} agent={agent} detail={details[agent]} connection={connections[agent]}
@@ -628,27 +647,34 @@ function Usage({ reported, runs, connections, now, busy, loadingAgent, retry, de
           loading={loadingAgent === agent} resetNotice={resetNotice} />)}
         </div>
       </section> : <section className="usage-section" aria-label="Task usage">
+      <p className="setting-detail"><strong>Team chat · {title || "No team chat selected"}</strong>
+        {run?.startedAt && <> · {dateFormat.format(new Date(run.startedAt))}</>}</p>
       <p className="dialog-intro">Tokens reported by each member. Input includes cached input where reported.</p>
       {run && <RunPicker runs={runs} value={selected?.id ?? ""} choose={setSelectedRun} latest />}
       {hasReports ? <div className="usage-grid">
         {members.map(([agent, name, provider, record]) => {
           const usage = run ? run.agents[agent]?.usage : reported[agent];
-          const currentLimit = connections[agent]?.usageLimit;
+          const currentLimit = connections[provider]?.usageLimit;
           const limit = run ? run.agents[agent]?.usageLimit : activeUsageLimit(currentLimit, now) ? currentLimit : null;
+          const previous = !usage && latestReportedRun(runs, provider);
           return (
             <section className={`usage-card ${provider}`} key={agent}>
               <h3><Brand agent={provider} size={21} />{name}</h3>
-              {record && <p className="usage-member-meta"><strong>{teamProviders[provider]}</strong>
+              {record && <p className="usage-member-meta">{name !== teamProviders[provider] && <strong>{teamProviders[provider]}</strong>}
                 <span>{record.reportedModel || record.settings?.model || "Default model"}</span>
                 <span>{statusLabels[record.status] ?? record.status}</span>
               </p>}
+              {run && memberStatusNote(run, agent) && <p className="setting-detail usage-member-reason">{memberStatusNote(run, agent)}</p>}
               {limit && <div className="usage-hold">
                 <strong>Usage limit reached</strong>
                 <p>{limitText(limit)}</p>
                 {!run && <><button className="button small" disabled={busy} onClick={() => retry(agent)}>Clear AI Deck hold</button>
                   <p>This only lets the next send retry with the provider.</p></>}
               </div>}
-              <p className="setting-detail">{usage?.scope ?? (run ? "No usage reported for this run" : "Waiting for reported usage")}</p>
+              <p className="setting-detail">{usage?.scope ?? (run ? memberUsageNote(run, agent) : "Waiting for reported usage")}</p>
+              {previous && previous.id !== run?.id && <button className="button small" type="button" onClick={() => setSelectedRun(previous.id)}>
+                Show latest {names[provider] ?? name} report
+              </button>}
               {usage?.lastRequest && <p className="setting-detail">Latest model request · {format.format(usage.lastRequest.total)} tokens</p>}
               {Number.isFinite(usage?.sessionEstimateUsd) && <p className="setting-detail">{usage.scope === "Auto Team run" ? "Claude stage estimates" : "Claude session estimate"} · {estimateUsd.format(usage.sessionEstimateUsd)}
                 <br />{usage.scope === "Auto Team run" ? "Based on usage reported for this run." : "Includes earlier turns."} For charges, open billing.</p>}
@@ -694,15 +720,18 @@ function History({ runs, initialRun, busy, usePrompt, draftHandoff, reviewPlan, 
   const run = runs.find((entry) => entry.id === selectedRun) ?? runs.at(-1);
   if (!run) return <p className="empty">Your completed or interrupted runs will appear here after you send a task.</p>;
   const continuation = planContinuation(run.id);
+  const needsBaseCheck = autoTeamPlanNeedsBaseCheck(run);
   const canDismiss = run.finishedAt && unresolvedTeamPlan(run) && run.teamPlan.applyStatus !== "running";
   return (
     <>
       <p className="dialog-intro">AI Deck keeps the most recent 24 runs and any plans still awaiting a decision on this PC.</p>
       <RunPicker runs={runs} value={run.id} choose={(id) => { setSelectedRun(id); setDecision(null); }} />
       <p className="turn-prompt">{run.prompt}</p>
-      <AssignmentEvidence mode={run.mode} teamwork={run.teamwork} label="Roles used in this run" lowMemory={run.lowMemory} />
+      <AssignmentEvidence mode={run.mode} teamwork={run.teamwork} planner={run.autoTeam?.planner} label="Roles used in this run" lowMemory={run.lowMemory} />
       {run.collaboration && <TeamBriefRecord run={run} />}
       {run.finishedAt && run.collaboration && <TeamRunResult run={run} />}
+      {!run.collaboration && <DecisionShadowReceipt entries={run.decisionShadow} />}
+      {!run.collaboration && <LocalDecisionReceipt entries={run.localDecisions} />}
       {run.lowMemory && <p className="setting-detail">Low RAM · agents ran one at a time</p>}
       {run.reviewPending && <p className="usage-hold">{run.collaboration?.pauseReason ?? names[run.pendingReviewer ?? "claude"] + " review pending."}</p>}
       {run.followupReview && <p className="setting-detail">{names[run.pendingReviewer ?? "claude"]} review completed in a follow-up run.</p>}
@@ -713,14 +742,14 @@ function History({ runs, initialRun, busy, usePrompt, draftHandoff, reviewPlan, 
       <ReviewEvidence snapshot={run.reviewSnapshot} />
       <AutoTeamRecord record={run.autoTeam} />
       {run.teamPlan && <section className="live-note">
-        <strong>{implementationLabels[run.teamPlan.applyStatus] ?? ({ completed: run.teamPlan.decidedAt ? "Implemented" : "Completed in an earlier AI Deck release",
+        <strong>{needsBaseCheck ? "Plan base needs verification" : implementationLabels[run.teamPlan.applyStatus] ?? ({ completed: run.teamPlan.decidedAt ? "Implemented" : "Completed in an earlier AI Deck release",
           dismissed: "Dismissed", running: "Implementation running", failed: "Implementation failed", interrupted: "Implementation stopped",
           limited: "Implementation paused at usage limit", blocked: "Team needs your decision" })[run.teamPlan.applyStatus] ?? planStatus[run.teamPlan.state]}</strong>
-        <pre className="file-preview deck-continuation">{run.teamPlan.text || "No plan text saved."}</pre>
+        <ChatMarkdown className="file-preview deck-continuation" text={run.teamPlan.text || "No plan text saved."} />
         <AutoTeamAssignments assignments={run.teamPlan.assignments} />
-        {decision && <p className="setting-detail">{{ dismiss: "Remove this plan from Team inbox?",
+        {decision && <p className="setting-detail">{{ dismiss: "Dismiss this saved plan?",
           complete: "Confirm that you reviewed the work and it satisfies the plan.",
-          reopen: "Return this plan to Team inbox for another review?" }[decision]}</p>}
+          reopen: "Reopen this plan for another review?" }[decision]}</p>}
         <div className="thread-actions">
           {decision ? <>
             <button className="button small" disabled={busy} onClick={async () => { if (await decidePlan(run.id, decision)) setDecision(null); }}>
@@ -729,7 +758,7 @@ function History({ runs, initialRun, busy, usePrompt, draftHandoff, reviewPlan, 
             <button className="button small" disabled={busy} onClick={() => setDecision(null)}>Keep current status</button>
           </> : <>
             {continuation && <button className="button small" disabled={busy} onClick={() => reviewPlan(continuation)}>Review plan to apply</button>}
-            {run.teamPlan.state !== "ready" && <button className="button small" disabled={busy} onClick={() => clarifyPlan(run)}>Clarify or replan</button>}
+            {(run.teamPlan.state !== "ready" || needsBaseCheck) && <button className="button small" disabled={busy} onClick={() => clarifyPlan(run)}>Clarify or replan</button>}
             {canDismiss && <button className="button small" disabled={busy} onClick={() => setDecision("dismiss")}>{planDecisions.dismiss}</button>}
             {planResultCanBeConfirmed(run.teamPlan.applyStatus) && <button className="button small" disabled={busy} onClick={() => setDecision("complete")}>{planDecisions.complete}</button>}
             {run.teamPlan.applyStatus === "completed" && <button className="button small" disabled={busy} onClick={() => setDecision("reopen")}>{planDecisions.reopen}</button>}
@@ -746,7 +775,7 @@ function History({ runs, initialRun, busy, usePrompt, draftHandoff, reviewPlan, 
             {record.settings && <p className="setting-detail">Requested · {agentModelLabel(record.settings)}</p>}
             {record.reportedModel && <p className="setting-detail">Reported model · {record.reportedModel}</p>}
             {record.usageLimit && <p className="setting-detail">{limitText(record.usageLimit)}</p>}
-            {record.messages.map((message) => <p className="live-log" key={message.key}>{message.text}</p>)}
+            {record.messages.map((message) => <ChatMarkdown className="live-log" key={message.key} text={message.text} />)}
             {!record.messages.length && <p className="setting-detail">No final response was saved.</p>}
             {agentOutput(record) && !run.teamPlan && !run.sessionTeam && <div><button className="button small" disabled={busy} onClick={() => draftHandoff(run, agent)}>
               Draft handoff to {names[agent === "codex" ? "claude" : "codex"]}
@@ -763,9 +792,10 @@ const emptyDraft = { prompt: "", mode: "team", reviewOf: null };
 const inspectorTabs = { outputs: "Outputs", changes: "Changes", usage: "Usage", context: "Context" };
 const modalTitles = { history: "Run history", codex: "Codex session", teamwork: "Team Brief", "session-team": "Session Team", "team-map": "Run team map", skills: "Skills for this draft",
   "team-run-options": "Team context & limits", "team-decisions": "Team Decisions", "team-board": "Team board",
-  scope: "Run scope", files: "Choose review files", target: "Review target", continue: "Continue in this worktree", image: "Image preview",
+  scope: "Run scope", files: "Choose review files", target: "Review target", continue: "Continue in this worktree", image: "Attachment preview",
   queue: "Review queued setup", steer: "Send a follow-up", compare: "Compare worktrees", "panel-add": "Add task item", "panel-detail": "Task source", library: "Library skill", base: "Prepare an updated copy",
-  "native-session": "Session preview", "native-target": "Recheck handoff target",
+  "native-fork": "Fork to Team", "native-handoff": "Hand off messages", "native-target": "Recheck handoff target", "blocked-plan-project": "Continue in another project",
+  "blocked-plan-base": "Replan on another base", "code-graph": "Code graph",
   "session-actions": "Session actions", "batch-delete": "Delete selected chats", "attach-link": "Attach URL", "capture-window": "Capture window", "computer-window": "Share a window for Computer Use", "chrome-window": "Share Google Chrome",
   "linked-source": "Link native conversation", "linked-send": "Check linked turn", "linked-next": "Edit next step",
   "linked-checklist": "Shared checklist", "linked-transfer": "Review changes from the copy",
@@ -860,13 +890,16 @@ function ChangesPanel({ workspace, worktree, lane, chooseLane, snapshot, loading
 export function LiveApp() {
   const api = window.aiDeck;
   const [state, setState] = useState({ workspace: null, connections: {}, recent: [] });
+  const [notification, setNotification] = useState(null);
+  const [notifiedTurn, setNotifiedTurn] = useState(null);
   const preferences = state.preferences ?? defaultDeckPreferences;
   const [launching, setLaunching] = useState(true);
+  const [startupStage, setStartupStage] = useState("connections");
   const [pendingMenuAction, setPendingMenuAction] = useState(null);
   const appearance = state.appearance ?? defaultAppearance;
   const lowMemory = state.lowMemory === true;
   const [page, setPage] = useState("workspace");
-  const [usageSection, setUsageSection] = useState("task");
+  const [usageSection, setUsageSection] = useState("accounts");
   const [pluginTab, setPluginTab] = useState("skills");
   const [commandPalette, setCommandPalette] = useState(null);
   const [commandIndex, setCommandIndex] = useState(0);
@@ -878,7 +911,16 @@ export function LiveApp() {
   const [standalonePanel, setStandalonePanel] = useState(null);
   const [layoutWidth, setLayoutWidth] = useState(() => window.innerWidth);
   const [nativeRecents, setNativeRecents] = useState({ sessions: [], errors: {} });
+  const recentRequest = useRef(null);
+  const recentLoadedAt = useRef(0);
   const [nativePreview, setNativePreview] = useState(null);
+  const [nativeConversation, setNativeConversation] = useState(null);
+  const nativeChatRequest = useRef(null);
+  const nativeDrafts = useRef(null);
+  if (!nativeDrafts.current) {
+    try { nativeDrafts.current = new Map(JSON.parse(localStorage.getItem("ai-deck-native-drafts") ?? "[]").filter(([key, value]) => typeof key === "string" && typeof value === "string").slice(-16)); }
+    catch { nativeDrafts.current = new Map(); }
+  }
   const [sessionActions, setSessionActions] = useState(null);
   const [sessionSelection, setSessionSelection] = useState(null);
   const [batchDelete, setBatchDelete] = useState(null);
@@ -888,6 +930,7 @@ export function LiveApp() {
   const [computerNext, setComputerNext] = useState(null);
   const [computerEnded, setComputerEnded] = useState(null);
   const [summaryPending, setSummaryPending] = useState(null);
+  const [teamPreview, setTeamPreview] = useState(null);
   const [linkedSource, setLinkedSource] = useState(null);
   const [linkedSend, setLinkedSend] = useState(null);
   const [linkedNext, setLinkedNext] = useState(null);
@@ -901,19 +944,23 @@ export function LiveApp() {
   const [linkedWatchRequest, setLinkedWatchRequest] = useState(0);
   const [showLinkedHistory, setShowLinkedHistory] = useState(true);
   const [handoffRecheck, setHandoffRecheck] = useState(null);
+  const [blockedPlanProject, setBlockedPlanProject] = useState(null);
+  const [blockedPlanBase, setBlockedPlanBase] = useState(null);
   const [providerDetails, setProviderDetails] = useState({});
   const [resetNotice, setResetNotice] = useState("");
   const [usageError, setUsageError] = useState("");
+  const [usageLoading, setUsageLoading] = useState(null);
+  const usageRequest = useRef(null);
+  const usageFailure = useRef(null);
   const [decisionData, setDecisionData] = useState(null);
   const [modelCatalogs, setModelCatalogs] = useState({});
   const [working, setWorking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [startingRun, setStartingRun] = useState(false);
   const [draft, setDraft] = useState(emptyDraft);
   const [modal, setModal] = useState(null);
   const [historyRun, setHistoryRun] = useState(null);
   const [librarySkill, setLibrarySkill] = useState(null);
-  const [inbox, setInbox] = useState({ rows: [], loading: true, error: "" });
-  const [inboxRevision, setInboxRevision] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [queueNotice, setQueueNotice] = useState("");
@@ -933,6 +980,9 @@ export function LiveApp() {
   const [acceptContinuationChanges, setAcceptContinuationChanges] = useState(false);
   const [baseUpdate, setBaseUpdate] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const [ocrProgress, setOcrProgress] = useState(null);
+  const [pendingImageImports, setPendingImageImports] = useState([]);
+  const attachmentThumbnail = useCallback(async (id) => (await api["preview-task-attachment"]({ id, thumbnail: true })).source, [api]);
   const [startedAt, setStartedAt] = useState(null);
   const [quotaClock, setQuotaClock] = useState(Date.now);
   const [tab, setTab] = useState("outputs");
@@ -945,7 +995,9 @@ export function LiveApp() {
   const [diffRevision, setDiffRevision] = useState(0);
   const [lane, setLane] = useState("main");
   const draftInput = useRef(null);
+  const teamBriefClose = useRef(null);
   const submitting = useRef(false);
+  const creatingHandoff = useRef(false);
   const [voiceRunId, setVoiceRunId] = useState(null);
   const inspectorToggle = useRef(null);
   const projectsToggle = useRef(null);
@@ -953,18 +1005,23 @@ export function LiveApp() {
   const drafts = useRef(new Map());
   const autosave = useRef(null);
   const flushDraft = useRef(null);
+  const preserveDraft = useRef(null);
   const imageRequest = useRef(null);
   const sessionRequest = useRef(null);
   const quotaPollRunning = useRef(false);
   const quotaPollAllowed = useRef(false);
+  const modelLoadAttempt = useRef(null);
   const windowCheckpoint = useRef(null);
   const runId = useRef(null);
   const sequence = useRef(0);
   const workspace = state.workspace;
+  const chatOnly = workspace?.chatOnly === true;
+  const projectWorkspace = chatOnly ? null : workspace;
   const workspacePage = page === "workspace";
+  const nativeChatPage = page === "native-chat" && Boolean(nativeConversation);
   const layout = panelLayout({
     width: layoutWidth, textScale: appearance.textScale, split: split && (!workspace?.linkedSession || !showLinkedHistory || working),
-    panels: { projects: workspacePage && showProjects, inspector: workspacePage && inspector },
+    panels: { projects: (workspacePage || nativeChatPage) && showProjects, inspector: workspacePage && inspector },
     priority: panelPriority, standalone: standalonePanel, widths: panelWidths,
   });
   const projectsVisible = Boolean(layout.projects) || layout.focused === "projects";
@@ -972,6 +1029,8 @@ export function LiveApp() {
   const link = workspace?.linkedSession;
   const linkedAgent = draft.mode.startsWith("codex") ? "codex" : "claude";
   const taskId = workspace?.taskId;
+  const displayedChat = useRef({});
+  displayedChat.current = { taskId, repo: workspace?.repo };
   const armedComputer = computerNext?.taskId === taskId ? computerNext : null;
   const expiredComputer = Boolean(armedComputer && (armedComputer.expired || armedComputer.expires <= Date.now()));
   const computerModeChanged = Boolean(armedComputer && armedComputer.mode !== draft.mode);
@@ -994,8 +1053,11 @@ export function LiveApp() {
   const worktree = diffLane === "claude" ? workspace?.claudeWorktree : workspace?.worktree;
   const runs = workspace?.runHistory ?? [];
   const latestRun = runs.at(-1);
+  const liveTeamPreview = working && latestRun?.collaboration?.summarizing && teamPreview?.taskId === taskId &&
+    teamPreview?.runId === latestRun.id ? teamPreview : null;
   const showSplit = split && !latestRun?.sessionTeam;
-  const visibleRows = useMemo(() => withDiscussionPeers(showSplit ? rows : withTeamResults(rows, runs), runs), [rows, runs, showSplit]);
+  const projectTimeline = useMemo(createTimelineProjector, []);
+  const visibleRows = useMemo(() => projectTimeline(rows, runs, showSplit), [projectTimeline, rows, runs, showSplit]);
   const lastFinished = runs.at(-1)?.finishedAt;
   const recoveryRun = runs.at(-1)?.recoveredAfterRestart ? runs.at(-1) : null;
   const panelThumbnail = useCallback(async (id) => {
@@ -1004,16 +1066,25 @@ export function LiveApp() {
   }, [api, taskId, lastFinished]);
   const library = state.skillLibrary ?? [];
   const pendingReview = runs.findLast((run) => run.reviewPending);
+  const pendingCheckpoint = pendingReview?.collaboration?.reviewCheckpoint;
+  const pendingEvidence = pendingCheckpoint?.criterionId;
+  const pendingRepair = pendingCheckpoint?.kind === "repair";
   const continuation = continuationFor(workspace);
-  const latestPlanIssue = workspace?.runHistory?.at(-1)?.teamPlan?.state !== "ready" ? workspace?.runHistory?.at(-1) : null;
+  const latestPlannedRun = workspace?.runHistory?.at(-1);
+  const latestPlanNeedsBaseCheck = autoTeamPlanNeedsBaseCheck(latestPlannedRun);
+  const latestPlanIssue = latestPlannedRun?.teamPlan?.state !== "ready" || latestPlanNeedsBaseCheck ? latestPlannedRun : null;
+  const showPlanIssue = !working && Boolean(latestPlanIssue?.teamPlan) && continuation?.kind !== "resume-auto-plan";
+  const claudeReplyRun = answer ? runs.findLast((run) => run.agents.claude?.answer === answer) : undefined;
   const implementationReview = continuation && runs.find((run) => run.id === continuation.runId)?.teamPlan?.applyStatus;
   const canContinue = continuation && routeMode(continuation.mode, state.connections, quotaClock).available.length > 0;
   const repositories = state.recent.map((project) => project.repo === workspace?.repo
     ? { ...project, tasks: workspace.tasks, currentTask: taskId } : project);
+  const projectRepositories = repositories.filter((project) => !project.chatOnly);
+  const selectedJob = state.jobs?.find((entry) => entry.taskId === taskId);
   const locked = busy || working || Boolean(state.backgroundRun);
   const quotaSources = Object.keys(names).filter((agent) => state.connections[agent]?.status === "ready" &&
     !providerUsesApi(agent, state.connections[agent]?.authMethod)).join(",");
-  quotaPollAllowed.current = !locked && !modal && !draft.prompt.trim();
+  quotaPollAllowed.current = !locked && !launching && !nativeRecents.loading;
   flushDraft.current = (value = draft) => {
     if (!taskId || autosave.current?.taskId !== taskId) return;
     const text = JSON.stringify(value);
@@ -1028,9 +1099,15 @@ export function LiveApp() {
     setAutosaveError("Draft could not be saved on this PC. " + (result?.error ?? ""));
   };
 
+  preserveDraft.current = () => {
+    if (!taskId) return;
+    flushDraft.current();
+    if (autosave.current?.text !== JSON.stringify(draft)) drafts.current.set(taskId, draft);
+  };
+
   windowCheckpoint.current = () => {
     flushDraft.current();
-    if (locked || modal || ["scheduled", "context", "plugins", "settings"].includes(page) ||
+    if (locked || modal || ["scheduled", "context", "plugins", "settings", "native-chat"].includes(page) ||
         page === "workspace" && inspector && tab === "context") return null;
     const currentDrafts = new Map(drafts.current);
     if (taskId && autosave.current?.text !== JSON.stringify(draft)) currentDrafts.set(taskId, draft);
@@ -1041,12 +1118,14 @@ export function LiveApp() {
   };
 
   function hydrate(next, running = false, approvals = []) {
+    setTeamPreview(null);
     setPastedLink("");
     const { rows: restored, statuses: last, answer: savedAnswer } = restoredActivity(next);
     const latest = next?.runHistory?.at(-1);
     runId.current = running ? latest?.id : null;
     setStartedAt(running ? latest?.startedAt : null);
-    setRows([...restored, ...approvals.map((approval) => ({
+    const withLive = (next?.liveRows ?? []).reduce((current, row) => appendLiveRow(current, row), restored);
+    setRows([...withLive, ...approvals.map((approval) => ({
       ...approval, id: latest.id + ":approval:" + approval.key, agent: approval.agent ?? "codex", kind: approval.type === "question" ? "question" : "approval",
     }))]);
     setStatuses(last);
@@ -1088,7 +1167,7 @@ export function LiveApp() {
   }, []);
 
   useEffect(() => {
-    if (!quotaSources || locked) return;
+    if (!quotaSources || locked || launching || nativeRecents.loading) return;
     let stopped = false;
     async function refresh() {
       if (quotaPollRunning.current || !quotaPollAllowed.current || document.visibilityState !== "visible") return;
@@ -1097,6 +1176,11 @@ export function LiveApp() {
         for (const agent of quotaSources.split(",")) {
           if (stopped || !quotaPollAllowed.current || document.visibilityState !== "visible") break;
           const accountQuota = await api["quota-summary"](agent).catch(() => null);
+          const failure = usageFailure.current;
+          if (!stopped && failure?.agent === agent && accountQuota?.fetchedAt > failure.at) {
+            usageFailure.current = null;
+            setUsageError("");
+          }
           if (!stopped && accountQuota) setState((current) => {
             const connection = current.connections[agent];
             if (connection?.status !== "ready" || (connection.accountQuota?.fetchedAt ?? 0) >= accountQuota.fetchedAt) return current;
@@ -1105,16 +1189,25 @@ export function LiveApp() {
         }
       } finally { quotaPollRunning.current = false; }
     }
-    const first = setTimeout(refresh, 900);
-    const interval = setInterval(refresh, 300_000);
-    window.addEventListener("focus", refresh);
+    const idle = idleRefresh(refresh);
+    const schedule = () => idle.request();
+    const first = setTimeout(schedule, 900);
+    const interval = setInterval(schedule, 60_000);
+    window.addEventListener("focus", schedule);
+    document.addEventListener("visibilitychange", schedule);
+    document.addEventListener("input", idle.activity, true);
+    document.addEventListener("pointerdown", idle.activity, true);
     return () => {
       stopped = true;
       clearTimeout(first);
       clearInterval(interval);
-      window.removeEventListener("focus", refresh);
+      idle.dispose();
+      window.removeEventListener("focus", schedule);
+      document.removeEventListener("visibilitychange", schedule);
+      document.removeEventListener("input", idle.activity, true);
+      document.removeEventListener("pointerdown", idle.activity, true);
     };
-  }, [api, quotaSources, locked]);
+  }, [api, quotaSources, locked, launching, nativeRecents.loading]);
 
   useEffect(() => {
     const now = Date.now();
@@ -1148,21 +1241,56 @@ export function LiveApp() {
   }, [page, inspectorVisible, tab, worktree]);
 
   useEffect(() => {
+    const deltas = frameDeltas((batch) => setRows((current) => appendLiveDeltas(current, batch)), requestAnimationFrame, cancelAnimationFrame);
     const closeApprovals = (agent, retainedRuns) => setRows((current) => (retainedRuns ? retainTimelineRows(current, retainedRuns) : current).map((row) =>
       ["approval", "question"].includes(row.kind) && !row.decision && (!agent || row.agent === agent) ? { ...row, decision: "Turn ended" } : row));
     function receive(data) {
       const { agent, type } = data;
+      if (type === "jobs-changed") {
+        setState((current) => ({ ...current, jobs: data.jobs }));
+        const job = data.jobs.find((entry) => entry.taskId === displayedChat.current.taskId);
+        setWorking(Boolean(job && !job.summaryOnly && !job.scheduled));
+        return;
+      }
+      if (data.workspace) setState((current) => ({ ...current, recent: current.recent.map((item) =>
+        item.repo === data.workspace.repo ? { ...item, tasks: data.workspace.tasks } : item) }));
+      if (data.taskId && (data.taskId !== displayedChat.current.taskId || data.repo && data.repo !== displayedChat.current.repo)) return;
+      if (type === "job-failed") {
+        setWorking(false); setError(data.text); return;
+      }
+      if (type === "attachment-ocr") {
+        setOcrProgress(data);
+        return;
+      }
+      if (["run-start", "finished", "state-changed", "message", "activity", "handoff", "approval", "question", "limit", "steered", "prepare-tray-sleep"].includes(type)) deltas.flush();
       if (type === "prepare-tray-sleep") {
         void api["complete-tray-sleep"]({ token: data.token, view: windowCheckpoint.current() }).catch(() => {});
+        return;
+      }
+      if (type === "notification-click") {
+        setNotification(data.target);
         return;
       }
       if (type === "state-changed") {
         setState(data.state);
         return;
       }
+      if (type === "run-update") {
+        setState((current) => {
+          const workspace = applyRunUpdate(current.workspace, data);
+          return workspace === current.workspace ? current : { ...current, workspace };
+        });
+        return;
+      }
+      if (type === "team-summary-preview") {
+        if (data.manual || data.runId === runId.current) setTeamPreview(data);
+        return;
+      }
       if (data.workspace) setState((current) => ({ ...current, workspace: data.workspace }));
       if (type === "run-start") {
         runId.current = data.runId;
+        setState((current) => ({ ...current, sessionTeamSteer: null }));
+        setTeamPreview(null);
         setStartedAt(data.startedAt);
         setWorking(true);
         setCanSteer(false);
@@ -1171,21 +1299,32 @@ export function LiveApp() {
         setTeamActivity({});
         setReportedModels({});
         setQueueNotice("");
+        setNotice(data.routingNotice ?? "");
         const retainedRuns = data.workspace?.runHistory;
         const prompt = { id: data.runId + ":prompt", kind: "prompt", text: data.prompt, images: data.images, agents: data.agents, startedAt: data.startedAt };
         setRows((current) => [...(retainedRuns ? retainTimelineRows(current, retainedRuns) : current), prompt]);
       } else if (type === "finished") {
+        if (data.completion) setNotice(data.completion);
+        setTeamPreview(null);
         setWorking(false);
         setCanSteer(false);
         setCanFollowClaude(false);
+        setState((current) => ({ ...current, sessionTeamSteer: null }));
         closeApprovals(undefined, data.workspace?.runHistory);
-      } else if (type === "queue-paused") setQueueNotice(data.text);
+      } else if (type === "session-team-steer" && data.runId === runId.current) {
+        setState((current) => ({ ...current, sessionTeamSteer: data.target }));
+      } else if (type === "answer-ready") setNotice(data.completion);
+      else if (type === "queue-paused") setQueueNotice(data.text);
       else if (type === "handoff") setRows((current) => [...current, { id: runId.current + ":handoff:" + data.key, agent,
         memberName: data.memberName, provider: data.provider, kind: "activity", handoff: true, text: data.text }]);
       else if (type === "connections") setState((current) => ({ ...current, connections: data.connections }));
+      else if (type === "startup-progress") setStartupStage(data.stage);
       else if (type === "error") setError(data.text);
       else if (type === "team-progress" && data.runId === runId.current) {
-        setTeamActivity((current) => ({ ...current, [agent]: data.phase }));
+        setTeamActivity((current) => ({ ...current, [agent]: { phase: data.phase, criterionId: data.criterionId } }));
+      } else if (type === "team-reply-started" && data.runId === runId.current) {
+        setTeamActivity((current) => current[agent]?.phase
+          ? { ...current, [agent]: { ...current[agent], replyStarted: true } } : current);
       } else if (type === "run-model") {
         if (data.model) setReportedModels((current) => current[agent] === data.model ? current : { ...current, [agent]: data.model });
       }
@@ -1218,15 +1357,17 @@ export function LiveApp() {
         const kind = type === "delta" ? "message" : type;
         const row = { id, agent, kind, memberName: data.memberName, provider: data.provider, text: data.text, profile: data.profile,
           ...(data.command && { command: data.command }), ...(data.images && { images: data.images }) };
-        setRows((current) => appendLiveRow(current, row, type === "delta"));
+        if (type === "delta") deltas.append(row);
+        else setRows((current) => appendLiveRow(current, row));
       }
     }
     const unsubscribe = api.onEvent(receive);
     let disposed = false;
     void (async () => {
-      const { windowResume, ...next } = await api.state();
+      const { windowResume, notification: pending, ...next } = await api.state();
       if (disposed) return;
       setState(next);
+      if (pending) setNotification((current) => current ?? pending);
       setPanelWidths(next.panelWidths ?? defaultPanelWidths);
       setWorking(next.running);
       setCanSteer(next.canSteer);
@@ -1234,7 +1375,7 @@ export function LiveApp() {
       if (windowResume) drafts.current = new Map(windowResume.drafts);
       hydrate(next.workspace, next.running, next.approvals);
       if (windowResume && (next.workspace?.taskId ?? null) === windowResume.taskId) {
-        setPage(windowResume.page);
+        setPage(windowResume.page === "inbox" ? "workspace" : windowResume.page);
         setTab(windowResume.tab);
         setInspector(windowResume.inspector);
         setShowProjects(windowResume.showProjects === true);
@@ -1248,7 +1389,6 @@ export function LiveApp() {
           setQueueNotice(windowResume.queueNotice);
         }
       }
-      setLaunching(false);
       if ((!next.connections.codex?.status || !next.connections.claude?.status) && !next.running && !next.backgroundRun) {
         const check = { command: "connections" };
         setPendingMenuAction(check);
@@ -1259,29 +1399,91 @@ export function LiveApp() {
           if (!disposed) setPendingMenuAction((current) => current === check ? null : current);
         }
       }
+      if (!disposed) {
+        setStartupStage("history");
+        const snapshot = await api["startup-data"]();
+        if (disposed) return;
+        setState((current) => ({ ...current, connections: snapshot.connections }));
+        if (!snapshot.recents.deferred) recentLoadedAt.current = Date.now();
+        setNativeRecents({ ...snapshot.recents, loading: false, pulled: !snapshot.recents.deferred });
+        if (snapshot.timedOut) setNotice(startupNotice);
+        setLaunching(false);
+      }
     })().catch((reason) => {
       if (disposed) return;
       setLaunching(false);
       setError(cleanError(reason));
     });
-    return () => { disposed = true; unsubscribe(); };
+    return () => { disposed = true; deltas.discard(); unsubscribe(); };
   }, [api]);
 
+  useEffect(() => {
+    if (!notification || launching || modal || busy) return;
+    let retry;
+    let disposed = false;
+    async function reveal() {
+      try {
+        preserveDraft.current();
+        const result = await api["open-notification"](notification);
+        if (disposed) return;
+        if (result.waiting) {
+          retry = setTimeout(reveal, 750);
+          return;
+        }
+        setNotification(null);
+        if (result.unavailable) setError("This run is no longer in active chat history. Check Archived chats if you moved it there.");
+        if (!result.opened) return;
+        if (result.state) {
+          setState(result.state);
+          hydrate(result.state.workspace, result.state.running, result.state.approvals);
+          setWorking(result.state.running);
+        }
+        go("workspace");
+        if (layout.focused === "projects") setShowProjects(false);
+        if (layout.focused === "inspector") setInspector(false);
+        setSplit(false);
+        setShowLinkedHistory(false);
+        setNotifiedTurn(notification);
+      } catch (reason) {
+        if (disposed) return;
+        setNotification(null);
+        setError(cleanError(reason));
+      }
+    }
+    void reveal();
+    return () => { disposed = true; clearTimeout(retry); };
+  }, [api, busy, launching, locked, modal, notification, taskId]);
+
   useLayoutEffect(() => {
-    if (!launching) document.getElementById("deck-launch")?.remove();
-  }, [launching]);
+    document.getElementById("deck-launch")?.remove();
+  }, []);
 
   useEffect(() => {
-    if (launching) return;
-    let disposed = false;
-    if (page === "inbox") setInbox((current) => ({ ...current, loading: true, error: "" }));
-    void api["team-inbox"]().then((rows) => {
-      if (!disposed) setInbox({ rows, loading: false, error: "" });
-    }).catch((reason) => {
-      if (!disposed) setInbox((current) => ({ ...current, loading: false, error: cleanError(reason) }));
-    });
-    return () => { disposed = true; };
-  }, [api, launching, page, inboxRevision, taskId, lastFinished, working, state.backgroundRun, workspace?.queuePaused, workspace?.queue.length]);
+    if (launching || locked) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible" && Date.now() - recentLoadedAt.current >= 60000) void pullSessions(false);
+    };
+    const idle = idleRefresh(refresh);
+    const schedule = () => idle.request();
+    schedule();
+    window.addEventListener("focus", schedule);
+    document.addEventListener("visibilitychange", schedule);
+    document.addEventListener("input", idle.activity, true);
+    document.addEventListener("pointerdown", idle.activity, true);
+    return () => {
+      idle.dispose();
+      window.removeEventListener("focus", schedule);
+      document.removeEventListener("visibilitychange", schedule);
+      document.removeEventListener("input", idle.activity, true);
+      document.removeEventListener("pointerdown", idle.activity, true);
+    };
+  }, [api, launching, locked, lastFinished]);
+
+  useEffect(() => {
+    if (notice !== startupNotice || launching || !nativeRecents.pulled || Object.keys(nativeRecents.errors).length) return;
+    if (["codex", "claude"].every((agent) => state.connections[agent]?.status !== "ready" ||
+        providerUsesApi(agent, state.connections[agent].authMethod) || quotaBadgeWindow(agent, state.connections[agent]))) setNotice("");
+  }, [notice, launching, nativeRecents.pulled, nativeRecents.errors, state.connections]);
 
   async function perform(command, payload, reportError = setError) {
     setError("");
@@ -1304,37 +1506,105 @@ export function LiveApp() {
     }
   }
 
-  async function pullSessions() {
+  async function pullSessions(force = true) {
+    if (recentRequest.current) return recentRequest.current;
     setNativeRecents((current) => ({ ...current, loading: true, error: "" }));
-    const result = await perform("pull-native-recents", undefined, (error) => {
-      setNativeRecents((current) => ({ ...current, loading: false, error }));
-    });
-    if (result) setNativeRecents({ ...result, pulled: true });
+    const request = (async () => {
+      try {
+        const result = await api["pull-native-recents"]({ force: force !== false });
+        if (!result.deferred) recentLoadedAt.current = Date.now();
+        setNativeRecents((current) => ({ ...current, ...result, loading: false, pulled: current.pulled || !result.deferred }));
+      } catch (reason) {
+        recentLoadedAt.current = Date.now();
+        setNativeRecents((current) => ({ ...current, loading: false, error: cleanError(reason) }));
+      }
+    })().finally(() => { recentRequest.current = null; });
+    recentRequest.current = request;
+    return request;
   }
 
-  async function previewSession(session) {
+  function openNativeChat(session, sourceTaskId) {
+    preserveDraft.current();
+    go("native-chat");
+    setModal(null);
+    return loadNativeChat(session, sourceTaskId);
+  }
+
+  function openNativeTransfer(kind) {
+    sessionRequest.current = Symbol();
+    setNativePreview({ ...nativeConversation, kind });
+    setError("");
+    setModal(kind === "fork" ? "native-fork" : "native-handoff");
+  }
+
+  async function loadNativeChat(session, sourceTaskId, refresh = false) {
     const request = Symbol();
-    sessionRequest.current = request;
-    setNativePreview({ session });
-    setModal("native-session");
-    const result = await perform("native-session-preview", { provider: session.provider, id: session.id }, (error) => {
-      if (sessionRequest.current === request) setError(error);
+    nativeChatRequest.current = request;
+    if (!refresh) setNativeConversation({ session, sourceTaskId });
+    const result = await perform("native-session-preview", { provider: session.provider, id: session.id, sourceTaskId }, (error) => {
+      if (nativeChatRequest.current === request) {
+        setNativeConversation((current) => ({ ...current, chat: { available: false, unverified: true } }));
+        setError(error);
+      }
     });
-    if (result && sessionRequest.current === request) setNativePreview({ session, ...result });
+    if (result && nativeChatRequest.current === request) setNativeConversation({ session, sourceTaskId, ...result });
   }
 
-  async function olderNativeMessages(query) {
-    const request = sessionRequest.current;
-    const { provider, id } = nativePreview.session;
-    const next = await perform("native-session-preview", { provider, id, older: true, query }, (error) => {
-      if (sessionRequest.current === request) setError(error);
+  async function olderNativeMessages(query, original = false) {
+    const ref = original ? nativeChatRequest : sessionRequest;
+    const update = original ? setNativeConversation : setNativePreview;
+    const request = ref.current;
+    const { session: { provider, id }, sourceTaskId } = original ? nativeConversation : nativePreview;
+    const next = await perform("native-session-preview", { provider, id, older: true, query, sourceTaskId }, (error) => {
+      if (ref.current === request) setError(error);
     });
-    if (!next || sessionRequest.current !== request) return;
-    setNativePreview((current) => {
+    if (!next || ref.current !== request) return;
+    update((current) => {
       const loaded = new Set(current.messages.map(({ id }) => id));
       return { ...current, ...next, skipped: current.skipped || next.skipped,
         messages: [...current.messages, ...next.messages.filter(({ id }) => !loaded.has(id))] };
     });
+  }
+
+  async function sendNativeChat(prompt, revision, options) {
+    const request = nativeChatRequest.current;
+    const { provider, id } = nativeConversation.session;
+    let next;
+    try { next = await api["native-chat-send"]({ provider, id, prompt, revision, ...options }); }
+    catch (reason) { const error = cleanError(reason);
+      if (nativeChatRequest.current !== request) return false;
+      if (/refresh (?:the )?messages|refresh before sending/iu.test(error)) {
+        setNativeConversation((current) => ({ ...current, chat: { ...current.chat, unverified: true } }));
+      }
+      setError(error);
+    }
+    if (next?.delivered && nativeDrafts.current.get(provider + ":" + id)?.trim() === prompt) {
+      keepNativeDraft({ provider, id }, "");
+    }
+    if (!next) return false;
+    if (nativeChatRequest.current !== request) return Boolean(next.delivered);
+    setNativeConversation((current) => {
+      const newest = new Set(next.messages.map(({ id }) => id));
+      return { ...current, ...next, messages: [...next.messages, ...current.messages.filter(({ id }) => !newest.has(id))] };
+    });
+    return true;
+  }
+
+  async function chooseNativePermission(mode) {
+    const request = nativeChatRequest.current;
+    const { provider, id } = nativeConversation.session;
+    const result = await perform("save-native-chat-permission", { provider, id, mode, revision: nativeConversation.chat.revision });
+    if (result && nativeChatRequest.current === request) {
+      setNativeConversation((current) => ({ ...current, chat: { ...current.chat, ...result } }));
+    }
+  }
+
+  function keepNativeDraft(session, draft) {
+    const key = sessionKey(session);
+    nativeDrafts.current.delete(key);
+    if (draft) nativeDrafts.current.set(key, draft);
+    if (nativeDrafts.current.size > 16) nativeDrafts.current.delete(nativeDrafts.current.keys().next().value);
+    try { localStorage.setItem("ai-deck-native-drafts", JSON.stringify([...nativeDrafts.current])); } catch {}
   }
 
   async function pinSession(session) {
@@ -1344,10 +1614,14 @@ export function LiveApp() {
   }
 
   async function createHandoff(payload) {
-    const next = await open("native-handoff-draft", payload);
+    if (creatingHandoff.current) return;
+    creatingHandoff.current = true;
+    let next;
+    try { next = await open("native-handoff-draft", payload); }
+    finally { creatingHandoff.current = false; }
     if (!next) return;
     close();
-    setNotice("Handoff draft ready. Review the quoted messages and send when ready.");
+    setNotice(next.workspace?.nativeHandoff?.sources ? "Team chat ready. Type your first message." : "Draft ready. Review the quoted messages and send when ready.");
     requestAnimationFrame(() => {
       const input = draftInput.current;
       if (!input) return;
@@ -1382,6 +1656,11 @@ export function LiveApp() {
     setNativeRecents((current) => ({ ...current, sessions: current.sessions.filter((entry) => !removed.has(sessionKey(entry))) }));
     for (const entry of next.results) {
       if (entry.deleted && !entry.provider) drafts.current.delete(entry.id);
+      if (entry.deleted && entry.provider) nativeDrafts.current.delete(sessionKey(entry));
+    }
+    if (nativeConversation && removed.has(sessionKey(nativeConversation.session))) {
+      setNativeConversation(null);
+      go("workspace");
     }
     setSessionSelection((current) => {
       const remaining = [...(current ?? [])].filter(([key]) => !removed.has(key));
@@ -1394,7 +1673,6 @@ export function LiveApp() {
 
   async function applySessionAction(action, values) {
     const { id, provider, repo } = sessionActions;
-    if (provider && action === "fork") return checkLinkedSource(sessionActions, true);
     if (!provider) {
       if (await open("deck-task-action", { repo, id, action, ...values }, action === "fork" ? "workspace" : page)) {
         if (action === "delete") drafts.current.delete(id);
@@ -1408,18 +1686,24 @@ export function LiveApp() {
     setNativeRecents((current) => ({ ...current, sessions: [...current.sessions.filter((entry) => !same(entry)),
       ...(result.session ? [result.session] : [])].sort((left, right) => right.updatedAt - left.updatedAt) }));
     setState((current) => ({ ...current, nativePins: result.pins }));
+    if (action === "delete") nativeDrafts.current.delete(sessionKey(sessionActions));
     close();
+    if (nativeConversation && same(nativeConversation.session)) {
+      if (action === "restore" && result.session) await loadNativeChat(result.session);
+      else if (result.session && !result.session.archived) setNativeConversation((current) => ({ ...current, session: result.session }));
+      else go("workspace");
+    }
   }
 
-  async function checkLinkedSource(session, fork = false) {
+  async function checkLinkedSource(session) {
     const request = Symbol();
     sessionRequest.current = request;
-    setLinkedSource({ session, fork });
+    setLinkedSource({ session });
     setModal("linked-source");
     const result = await perform("linked-source-check", { provider: session.provider, id: session.id }, (error) => {
       if (sessionRequest.current === request) setError(error);
     });
-    if (result && sessionRequest.current === request) setLinkedSource({ session, check: result, fork });
+    if (result && sessionRequest.current === request) setLinkedSource({ session, check: result });
   }
 
   async function openLinked(payload) {
@@ -1438,13 +1722,13 @@ export function LiveApp() {
   }
 
   async function open(command, payload, destination = "workspace") {
-    if (taskId) {
-      flushDraft.current();
-      if (autosave.current?.text !== JSON.stringify(draft)) drafts.current.set(taskId, draft);
-    }
+    preserveDraft.current();
     const next = await perform(command, payload);
     if (next?.workspace) {
-      if (next.workspace.taskId !== taskId) hydrate(next.workspace);
+      if (next.workspace.taskId !== taskId) hydrate(next.workspace, next.running, next.approvals);
+      setWorking(next.running);
+      setCanSteer(next.canSteer);
+      setCanFollowClaude(next.canFollowClaude);
       setPage(destination);
       if (destination === "workspace" && layout.focused === "projects") {
         setShowProjects(false);
@@ -1455,13 +1739,37 @@ export function LiveApp() {
   }
 
   async function loadProviderDetails(agent) {
+    if (usageRequest.current?.agent === agent) return;
+    const request = { agent };
+    usageRequest.current = request;
+    setUsageLoading(agent);
+    usageFailure.current = null;
     if (agent === "codex") setResetNotice("");
     setUsageError("");
-    const result = await perform("provider-details", agent, setUsageError);
-    if (result) {
-      setState(result.state);
+    try {
+      const result = await api["provider-details"](agent);
+      if (usageRequest.current !== request) return;
+      setState((current) => ({ ...current, connections: result.state.connections }));
       setProviderDetails((current) => ({ ...current, [agent]: result.detail }));
-    } else setProviderDetails((current) => ({ ...current, [agent]: undefined }));
+    } catch (reason) {
+      if (usageRequest.current === request) {
+        usageFailure.current = { agent, at: Date.now() };
+        setUsageError(cleanError(reason));
+      }
+    } finally {
+      if (usageRequest.current === request) { usageRequest.current = null; setUsageLoading(null); }
+    }
+  }
+
+  async function chooseTeamDirection(direction) {
+    if (locked || !workspace || workspace.linkedSession || workspace.chatOnly) return;
+    const team = changeTeamDirection(workspace.sessionTeam, direction);
+    const next = await perform("save-session-team", { repo: workspace.repo, taskId, team });
+    if (!next) return;
+    setDraft((current) => changeWorkflow(current, direction === "discuss" ? "team-discussion" : sessionTeamMode));
+    setNotice(direction === "discuss" ? "Discussion saved for this session. File and command tools stay off."
+      : "Team order saved for this session. Existing drafts and model choices are kept.");
+    draftInput.current?.focus();
   }
 
   async function useCodexReset(token) {
@@ -1491,7 +1799,6 @@ export function LiveApp() {
     setError("");
     setNotice("");
     setModal(agent + "-model");
-    if (!locked && !modelCatalogs[agent] && state.connections[agent]?.status === "ready") void loadModels(agent);
   }
 
   function modelSettings(agent, popup = false) {
@@ -1499,7 +1806,7 @@ export function LiveApp() {
       {pendingMenuAction?.command === "provider-models" && pendingMenuAction.agent === agent && <DeckLoading>Reading available models…</DeckLoading>}
       <AgentModelSettings key={agent + (workspace?.taskId ?? "")} agent={agent} workspace={workspace}
         defaults={state.agentSettings} catalog={modelCatalogs[agent]} busy={busy}
-        canLoad={!locked && state.connections[agent]?.status === "ready"} load={() => loadModels(agent, true)}
+        canLoad={!locked && pendingMenuAction?.command !== "connections"} load={() => loadModels(agent, true)}
         save={async (payload) => {
           if (await perform("save-agent-settings", payload)) {
             if (popup) close();
@@ -1521,13 +1828,34 @@ export function LiveApp() {
   }
 
   const modelAgent = modal === "codex-model" ? "codex" : modal === "claude-model" ? "claude" : null;
+  const modelView = modelAgent ? "composer:" + modelAgent : page === "settings" && settingsSection === "models" ? "settings:" + settingsAgent : null;
+  const visibleModelAgent = modelView ? modelAgent ?? settingsAgent : null;
+  const visibleCatalog = modelCatalogs[visibleModelAgent];
+  const checkingConnections = launching || pendingMenuAction?.command === "connections";
+  const loadVisibleModels = useEffectEvent((agent) => { void loadModels(agent); });
+  useEffect(() => {
+    if (modelLoadAttempt.current?.view !== modelView) modelLoadAttempt.current = null;
+    if (!modelView || visibleCatalog || locked || checkingConnections || modelLoadAttempt.current) return;
+    modelLoadAttempt.current = { view: modelView };
+    loadVisibleModels(visibleModelAgent);
+  }, [modelView, visibleModelAgent, visibleCatalog, locked, checkingConnections]);
 
   const now = Date.now();
   const computerProviders = Object.entries(names).filter(([agent]) => state.connections[agent]?.status === "ready" &&
     !activeUsageLimit(state.connections[agent]?.usageLimit, now));
+  const askAgent = draft.askAgent;
+  const askIssue = !supportsDirectQuestion(draft) ? "Use the current workflow to send the attached skills or review evidence." : "";
   const conversation = !link && !armedComputer && teamConversation(draft);
   const leadOnly = conversation === "question" || conversation === "greeting";
-  const { available, limited, disconnected, requested } = routeMode(draft.mode, state.connections, now, leadOnly);
+  const intentControls = !askAgent && !link && !armedComputer && supportsMessageIntent(draft);
+  const autoIntent = intentControls && needsMessageIntent(draft);
+  const manualReview = intentControls && draft.messageIntent === "review";
+  const resolveIntent = autoIntent || manualReview || intentControls && draft.messageIntent === "chat";
+  const intentAgent = resolveIntent && messageIntentAgents(draft.mode, state.connections, now)[0];
+  const { available, limited, disconnected, requested } = routeMode(askAgent || intentAgent || draft.mode, state.connections, now, leadOnly);
+  const draftActionLabel = conversation === "discussion" ? available.length === 1 && limited.length
+    ? "Answer with " + names[available[0]] : "Team discussion"
+    : leadOnly ? "Lead answers" : manualReview ? "Read-only review" : draft.followupCriterion ? "Review " + draft.followupCriterion : null;
   const roster = workspace?.sessionTeam?.members ?? [];
   const sessionMode = draft.mode === sessionTeamMode;
   const rosterTopology = workspace?.sessionTeam?.topology;
@@ -1540,8 +1868,8 @@ export function LiveApp() {
   const hasWriteConflict = (mode, agents) => Boolean(workspace?.readOnly &&
     (mode === sessionTeamMode ? roster.some(({ position }) => position === "write")
       : !planPair(mode) && agents.some((agent) => (link || agent === "claude") && agentRole(mode, agent) === "write")));
-  const readOnlyConflict = !conversation && hasWriteConflict(draft.mode, requested);
-  const ready = (sessionMode ? !rosterIssue : available.length >= (conversation === "discussion" ? 2 : 1)) && !readOnlyConflict;
+  const readOnlyConflict = !conversation && !resolveIntent && hasWriteConflict(draft.mode, available);
+  const ready = (sessionMode && !askAgent ? !rosterIssue : available.length > 0) && !readOnlyConflict;
   const hasDraft = Boolean(draft.prompt.trim() || draft.images?.length);
   const parallelDraft = ["team", "claude-team"].includes(draft.mode) || separateEdits(draft.mode);
   const handoffMode = requested[0] === "claude" ? "claude-build-review" : defaultTeamMode;
@@ -1549,10 +1877,15 @@ export function LiveApp() {
   const steerAgents = activeSteerMode ? routeMode(activeSteerMode, {}).requested.filter((agent) => agent === "codex" ? canSteer : canFollowClaude) : [];
   const draftSteerAgents = steerableDraft(draft, activeSteerMode) ? steerAgents : [];
   const sendShortcut = preferences.sendOnEnter ? "Enter" : "Ctrl+Enter";
+  const queueFollowup = working && !link && !armedComputer;
+  const queueTeamFollowup = queueFollowup && Boolean(latestRun?.sessionTeam);
+  const sessionTeamSteer = queueTeamFollowup && state.sessionTeamSteer?.runId === latestRun.id ? state.sessionTeamSteer : null;
   const linkedRecovery = linkedUsageRecovery(workspace, draft.mode, state.connections, now);
   const linkedSteps = link?.steps ?? [];
   const teamPlan = effectiveTeamwork(draft.teamwork, workspace?.teamAssignment, workspace?.teamwork);
-  const assignmentIssue = !conversation && separateEditsIssue(draft.mode, teamPlan);
+  const autoAssign = Boolean(projectWorkspace && !workspace.readOnly && !link && !armedComputer && needsAutomaticAssignments(draft.mode, teamPlan));
+  const editAssignmentIssue = autoAssign ? "" : separateEditsIssue(draft.mode, teamPlan);
+  const assignmentIssue = hasDraft && !conversation && !manualReview && (!autoIntent || error === editAssignmentIssue) && editAssignmentIssue;
   const reviewDepth = reviewPolicy(draft.reviewPolicy);
   const reviewOptions = teamRunOptions(reviewDepth, draft.teamOptions);
   const summaryLeader = !link && !working && recordedSummaryLeader(latestRun);
@@ -1560,15 +1893,17 @@ export function LiveApp() {
     id: latestRun.id,
     leader: names[summaryLeader],
     pending: summaryPending === latestRun.id,
+    preview: teamPreview?.manual && teamPreview.taskId === taskId && teamPreview.runId === latestRun.id ? teamPreview : null,
     disabled: locked || !routeMode(summaryLeader, state.connections, now).available.length,
     start: async () => {
+      setTeamPreview(null);
       setSummaryPending(latestRun.id);
       try { await perform("summarize-team-run", { taskId, runId: latestRun.id }); }
-      finally { setSummaryPending(null); }
+      finally { setSummaryPending(null); setTeamPreview(null); }
     },
     stop: () => api.stop().catch((error) => setError(cleanError(error))),
   };
-  const finalAnswerHint = reviewOptions.turnLimit > 2 ? " The lead summarizes when both agents finish." : "";
+  const finalAnswerHint = reviewOptions.turnLimit > 2 ? " AI Deck summarizes verified results or asks the team lead to explain open points." : "";
   const smartPath = reviewDepth === "smart" && !reviewOptions.alwaysReview && !draft.images?.length && smartTextPath(draft.prompt.trim());
   const skills = workspace?.notes.filter((note) => note.source === "Skill") ?? [];
   const draftSkills = draft.skillIds ?? [];
@@ -1576,16 +1911,25 @@ export function LiveApp() {
   const planHint = pair && (limited.includes(pair[0]) ? names[pair[0]] + " needs usage before this workflow can start."
     : limited.includes(pair[1]) ? names[pair[0]] + " will plan now. Apply the plan when " + names[pair[1]] + " is available."
       : names[pair[0]] + " plans read-only. You approve the plan before " + names[pair[1]] + " starts.");
-  const routeHint = sessionMode ? rosterIssue || (rosterBlocks.length ? "Unavailable branches · " + rosterBlocks.map(({ name }) => name).join(", ") + " · Ready branches can run."
+  const routeHint = askAgent ? askIssue || (limited.length ? names[askAgent] + " is at its usage limit. Your draft is kept."
+    : disconnected.length ? names[askAgent] + " needs a connection. Your draft is kept."
+      : names[askAgent] + " answers this question · Chat only")
+    : sessionMode ? rosterIssue || (rosterBlocks.length ? "Unavailable branches · " + rosterBlocks.map(({ name }) => name).join(", ") + " · Ready branches can run."
     : rosterTopology === "tree"
     ? "Branching · " + roster.length + " members · Lead " + (roster.find(({ parentId }) => parentId === null)?.name ?? "unavailable")
     : roster.slice(0, 3).map(({ name }) => name).join(" → ") + (roster.length > 3 ? " · +" + (roster.length - 3) + " more" : ""))
     : disconnected.length ? "Check Connections for " + disconnected.map((agent) => names[agent]).join(" and ") + "."
-    : conversation === "discussion" ? available.length === 2
+    : conversation === "discussion" ? available.length === 1 && limited.length
+      ? names[available[0]] + " will answer directly while " + names[limited[0]] + " is at its usage limit."
+      : available.length === 2
       ? names[requested[0]] + " opens, then " + names[requested[1]] + " gives the conclusion." +
-        (draft.mode === "team-discussion" && latestRun?.discussion ? ' Use "Discuss together:" to start a new topic.' : " Discussion only.")
-      : "Both agents need to be available for a discussion."
-    : leadOnly ? names[requested[0]] + " answers directly without opening the project."
+        (chatOnly ? " Chat only." : draft.mode === "team-discussion" && latestRun?.discussion ? ' Use "Discuss together:" to start a new topic.' : " Discussion only.")
+      : "The discussion will be available when usage returns."
+    : leadOnly ? available.length ? names[requested[0]] + " answers directly without opening the project."
+      : "The lead is at its usage limit. Your draft is ready when usage returns."
+    : manualReview ? "The lead checks the project in read-only mode."
+    : autoAssign ? "For edits, Codex and Claude propose assignments for you to approve."
+    : autoIntent && ready ? "AI Deck checks whether to chat, review, or edit when you send."
     : readOnlyConflict ? "Project read-only mode is enabled. Choose Plan or Review to continue."
     : autoTeam(draft.mode) ? limited.length ? "Auto Team is waiting for " + limited.map((agent) => names[agent]).join(" and ") + " usage."
       : "Both agents plan read-only. Approve their assignments before they edit."
@@ -1604,8 +1948,8 @@ export function LiveApp() {
               : draft.mode === "team" ? "Claude reviews the starting snapshot while Codex edits."
               : sendShortcut + " to send · Shift+Enter for a new line · / for commands");
 
-  const slash = parseSlash(draft.prompt);
-  const commandsOpen = !modal && (commandPalette === "manual" || Boolean(slash && commandPalette !== "dismissed"));
+  const slash = chatOnly ? null : parseSlash(draft.prompt);
+  const commandsOpen = !chatOnly && !modal && (commandPalette === "manual" || Boolean(slash && commandPalette !== "dismissed"));
   const matchingCommands = slashCommands.filter((command) => !slash || (slash.args ? command.name === slash.name : command.name.startsWith(slash.name)));
   const highlighted = Math.min(commandIndex, matchingCommands.length - 1);
   const commandReason = (command) => link && (command.name === "team-plan" || command.name === "plan" ||
@@ -1653,7 +1997,6 @@ export function LiveApp() {
     else if (command.name === "skill") setModal("skills");
     else if (command.name === "skills") openPlugins("skills");
     else if (command.name === "library") openPlugins("library");
-    else if (command.name === "inbox") go("inbox");
     else if (command.name === "model") openSettings("models");
     else if (command.name === "usage") go("usage");
     else if (command.name === "status") openSettings("connections");
@@ -1675,7 +2018,7 @@ export function LiveApp() {
     } else if (commandsOpen && event.key === "Enter" && !event.shiftKey && !event.altKey && matchingCommands[highlighted]) {
       event.preventDefault();
       if (!event.repeat) executeCommand(matchingCommands[highlighted]);
-    } else if (event.key === "Enter" && !event.shiftKey && !event.altKey && (event.ctrlKey || preferences.sendOnEnter)) {
+    } else if (event.key === "Enter" && !event.shiftKey && !event.altKey && (event.ctrlKey || preferences.sendOnEnter || queueTeamFollowup)) {
       event.preventDefault();
       if (event.repeat) return;
       if (event.ctrlKey && !commandsOpen && draftSteerAgents.length) requestSteer();
@@ -1764,14 +2107,21 @@ export function LiveApp() {
       return;
     }
     const prompt = draft.prompt.trim();
-    const conversation = !link && !armedComputer && teamConversation({ ...draft, mode, prompt });
-    const issue = !conversation && separateEditsIssue(mode, teamPlan);
+    const outgoing = { ...changeWorkflow(draft, mode), prompt };
+    if (outgoing.askAgent && askIssue) { setError(askIssue); return; }
+    const conversation = !link && !armedComputer && teamConversation(outgoing);
+    const canRoute = !outgoing.askAgent && !link && !armedComputer && supportsMessageIntent(outgoing);
+    const review = canRoute && outgoing.messageIntent === "review";
+    const automaticIntent = canRoute && needsMessageIntent(outgoing);
+    const resolveIntent = review || automaticIntent || canRoute && outgoing.messageIntent === "chat";
+    const issue = !conversation && !review && !automaticIntent && !(autoAssign && mode === draft.mode) && separateEditsIssue(mode, teamPlan);
     if (issue) { setError(issue); return; }
-    const route = routeMode(mode, state.connections, now, conversation === "question" || conversation === "greeting");
-    const useRoster = mode === sessionTeamMode;
-    if (busy || state.backgroundRun || !workspace || !hasDraft || (!conversation && hasWriteConflict(mode, route.requested)) ||
-        (working && (useRoster || latestRun?.sessionTeam)) || (!working && !(useRoster ? !rosterIssue : route.available.length >= (conversation === "discussion" ? 2 : 1)))) return;
-    const payload = { ...changeWorkflow(draft, mode), prompt, ...(useRoster && { taskId }), ...(armedComputer && { computerToken: armedComputer.token }) };
+    const intentAgent = resolveIntent && messageIntentAgents(mode, state.connections, now)[0];
+    const route = routeMode(outgoing.askAgent || intentAgent || mode, state.connections, now, conversation === "question" || conversation === "greeting");
+    const useRoster = !outgoing.askAgent && mode === sessionTeamMode;
+    if (busy || state.backgroundRun || !workspace || !hasDraft || (!conversation && !resolveIntent && hasWriteConflict(mode, route.available)) ||
+        (working && !queueFollowup) || (!working && !(useRoster ? !rosterIssue : route.available.length > 0))) return;
+    const payload = { ...outgoing, ...((useRoster || outgoing.askAgent) && { taskId }), ...(armedComputer && { computerToken: armedComputer.token }) };
     if (link) {
       if (working) return;
       const preview = await perform("linked-prepare", { taskId, mode, reviewEvidence }, linkedSendFailure);
@@ -1787,12 +2137,14 @@ export function LiveApp() {
         return;
       }
       await dispatchDraft("run", { ...payload, linkedToken: preview.token }, linkedSendFailure);
-    } else await dispatchDraft(working ? "queue-message" : "run", payload);
+    } else await dispatchDraft(queueFollowup ? "queue-message" : "run", payload);
   }
 
   async function dispatchDraft(command, payload, reportError) {
     if (submitting.current) return null;
     submitting.current = true;
+    const starting = command === "run";
+    if (starting) setStartingRun(true);
     try {
       const recoveryId = draft.prompt.trim() === payload.prompt ? flushDraft.current() : undefined;
       const next = await perform(command, { ...payload, recoveryId }, reportError);
@@ -1801,19 +2153,26 @@ export function LiveApp() {
       if (next) setRestoredDraft(false);
       if (next) setDraft((current) => {
         if (current.prompt.trim() !== payload.prompt || current.mode !== draft.mode || current.teamwork !== draft.teamwork || current.reviewPolicy !== draft.reviewPolicy ||
-            current.teamOptions !== draft.teamOptions ||
+            current.teamOptions !== draft.teamOptions || current.messageIntent !== draft.messageIntent || current.askAgent !== draft.askAgent ||
             current.assignmentOnce !== draft.assignmentOnce) return current;
         const after = current.assignmentOnce ? { mode: defaultDraftMode(workspace), teamwork: undefined, assignmentOnce: undefined } : {};
         return { ...current, ...after, prompt: "", reviewOf: null, reviewSince: undefined, followupRunId: undefined, reviewFiles: undefined,
-          reviewTarget: undefined, images: undefined, skillIds: undefined, linkedStepId: undefined };
+          reviewTarget: undefined, followupCriterion: undefined, images: undefined, skillIds: undefined, linkedStepId: undefined, messageIntent: undefined, askAgent: undefined,
+          ...(current.teamOptions?.codeGraph && { teamOptions: { ...current.teamOptions, codeGraph: undefined } }) };
       });
       return next;
-    } finally { submitting.current = false; }
+    } finally {
+      if (starting) setStartingRun(false);
+      submitting.current = false;
+    }
   }
 
-  function applyTeamDraft(mode, teamwork, once = false) {
-    setDraft((current) => ({ ...changeWorkflow(current, mode), teamwork, assignmentOnce: once || undefined }));
+  function applyTeamDraft(mode, teamwork, once = false, editDraft = !needsAutomaticAssignments(mode, teamwork)) {
+    const next = { ...changeWorkflow(draft, mode), teamwork, assignmentOnce: once || undefined,
+      ...(separateEdits(mode) && { messageIntent: editDraft ? "edit" : undefined }) };
+    setDraft(next);
     close();
+    flushDraft.current(next);
   }
 
   async function openTeamDecisions() {
@@ -1825,7 +2184,7 @@ export function LiveApp() {
   async function saveTeamSession(mode, teamwork, reset = false) {
     const next = await perform("save-team-assignment", { taskId, mode, teamwork, reset });
     if (next) {
-      applyTeamDraft(reset ? workspace.teamMode ?? defaultTeamMode : mode, undefined);
+      applyTeamDraft(reset ? workspace.teamMode ?? defaultTeamMode : mode, undefined, false, !reset && !needsAutomaticAssignments(mode, teamwork));
       setNotice(reset ? "Session uses the project default." : "Roles saved for this session.");
     }
   }
@@ -1844,23 +2203,15 @@ export function LiveApp() {
   }
 
   async function decide(row, accept) {
-    const acknowledged = await perform("approve", { key: row.key, agent: row.agent, accept });
+    const acknowledged = await perform("approve", { taskId, runId: runId.current, key: row.key, agent: row.agent, accept });
     if (acknowledged) setRows((current) => current.map((item) =>
       item.id === row.id ? { ...item, decision: accept ? "Approved once" : "Declined" } : item));
   }
 
   async function answerQuestion(row, answers) {
-    const acknowledged = await perform("answer-question", { key: row.key, agent: row.agent, answers });
+    const acknowledged = await perform("answer-question", { taskId, runId: runId.current, key: row.key, agent: row.agent, answers });
     if (acknowledged) setRows((current) => current.map((item) =>
       item.id === row.id ? { ...item, decision: answers === null ? "Questions skipped" : "Answers sent" } : item));
-  }
-
-  async function openInboxRow(row) {
-    const next = await open("switch-task", { repo: row.repo, id: row.taskId });
-    if (next?.workspace?.taskId === row.taskId && (row.kind === "approval" || row.kind === "plan-input")) {
-      setHistoryRun(row.runId);
-      setModal("history");
-    }
   }
 
   async function previewLibrarySkill(entry) {
@@ -1907,13 +2258,27 @@ export function LiveApp() {
       skillIds: run.skillIds?.filter((id) => skills.some((skill) => skill.id === id)) });
   }
 
+  function continuePlanInAnotherProject(run) {
+    setError("");
+    setBlockedPlanProject({ run });
+    setModal("blocked-plan-project");
+  }
+
+  async function choosePlanBase(run) {
+    setError("");
+    setBlockedPlanBase({ run });
+    setModal("blocked-plan-base");
+    const result = await perform("blocked-plan-bases", { taskId, runId: run.id });
+    if (result) setBlockedPlanBase({ run, ...result, ref: "" });
+  }
+
   function fillDraft(next) {
     setDraft(next);
     setPage("workspace");
     requestAnimationFrame(() => draftInput.current?.focus());
   }
 
-  function askAboutReply(run, agent, excerpt) {
+  function askAboutReply(run, agent, excerpt, criterion) {
     if (locked || link || !run.finishedAt) return;
     if (hasDraft) {
       setError("Send or clear the current draft before creating a follow-up.");
@@ -1922,15 +2287,9 @@ export function LiveApp() {
     const quote = excerpt.slice(0, 2500);
     setError("");
     fillDraft({ ...emptyDraft, assignmentOnce: true, mode: agent === "codex" ? "codex-review" : "claude", followupRunId: run.id,
-      prompt: "Check this excerpt from the previous turn. Use the attached evidence and point out what still needs verification.\n\nQuoted reply:\n" + quote });
-  }
-
-  async function attachText() {
-    const attachment = await perform("choose-text-attachment");
-    if (!attachment) return;
-    const prompt = [draft.prompt.trim(), `[Attached text · ${attachment.name}]\n${attachment.text}`].filter(Boolean).join("\n\n");
-    if (prompt.length > 18000) { setError("This draft has no room for the attachment."); return; }
-    fillDraft({ ...draft, prompt });
+      followupCriterion: criterion,
+      prompt: criterion ? "Review only " + criterion + " from the previous result. Verify its evidence and state any remaining gap.\n\n" + quote
+        : "Check this excerpt from the previous turn. Use the attached evidence and point out what still needs verification.\n\nQuoted reply:\n" + quote });
   }
 
   function openLinkAttachment(url = "") {
@@ -1970,7 +2329,7 @@ export function LiveApp() {
     const next = await perform("computer-arm", { token, agent, access });
     if (!next) return;
     setComputerNext(next);
-    setDraft((current) => changeWorkflow(current, next.mode));
+    setDraft((current) => ({ ...changeWorkflow(current, next.mode), askAgent: undefined }));
     close();
     go("workspace");
     draftInput.current?.focus();
@@ -1981,35 +2340,54 @@ export function LiveApp() {
     if (armedComputer) setComputerNext(null);
   }
 
-  function addImages(images) {
-    if (images?.length) setDraft((current) => ({ ...current, images: [...(current.images ?? []), ...images].slice(0, 4) }));
+  function addAttachments(attachments) {
+    if (attachments?.length) setDraft((current) => ({ ...current, images: [...(current.images ?? []), ...attachments] }));
   }
 
-  async function attachImages() {
-    addImages(await perform("choose-task-images", 4 - (draft.images?.length ?? 0)));
-  }
-
-  async function pasteImages(event) {
-    const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
-    if (!files.length) {
-      const text = event.clipboardData.getData("text/plain").trim();
-      if (workspace && /^https?:\/\/\S+$/iu.test(text) && text.length <= 2000) setPastedLink(text);
-      return;
-    }
-    event.preventDefault();
+  async function importAttachments(command, files) {
     if (busy || !workspace) return;
-    if (files.length + (draft.images?.length ?? 0) > 4) { setError("Attach up to four images."); return; }
-    if (files.some((file) => file.size > 12 * 1024 * 1024)) { setError("Image files can be up to 12 MB."); return; }
-    setError("");
-    setBusy(true);
+    setPendingImageImports((files ?? []).filter((file) => file.type?.startsWith("image/")).map((file) => file.name || "image"));
     try {
-      for (const file of files) {
-        const image = await api["paste-task-image"]({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
-        addImages([image]);
-      }
-    } catch (reason) {
-      setError(cleanError(reason));
-    } finally { setBusy(false); }
+      const attachments = await perform(command, { taskId, existing: draft.images, files });
+      addAttachments(attachments);
+      draftInput.current?.focus({ preventScroll: true });
+      return attachments;
+    } finally { setOcrProgress(null); setPendingImageImports([]); }
+  }
+
+  async function addChatQuote({ author, text, truncated }) {
+    const added = await perform("add-chat-quote", { taskId, author, text, existing: draft.images });
+    if (!added?.length) return;
+    addAttachments(added);
+    if (truncated) setNotice("Added the first 12,000 characters of the selection.");
+    draftInput.current?.focus({ preventScroll: true });
+  }
+
+  async function openSideChat({ author, text, truncated }) {
+    if (locked) return;
+    if (await open("create-side-chat", { taskId, author, text })) {
+      if (truncated) setNotice("Side chat includes the first 12,000 characters of the selection.");
+      requestAnimationFrame(() => draftInput.current?.focus({ preventScroll: true }));
+    }
+  }
+
+  function pasteAttachments(event) {
+    const files = Array.from(event.clipboardData.files);
+    if (files.length) {
+      event.preventDefault();
+      void importAttachments("import-task-files", files);
+    } else {
+      const text = event.clipboardData.getData("text/plain");
+      if (!text && !event.clipboardData.types.includes("text/html")) void importAttachments("paste-clipboard-files");
+      if (workspace && /^https?:\/\/\S+$/iu.test(text.trim()) && text.length <= 2000) setPastedLink(text.trim());
+    }
+  }
+
+  function dropAttachments(event) {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length) void importAttachments("import-task-files", files);
   }
 
   async function updateTaskPanel(payload) {
@@ -2043,15 +2421,16 @@ export function LiveApp() {
     imageRequest.current = request;
     setImagePreview(null);
     setModal("image");
-    const source = await perform("preview-task-image", image.id);
-    if (source && imageRequest.current === request) setImagePreview({ name: image.name, source });
+    const content = await perform("preview-task-attachment", image.id);
+    if (content && imageRequest.current === request) setImagePreview({ name: image.name, ...content });
   }
 
   function removeDraftImage(id) {
     const next = { ...draft, images: draft.images?.filter((image) => image.id !== id) };
     flushDraft.current(next);
     setDraft(next);
-    void api["discard-draft-image"](id).catch(() => {});
+    draftInput.current?.focus({ preventScroll: true });
+    void api["discard-draft-attachment"](id).catch(() => {});
   }
 
   function draftReview(changed) {
@@ -2093,6 +2472,8 @@ export function LiveApp() {
     setLinkedNext(null);
     setLinkedTransfer(null);
     setHandoffRecheck(null);
+    setBlockedPlanProject(null);
+    setBlockedPlanBase(null);
     setBaseUpdate(null);
     setBatchDelete(null);
     setError("");
@@ -2116,7 +2497,7 @@ export function LiveApp() {
   }, [layout.focused]);
 
   function openPane(side) {
-    setPage("workspace");
+    if (!nativeChatPage || side !== "projects") setPage("workspace");
     setPanelPriority(side);
     setStandalonePanel(side);
     if (side === "projects") setShowProjects(true);
@@ -2158,7 +2539,7 @@ export function LiveApp() {
     setNotice("");
     setCommandPalette("dismissed");
     setStandalonePanel(null);
-    if (next === "usage") setUsageSection("task");
+    if (next === "usage") setUsageSection("accounts");
     setPage(next);
   }
   function openPlugins(section = "skills") {
@@ -2168,12 +2549,10 @@ export function LiveApp() {
   function pickSettingsAgent(agent) {
     setSettingsAgent(agent);
     setNotice("");
-    if (!locked && !modelCatalogs[agent] && state.connections[agent]?.status === "ready") void loadModels(agent);
   }
   function openSettings(section = settingsSection) {
     go("settings");
     setSettingsSection(section);
-    if (section === "models") pickSettingsAgent(settingsAgent);
   }
   useEffect(() => {
     function settingsShortcut(event) {
@@ -2196,7 +2575,7 @@ export function LiveApp() {
   }
   const visibleDiff = diff?.taskId === taskId && diff?.lane === diffLane ? diff : null;
   const projectScope = workspace ? projectName(workspace.repo) : "Workspace";
-  const openRepoHere = () => open("choose-repo", undefined, page);
+  const openRepoHere = () => open("choose-repo", undefined, nativeChatPage ? "workspace" : page);
   const quotaBadges = Object.fromEntries(Object.keys(names).map((agent) => [agent, quotaBadgeWindow(agent, state.connections[agent], now)]));
   function openQuota(agent) {
     go("usage");
@@ -2207,10 +2586,11 @@ export function LiveApp() {
       void loadProviderDetails(agent);
     }
   }
-  const usagePanel = () => <Usage reported={usage} runs={runs} connections={state.connections} now={now} busy={locked}
-    loadingAgent={pendingMenuAction?.command === "provider-details" ? pendingMenuAction.agent : undefined}
+  const usagePanel = () => <Usage key={workspace?.repo} reported={usage} runs={runs} title={workspace?.title} connections={state.connections} now={now} busy={locked}
+    loadingAgent={usageLoading}
     retry={retry} details={providerDetails} load={loadProviderDetails} openProvider={openProvider}
-    reset={useCodexReset} resetNotice={resetNotice} usageError={usageError} section={usageSection} choose={setUsageSection} />;
+    reset={useCodexReset} resetNotice={resetNotice} usageError={usageError} section={usageSection} choose={setUsageSection}
+    loadComparison={() => perform("compare-team-runs")} />;
   const contextPanel = (full) => <Context key={workspace?.repo} workspace={workspace} busy={locked} action={action}
     importNote={(source) => perform("import-context", source)} importProject={() => perform("import-project-context")}
     openPlugins={() => openPlugins("mcp")} full={full} />;
@@ -2227,7 +2607,7 @@ export function LiveApp() {
   const pageFeedback = <>{error && <p className="live-error" role="alert">{error}</p>}{notice && <p className="review-complete" role="status">{notice}</p>}</>;
   const settingChange = (key, value) => perform("save-deck-preference", { key, value });
   const settingsButton = (label, run, disabled = false) => <button className="button small" type="button" disabled={disabled} onClick={run}>{label}</button>;
-  const projectSettings = workspace ? <>
+  const projectSettings = projectWorkspace ? <>
     <p className="deck-project-scope setting-detail">Current project · {projectScope}</p>
     <div className="deck-project-scope">{settingsButton("Edit team plan", () => setModal("teamwork"))}</div>
     <ProjectSettings key={workspace.repo} workspace={workspace} busy={locked}
@@ -2248,13 +2628,24 @@ export function LiveApp() {
         <SettingsCard title="Composer"><SettingSelect label="Send messages with" value={String(preferences.sendOnEnter)} busy={busy}
           options={[["false", "Ctrl+Enter"], ["true", "Enter"]]} change={(value) => settingChange("sendOnEnter", value === "true")}
           description="Shift+Enter inserts a new line. During a compatible run, Ctrl+Enter sends a follow-up to an agent." /></SettingsCard>
+        <SettingsCard title="Local decision rules" description="AI Deck applies local rules and records the decision in Run history.">
+          {[
+            ["localReviewRules", "After team review", "Closes verified reviews or requests the missing evidence."],
+            ["localGraphRules", "Before sharing graph evidence", "Flags gaps in the shortlist for a targeted check."],
+            ["localIntentRules", "Before starting work", "Routes clear requests and asks for a choice when intent is ambiguous."],
+          ].map(([key, label, description]) => <label className="setting-row setting-list" key={key}>
+            <input type="checkbox" checked={preferences[key] === true} disabled={locked}
+              onChange={(event) => settingChange(key, event.target.checked)} />
+            <span><strong>{label}</strong><span className="setting-detail">{description}</span></span>
+          </label>)}
+        </SettingsCard>
       </>;
       case "appearance": return <>
         <SettingsCard title="Theme"><SettingSelect label="Color theme" value={preferences.theme} busy={busy}
           options={[["system", "Match Windows"], ["light", "Light"], ["dark", "Dark"]]} change={(value) => settingChange("theme", value)} /></SettingsCard>
         <Appearance value={appearance} busy={busy} change={(value) => perform("save-appearance", value)} />
       </>;
-      case "notifications": return <SettingsCard title="Task notifications" description="Show a Windows notification when a run ends. The notification shows its status.">
+      case "notifications": return <SettingsCard title="Task notifications" description="Windows notifications take you to the run when its answer is ready or it needs attention.">
         <SettingSelect label="Notify when a task ends" value={preferences.notifications} busy={busy}
           options={[["off", "Off"], ["background", "When AI Deck is in the background"], ["always", "Always"]]}
           change={(value) => settingChange("notifications", value)} />
@@ -2343,7 +2734,7 @@ export function LiveApp() {
       </SettingsCard>;
       case "appshots": return <SettingsCard title="Capture a window" description="Select a Windows app, preview the image, then choose whether to attach it to your task.">
         {!workspace && <p className="setting-detail">Open a repository to attach a capture to a task.</p>}
-        <div className="thread-actions">{settingsButton("Capture window", () => { go("workspace"); void openWindowCapture(); }, !workspace || locked || draft.images?.length >= 4)}
+        <div className="thread-actions">{settingsButton("Capture window", () => { go("workspace"); void openWindowCapture(); }, !workspace || locked)}
           {!workspace && settingsButton("Open repository", openRepoHere, locked)}
           {settingsButton("Codex Appshots guide ↗", () => openProvider("codex-appshots"))}</div>
       </SettingsCard>;
@@ -2356,7 +2747,7 @@ export function LiveApp() {
       </SettingsCard>;
       case "hooks": return <>
         <NativeHooks key={workspace?.repo} api={api} repo={workspace?.repo} locked={locked} perform={perform} />
-        {workspace ? <DeckHooks key={workspace.repo} workspace={workspace} locked={locked} perform={perform} /> :
+        {projectWorkspace ? <DeckHooks key={workspace.repo} workspace={workspace} locked={locked} perform={perform} /> :
           <ProjectEmpty message="Open a repository to set AI Deck Git hooks." choose={openRepoHere} busy={locked} />}
         <SettingsInventory key={workspace?.repo} repo={workspace?.repo} busy={locked} action={perform} hooksOnly />
         <SettingsCard title="Manage provider hooks"><div className="thread-actions">
@@ -2384,7 +2775,7 @@ export function LiveApp() {
           {workspace && settingsButton("Inspect current run scope", () => inspectRun("scope"), locked)}
           {settingsButton("Review permissions", () => openSettings("project"))}</div>
       </SettingsCard>;
-      case "git": return <SettingsCard title="Repository" description={workspace ? workspace.repo : "Choose a repository to inspect Git changes and branches."}>
+      case "git": return <SettingsCard title="Repository" description={projectWorkspace ? workspace.repo : "Choose a repository to inspect Git changes and branches."}>
         <div className="thread-actions">{settingsButton("Open repository", openRepoHere, locked)}
           {settingsButton("Open Git & Review", () => go("changes"))}</div>
       </SettingsCard>;
@@ -2404,7 +2795,11 @@ export function LiveApp() {
     }
   }
   return (
+    <>
+    {launching && <StartupScreen connections={state.connections} stage={startupStage} />}
     <main className="thread-app" data-launching={launching ? "" : undefined} style={{ "--text-scale": appearance.textScale / 100 }}>
+      <ChatQuoteActions taskId={taskId} add={workspace && page === "workspace" && !modal && !busy && !armedComputer ? addChatQuote : undefined}
+        sideChat={!locked ? openSideChat : undefined} />
       <header className="thread-top">
         <div className="thread-actions">
           <button ref={projectsToggle} className="button small deck-projects-toggle" aria-label="Toggle projects" title="Projects and recent tasks" aria-pressed={projectsVisible}
@@ -2419,7 +2814,6 @@ export function LiveApp() {
             title="Run one agent at a time" disabled={locked || typeof state.lowMemory !== "boolean"}
             onClick={() => perform("save-low-memory", !lowMemory)}><IconCpu size={15} />Low RAM {lowMemory ? "on" : "off"}</button>
           <button className="button small" onClick={() => openSettings("connections")}><IconPlug size={15} />Connections</button>
-          <button className="icon-button" aria-label="Team settings" title="Team settings" onClick={() => openSettings()}><IconSettings size={19} /></button>
         </div>
       </header>
       <div className="thread-layout" ref={layoutRef} data-panel-view={layout.focused ?? undefined} style={{
@@ -2427,14 +2821,15 @@ export function LiveApp() {
         "--projects-width": layout.projects ? layout.projects.width + "px" : undefined,
         "--inspector-width": layout.inspector ? layout.inspector.width + "px" : undefined,
       }}>
-        <DeckNav current={page} inboxCount={inbox.rows.length} go={(next) => next === "settings" ? openSettings() : next === "plugins" ? openPlugins() : go(next)}
+        <DeckNav current={page} go={(next) => next === "settings" ? openSettings() : next === "plugins" ? openPlugins() : go(next)}
           footer={Object.keys(names).map((agent) => <QuotaIndicator key={agent} agent={agent} connection={state.connections[agent]}
             window={quotaBadges[agent]} open={() => openQuota(agent)} />)} />
-        {workspacePage && showProjects && <Sidebar repositories={repositories} workspace={workspace} busy={locked} openRepo={openRepoHere}
+        {(workspacePage || nativeChatPage) && showProjects && <Sidebar repositories={repositories} workspace={workspace} busy={busy} jobs={state.jobs ?? []} openRepo={openRepoHere}
           hidden={!projectsVisible} backToChat={layout.focused === "projects" ? () => closePane("projects") : undefined}
-          nativeRecents={nativeRecents} pins={state.nativePins ?? []} pullSessions={pullSessions} previewSession={previewSession} pinSession={pinSession}
+          nativeRecents={nativeRecents} currentNative={nativeChatPage ? nativeConversation.session : undefined}
+          pins={state.nativePins ?? []} pullSessions={pullSessions} openNativeChat={openNativeChat} pinSession={pinSession}
           manageSession={manageSession} selection={sessionSelection} setSelection={setSessionSelection} reviewDeletion={reviewSessionDeletion}
-          openTask={(repo, id) => { if (id !== taskId) void open("switch-task", { repo, id }); else if (layout.focused === "projects") closePane("projects"); }} newTask={() => open("new-task")} />}
+          openTask={(repo, id) => { if (id !== taskId || nativeChatPage) void open("switch-task", { repo, id }); else if (layout.focused === "projects") closePane("projects"); }} newTask={() => open("new-task")} />}
         {layout.projects && <PanelDivider side="projects" panel={layout.projects} layoutRef={layoutRef} save={savePaneWidth} />}
         <WorkbenchPage title="Settings" scope="AI Deck" description="Manage your app, provider accounts and project defaults." hidden={page !== "settings"}
           actions={<button className="button small" onClick={() => go("workspace")}>Back to workspace</button>}>
@@ -2443,16 +2838,14 @@ export function LiveApp() {
             <div className="deck-menu-section" hidden={settingsSection !== "project"}>{projectSettings}</div>
           </SettingsCenter>
         </WorkbenchPage>
-        {page === "inbox" && <TeamInbox {...inbox} error={error || inbox.error} busy={locked} connections={state.connections} now={now}
-          refresh={() => { setError(""); setInboxRevision((current) => current + 1); }} open={openInboxRow} />}
         {page === "usage" && <WorkbenchPage title="Usage" scope="AI Deck" description="Account quota, credits, billing and task reports.">{usagePanel()}</WorkbenchPage>}
         {page === "context" && <WorkbenchPage title="Knowledge" scope={projectScope} description="Share notes and skill instructions with both agents."
-          actions={workspace && <button className="button small" onClick={() => openPlugins("mcp")}>Open plugins</button>}>
+          actions={projectWorkspace && <button className="button small" onClick={() => openPlugins("mcp")}>Open plugins</button>}>
           {pageFeedback}
-          {workspace ? contextPanel(true) : <ProjectEmpty message="Choose a repository to import notes, skills and instructions." choose={openRepoHere} busy={locked} />}
+          {projectWorkspace ? contextPanel(true) : <ProjectEmpty message="Choose a repository to import notes, skills and instructions." choose={openRepoHere} busy={locked} />}
         </WorkbenchPage>}
         {page === "plugins" && <WorkbenchPage title="Skills & plugins" scope={projectScope} description="Share skills and configure tools for both agents."
-          actions={workspace && <button className="button small" onClick={() => go("context")}>Open knowledge</button>}>
+          actions={projectWorkspace && <button className="button small" onClick={() => go("context")}>Open knowledge</button>}>
           {pageFeedback}
           <nav className="deck-settings-tabs" aria-label="Skills and plugins sections">
             <button aria-current={pluginTab === "skills" ? "page" : undefined} onClick={() => setPluginTab("skills")}>Shared skills</button>
@@ -2460,9 +2853,9 @@ export function LiveApp() {
             <button aria-current={pluginTab === "mcp" ? "page" : undefined} onClick={() => setPluginTab("mcp")}>MCP servers</button>
           </nav>
           <div className="deck-menu-section" key={pluginTab}>
-            {pluginTab === "library" ? <LocalSkillLibrary library={library} skills={skills} projects={repositories} workspace={workspace} busy={locked}
+            {pluginTab === "library" ? <LocalSkillLibrary library={library} skills={skills} projects={projectRepositories} workspace={projectWorkspace} busy={locked}
               pickProject={(repo) => open("switch-repo", repo, "plugins")} choose={openRepoHere} preview={previewLibrarySkill} />
-              : !workspace ? <ProjectEmpty message="Choose a repository to add shared skills or manage its MCP servers." choose={openRepoHere} busy={locked} />
+              : !projectWorkspace ? <ProjectEmpty message="Choose a repository to add shared skills or manage its MCP servers." choose={openRepoHere} busy={locked} />
               : pluginTab === "skills" ? <SharedSkills key={workspace.repo} skills={skills} library={library} repo={workspace.repo} busy={locked} action={action}
                 importSkill={() => perform("import-context", "Skill")} openLibrary={() => setPluginTab("library")}
                 publish={async (id) => {
@@ -2473,12 +2866,24 @@ export function LiveApp() {
         </WorkbenchPage>}
         {page === "changes" && <WorkbenchPage title="Git & Review" scope={projectScope} description={workspace ? workspace.title : "Inspect worktrees, diffs and review evidence."}>
           {pageFeedback}
-          {workspace ? changesPanel() : <ProjectEmpty message="Open a repository to inspect worktree changes and reviews." choose={openRepoHere} busy={locked} />}
+          {projectWorkspace ? changesPanel() : <ProjectEmpty message="Open a repository to inspect worktree changes and reviews." choose={openRepoHere} busy={locked} />}
         </WorkbenchPage>}
-        {page === "scheduled" && <Scheduled schedules={state.schedules ?? []} projects={repositories} workspace={workspace} lowMemory={lowMemory}
+        {page === "scheduled" && <Scheduled schedules={state.schedules ?? []} projects={projectRepositories} workspace={projectWorkspace} lowMemory={lowMemory}
           background={state.backgroundRun} busy={busy} interactive={working} error={error}
           action={perform} openTask={(repo, id) => open("switch-task", { repo, id })} openProvider={openProvider} openRepo={openRepoHere} />}
         {page === "features" && <FeatureMap go={go} openProvider={openProvider} error={error} />}
+        {nativeChatPage && !layout.focused && <NativeChat key={sessionKey(nativeConversation.session)} preview={nativeConversation}
+          job={state.jobs?.find((job) => job.key === "native:" + sessionKey(nativeConversation.session))}
+          api={api} choosePermission={chooseNativePermission}
+          busy={locked} ready={routeMode(nativeConversation.session.provider, state.connections, now).available.length > 0}
+          error={!modal ? error : ""} initialDraft={nativeDrafts.current.get(sessionKey(nativeConversation.session)) ?? ""}
+          keepDraft={(text) => keepNativeDraft(nativeConversation.session, text)}
+          older={(query) => olderNativeMessages(query, true)} sendChat={sendNativeChat}
+          refresh={() => loadNativeChat(nativeConversation.session, nativeConversation.sourceTaskId, true)} back={() => go("workspace")}
+          transfer={openNativeTransfer}
+          openProject={() => checkLinkedSource(nativeConversation.session)}
+          restore={() => manageSession(nativeConversation.session)}
+          sendOnEnter={preferences.sendOnEnter} />}
         {workspacePage && <section className="thread-main" hidden={Boolean(layout.focused)}>
           <header className="thread-taskbar">
             <div className="thread-title">
@@ -2524,18 +2929,25 @@ export function LiveApp() {
               onClick={() => setModal("team-board")}><IconUsers size={15} />Team board</button>}
             {workspace?.base && <span className="thread-base" title="Worktree base revision"><IconGitBranch size={14} /><code>{workspace.base.slice(0, 8)}</code></span>}
           </div>
+          {workspace?.nativeHandoff?.source && <HandoffSources handoff={workspace.nativeHandoff} busy={locked}
+            open={(session) => openNativeChat(session, taskId)} />}
+          {workspace?.sideChatSource && <div className="deck-side-chat">
+            <span>Side chat from {workspace.sideChatSource.title}</span>
+            <button type="button" className="button small" disabled={locked} onClick={() => open("switch-task", {
+              repo: workspace.sideChatSource.repo, id: workspace.sideChatSource.taskId,
+            })}>Back to original chat</button>
+          </div>}
+          {workspace?.forkedFrom && workspace.forkContext && !runs.length && <details className="thread-fork-context">
+            <summary>Forked from {workspace.forkedFrom} · quoted context for the first turn</summary>
+            <pre className="file-preview deck-link-preview">{workspace.forkContext}</pre>
+          </details>}
           {!workspace ? <section className="deck-start" aria-labelledby="deck-start-title">
             <div className="deck-start-icon"><IconStack2 size={24} /></div>
             <h2 id="deck-start-title">Start or continue work</h2>
-            <p>Open a Git repository for a new task, or pick a Codex or Claude Code conversation from Recents.</p>
+            <p>Open a Git repository for a new task, or pick a Codex or Claude Code conversation from Recents above.</p>
             <div className="thread-actions">
               <button className="button primary" type="button" disabled={locked} onClick={openRepoHere}><IconFolder size={16} />Open repository</button>
-              <button className="button" type="button" disabled={locked} onClick={openRecents}><IconHistory size={16} />Continue from Recents</button>
             </div>
-            {workspace?.forkedFrom && workspace.forkContext && !runs.length && <details className="thread-fork-context">
-              <summary>Forked from {workspace.forkedFrom} · quoted context for the first turn</summary>
-              <pre className="file-preview deck-link-preview">{workspace.forkContext}</pre>
-            </details>}
           </section> : link && showLinkedHistory && !working
             ? <LinkedTimeline key={taskId} api={api} taskId={taskId} agent={linkedAgent} link={link} runs={runs} busy={locked}
               draftOpen={hasDraft} watchRequest={linkedWatchRequest} openRun={(id) => { setHistoryRun(id); setModal("history"); }}
@@ -2573,17 +2985,12 @@ export function LiveApp() {
               <section className="thread-feed" aria-labelledby="workspace-team-start">
                 <div className="workspace-team-start">
                   <div className="deck-start-icon"><IconUsers size={22} /></div>
-                  <h2 id="workspace-team-start">Start this session</h2>
-                  <p>{roster.length ? "Your session team is saved. Write a task or adjust who does each step."
-                    : "Write a task with the current agents, or build a team with roles and models for this session."}</p>
-                  <div className="thread-actions">
-                    <button className="button primary" type="button" onClick={() => draftInput.current?.focus()}>Write a task</button>
-                    <button className="button" type="button" disabled={locked}
-                      onClick={() => { setError(""); setNotice(""); setModal("session-team"); }}><IconUsers size={16} />{roster.length ? "Edit session team" : "Set up session team"}</button>
-                  </div>
+                  <h2 id="workspace-team-start">{chatOnly ? "Chat with Codex and Claude Code" : "Start this session"}</h2>
+                  <p>{chatOnly ? "Type your first message below." : "Write a task below, or open Session Team to choose members and roles."}</p>
                 </div>
               </section>
-            </div> : <Activity split={showSplit} taskId={taskId} rows={visibleRows} runs={runs} activeRunId={working ? runId.current : null}
+            </div> : <Activity split={showSplit} taskId={taskId} rows={visibleRows} runs={runs} activeRunId={working ? runId.current : null} teamPreview={liveTeamPreview}
+              notifiedTurn={notifiedTurn?.taskId === taskId ? notifiedTurn : undefined}
               result={showSplit && !working && latestRun?.finishedAt && latestRun.collaboration ? displayedTeamRun(latestRun, runs) : null}
               summaryAction={summaryAction} followup={!locked && !link && !armedComputer ? askAboutReply : undefined}
               busy={busy} decide={decide} answer={answerQuestion} preview={previewImage} />}
@@ -2596,10 +3003,10 @@ export function LiveApp() {
             {working && latestRun?.sessionTeam && <SessionTeamProgress run={latestRun} statuses={statuses} models={reportedModels}
               pending={new Set(rows.filter((row) => row.id.startsWith(latestRun.id + ":") &&
                 ["approval", "question"].includes(row.kind) && !row.decision).map((row) => row.agent))} />}
-            {!latestRun?.sessionTeam && (working || latestRun?.autoTeam?.status === "approval") && <TeamProgress run={latestRun} working={working} statuses={statuses}
+            {!latestRun?.sessionTeam && (working || !showPlanIssue && latestRun?.autoTeam?.status === "approval") && <TeamProgress run={latestRun} working={working} statuses={statuses}
               activity={teamActivity} reportedModels={reportedModels} pending={new Set(rows.filter((row) =>
                 working && row.id.startsWith(latestRun?.id + ":") && ["approval", "question"].includes(row.kind) && !row.decision).map((row) => row.agent))} />}
-            {!working && latestRun?.autoTeam && latestRun.autoTeam.status !== "approval" && <div className="thread-pending">
+            {!working && !showPlanIssue && latestRun?.autoTeam && latestRun.autoTeam.status !== "approval" && <div className="thread-pending">
               <span title={latestRun.autoTeam.detail}>{teamResults[latestRun.autoTeam.status] ?? "Auto Team"}</span>
               <button className="button small" type="button" disabled={locked} onClick={() => {
                 setHistoryRun(latestRun.id); setModal("history");
@@ -2607,7 +3014,7 @@ export function LiveApp() {
               {latestRun.autoTeam.status === "reviewed" && latestRun.autoTeam.combined && <button className="button small" type="button"
                 disabled={locked} onClick={compareWorktrees}>Compare combined files</button>}
             </div>}
-            {!modal && error && <p className="live-error" role="alert">{error}</p>}
+            {!modal && error && error !== assignmentIssue && <p className="live-error" role="alert">{error}</p>}
             {autosaveError && <p className="live-error" role="status">{autosaveError}</p>}
             {recoveryRun && !working && <div className="thread-pending">
               <span>Previous turn interrupted · recorded results available</span>
@@ -2624,33 +3031,54 @@ export function LiveApp() {
                 : <button className="button small" disabled={locked} onClick={() => previewContinuation()}>
                   {continuation.resumeRunId ? "Resume team" : continuation.kind === "usage-handoff" ? "Review handoff" : "Review plan to apply"}</button>}
             </div>}
-            {latestPlanIssue?.teamPlan && !working && continuation?.kind !== "resume-auto-plan" && <div className="thread-pending">
-              <span>{names[latestPlanIssue.teamPlan.from]} · {planStatus[latestPlanIssue.teamPlan.state]}</span>
-              <button className="button small" disabled={locked} onClick={() => clarifyPlan(latestPlanIssue)}>Clarify or replan</button>
+            {showPlanIssue && <div className="thread-pending thread-plan-attention">
+              <span>{latestPlanNeedsBaseCheck ? "Plan base needs verification" : latestPlanIssue.teamPlan.state === "blocked" ? "Plan blocked" : planStatus[latestPlanIssue.teamPlan.state]} · {projectName(workspace.repo)}
+                {names[latestPlanIssue.teamPlan.from] && " · Decision by " + names[latestPlanIssue.teamPlan.from]}</span>
+              <div className="thread-actions">
+                <button className="button small" type="button" disabled={locked} onClick={() => {
+                  setHistoryRun(latestPlanIssue.id); setModal("history");
+                }}>Team results</button>
+                <button className="button small" disabled={locked} onClick={() => clarifyPlan(latestPlanIssue)}>Clarify in this project</button>
+                {projectWorkspace && !workspace.readOnly && !link && latestPlanIssue.finishedAt && <button className="button small" disabled={locked}
+                  onClick={() => choosePlanBase(latestPlanIssue)}>Replan on another base</button>}
+                {!link && latestPlanIssue.finishedAt && <button className="button small" disabled={locked}
+                  onClick={() => continuePlanInAnotherProject(latestPlanIssue)}>Continue in another project</button>}
+              </div>
             </div>}
             {pendingReview?.finishedAt && <div className="thread-pending">
-              <span>{pendingReview.collaboration?.pauseReason ?? names[pendingReview.pendingReviewer ?? "claude"] + " review pending"}</span>
+              <span>{pendingEvidence ? (pendingRepair ? "Saved repair diff ready for " : "Saved test result ready for ") + pendingEvidence + " review."
+                : pendingReview.collaboration?.pauseReason ?? names[pendingReview.pendingReviewer ?? "claude"] + " review pending"}</span>
               <div className="thread-actions">
                 {pendingReview.collaboration?.reviewCheckpoint && <button className="button small primary" disabled={locked}
-                  onClick={() => perform("resume-team-review", { taskId, runId: pendingReview.id })}>Resume from saved diff</button>}
+                  onClick={() => perform("resume-team-review", { taskId, runId: pendingReview.id })}>
+                  {pendingRepair ? "Resume from saved repair diff" : pendingEvidence ? "Resume from saved test result" : "Resume from saved diff"}</button>}
                 <button className="button small" disabled={locked || hasDraft} onClick={() => draftReview()}>
                   {pendingReview.collaboration?.reviewCheckpoint ? "Review current diff instead" : "Draft pending review"}
                 </button>
               </div>
             </div>}
             <Queue items={workspace?.queue ?? []} working={working} activeMode={activeSteerMode} steerAgents={steerAgents} lowMemory={lowMemory}
+              sessionTeamSteer={sessionTeamSteer}
               busy={busy || Boolean(state.backgroundRun)} preview={previewImage}
-              next={() => reviewQueue()} steer={(id, agent) => perform("steer-queued", { id, agent })} remove={(id) => perform("remove-queued", id)} />
+              next={() => reviewQueue()} steer={(id, agent, target) => perform("steer-queued", { id, agent, ...target })}
+              remove={(id) => perform("remove-queued", id)} />
+            {!link && workspace && !working && limited.length > 0 && <div className="thread-pending thread-recovery" role="status">
+              <span>{limited.map((agent) => names[agent] + " · Usage limit reached. " + limitText(state.connections[agent].usageLimit)).join(" ")}</span>
+              {fallback && !disconnected.length && autoTeam(draft.mode) && <button className="button small" type="button"
+                disabled={locked || !hasDraft} onClick={() => startDraft(fallback.mode)}>Plan with {names[fallback.agent]} only</button>}
+            </div>}
             {!link && workspace && !working && disconnected.some((agent) => state.connections[agent]?.status) && <div className="thread-pending thread-recovery">
-              <span>{disconnected.map((agent) => names[agent]).join(" and ")} · {disconnected.length === 1 ? connectionLabel(state.connections[disconnected[0]], now) : "Connections needed"}</span>
-              <div className="thread-actions">
-                <button className="button small" onClick={() => openSettings("connections")}>Open connections</button>
-                {fallback && <button className="button small primary" type="button"
+              <span>{disconnected.map((agent) => names[agent]).join(" and ")} · {disconnected.length === 1 ? connectionLabel(state.connections[disconnected[0]], now) : "Connections needed"}. Open Connections above to reconnect.</span>
+              {fallback && <button className="button small primary" type="button"
                   disabled={locked || !hasDraft || Boolean(workspace.readOnly && fallback.mode === "claude-write")}
                   onClick={() => startDraft(fallback.mode)}>{autoTeam(draft.mode) ? "Plan with " : "Run "}{names[fallback.agent]} only</button>}
-              </div>
             </div>}
-            <form className="thread-composer" onSubmit={(event) => { event.preventDefault(); void startDraft(draft.mode); }}>
+            <form className="thread-composer" onSubmit={(event) => { event.preventDefault(); void startDraft(draft.mode); }}
+              onDragOver={(event) => {
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = workspace && !busy ? "copy" : "none";
+              }} onDrop={dropAttachments}>
               {link && <div className="thread-handoff-banner">
                 <span title={link.target.cwd}><strong>{names[linkedAgent]} · {link.folderMode === "original" ? "Original checkout" : "Isolated copy"}</strong>
                   {" · "}{projectName(link.target.repo)}{" · "}{link.target.branch || "Detached HEAD"}{" · "}{link.target.commit.slice(0, 12)}</span>
@@ -2659,7 +3087,7 @@ export function LiveApp() {
                   setShowLinkedHistory(true);
                 }}>Switch to {linkedAgent === "codex" ? "Claude Code" : "Codex"}</button>
               </div>}
-              {workspace?.nativeHandoff && !workspace.worktree && <div className="thread-handoff-banner">
+              {workspace?.nativeHandoff?.target && !workspace.worktree && <div className="thread-handoff-banner">
                 <span><strong>Handoff target</strong> · {projectName(workspace.nativeHandoff.target.repo)} · {workspace.nativeHandoff.target.branch || "Detached HEAD"}
                   {" · "}{workspace.nativeHandoff.target.commit.slice(0, 12)}</span>
                 <button className="button small" type="button" disabled={locked} onClick={recheckHandoff}>Recheck target</button>
@@ -2680,20 +3108,37 @@ export function LiveApp() {
                 {(armedComputer || latestRun.id !== computerEnded) && <button className="button small" type="button"
                   disabled={busy} onClick={removeComputerWindow}>{armedComputer ? "Remove window" : "Revoke access"}</button>}
               </div>}
+              {selectedJob?.state === "waiting" && <p className="thread-hint" role="status">{selectedJob.reason}. You can switch chats while this job waits.</p>}
               {commandsOpen && <CommandMenu commands={matchingCommands} selected={highlighted} choose={executeCommand} reason={commandReason} />}
-              <textarea ref={draftInput} aria-label="Task message" aria-describedby="thread-hint" rows={workspace?.nativeHandoff && !workspace.worktree ? 6 : 2} maxLength={18000}
+              <ComposerAttachments key={taskId} images={draft.images} pending={pendingImageImports} thumbnail={attachmentThumbnail}
+                preview={previewImage} remove={removeDraftImage} busy={busy} />
+              <textarea ref={draftInput} aria-label="Task message" aria-describedby="thread-hint" rows={1} maxLength={18000}
                 aria-controls={commandsOpen ? "deck-command-options" : undefined}
                 aria-activedescendant={commandsOpen && matchingCommands[highlighted] ? "deck-command-" + matchingCommands[highlighted].name : undefined}
                 placeholder={workspace ? "Message your agents…" : "Open a repository, or type / for commands…"}
-                value={draft.prompt} onChange={(event) => { setDraft({ ...draft, prompt: event.target.value }); setCommandPalette(null); setCommandIndex(0); }}
-                onPaste={pasteImages} onKeyDown={composerKey} />
+                value={draft.prompt} onChange={(event) => {
+                  if (error === editAssignmentIssue) setError("");
+                  setDraft({ ...draft, prompt: event.target.value });
+                  setCommandPalette(null);
+                  setCommandIndex(0);
+                }}
+                onPaste={pasteAttachments} onKeyDown={composerKey} />
               {draft.followupRunId && <div className="thread-handoff-banner">
-                <span>Read-only follow-up · matching evidence from the selected turn</span>
-                <button type="button" className="button small" onClick={() => setDraft({ ...draft, followupRunId: undefined })}>Detach evidence</button>
+                <span>{draft.followupCriterion ? "Recheck " + draft.followupCriterion + " · Verify the checkout before sending its evidence"
+                  : "Read-only follow-up · matching evidence from the selected turn"}</span>
+                <button type="button" className="button small" onClick={() =>
+                  setDraft({ ...draft, followupRunId: undefined, followupCriterion: undefined })}>Detach evidence</button>
               </div>}
               {workspace && pastedLink && draft.prompt.includes(pastedLink) && <button className="button small deck-pasted-link" type="button"
                 disabled={busy} onClick={() => openLinkAttachment(pastedLink)}>Preview pasted link</button>}
-              <ImageChips images={draft.images} preview={previewImage} remove={removeDraftImage} busy={busy} />
+              {ocrProgress && ocrProgress.taskId === taskId && <p className="thread-hint" role="status">
+                Reading {ocrProgress.name} with Thai/English OCR · Page {ocrProgress.page} of {ocrProgress.total}
+              </p>}
+              {buildThenReview(draft.mode) && draft.teamOptions?.codeGraph && <div className="thread-handoff-banner">
+                <span>Code graph · {draft.teamOptions.codeGraph.symbol} · {draft.teamOptions.codeGraph.kind === "impact" ? "Impact" : "Callers"}</span>
+                <button className="button small" type="button" disabled={locked} onClick={() => setDraft((current) =>
+                  ({ ...current, teamOptions: { ...current.teamOptions, codeGraph: undefined } }))}>Detach graph</button>
+              </div>}
               {draftSkills.length > 0 && <div className="deck-draft-skills" aria-label="Skills attached to draft">
                 {draftSkills.map((id) => {
                   const label = skills.find((skill) => skill.id === id)?.name ?? "Unavailable skill";
@@ -2702,18 +3147,34 @@ export function LiveApp() {
                 })}
               </div>}
               <div className="thread-compose-actions">
-                <ControlPopover className="deck-run-controls-panel" title="Run controls"
+                <ControlPopover className="deck-attachment-panel" title="Attach" icon={<IconPaperclip size={15} />} label="">
+                  <div className="deck-control-label">Add to this message</div>
+                  <div className="deck-control-options">
+                    <button className="button small" type="button" disabled={busy || !workspace}
+                      onClick={() => void importAttachments("choose-task-attachments")}>Files &amp; images</button>
+                    <button className="button small" type="button" disabled={busy || !workspace} onClick={() => openLinkAttachment()}>Link</button>
+                    <button className="button small" type="button" disabled={busy || !workspace} onClick={openWindowCapture}>Screenshot</button>
+                    <button className="button small" type="button" disabled={locked || !workspace || Boolean(link) || !computerProviders.length}
+                      onClick={() => openComputerWindow()}>Share window</button>
+                  </div>
+                </ControlPopover>
+                {projectWorkspace && !link && <button className="button small" type="button" disabled={locked} onClick={() => {
+                  setError(""); setNotice(""); setModal("session-team");
+                }}><IconUsers size={15} />Session Team</button>}
+                {!sessionMode && (link || chatOnly || !conversation) && <ControlPopover className="deck-run-controls-panel" title="Run options"
                   icon={<IconAdjustmentsHorizontal size={15} aria-hidden="true" />}
-                  label={link ? linkedModeNames[draft.mode] : modeLabel(draft.mode, lowMemory)}>
-                  <div className="deck-control-label">Workflow &amp; models</div>
-                  <div className="thread-compose-setup" aria-label="Agent setup">
-                    <select aria-label="Agent mode" value={draft.mode} onChange={(event) => setDraft(changeWorkflow(draft, event.target.value))}>
-                      {Object.keys(link ? linkedModeNames : modeNames).map((key) => <option value={key} key={key} disabled={key === sessionTeamMode && !workspace}>{link ? linkedModeNames[key] : modeLabel(key, lowMemory)}</option>)}
-                    </select>
-                    {!link && !armedComputer && !draft.images?.length && !draft.skillIds?.length && buildThenReview(draft.mode) && !leadOnly &&
-                      <button className="button small" type="button" onClick={() => fillDraft({ ...draft, prompt: ("Ask the lead: " + draft.prompt).slice(0, 18000) })}>
-                        Ask lead only
-                      </button>}
+                  label={draftActionLabel ?? (link ? linkedModeNames[draft.mode] : modeLabel(draft.mode, lowMemory))}>
+                  {(link || chatOnly || intentControls || buildThenReview(draft.mode)) && <div className="thread-compose-setup" aria-label="Run options">
+                    {link ? <select aria-label="Agent mode" value={draft.mode} onChange={(event) => setDraft(changeWorkflow(draft, event.target.value))}>
+                      {Object.entries(linkedModeNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                    </select> : null}
+                    {intentControls && <select aria-label="Message intent" title="Choose what this message should do" value={draft.messageIntent ?? ""}
+                      onChange={(event) => { setError(""); setDraft({ ...draft, messageIntent: event.target.value || undefined }); }}>
+                      <option value="">Auto intent</option>
+                      <option value="chat">Ask only</option>
+                      <option value="review">Read-only review</option>
+                      <option value="edit">Edit files</option>
+                    </select>}
                     {!link && buildThenReview(draft.mode) && <select aria-label="Team review depth" title={reviewPolicies[reviewDepth].description}
                       value={reviewDepth} onChange={(event) => {
                         const reviewPolicy = event.target.value;
@@ -2727,39 +3188,10 @@ export function LiveApp() {
                     </select>}
                     {!link && workspace && buildThenReview(draft.mode) && <button className="button small" type="button"
                       onClick={() => { setError(""); setModal("team-run-options"); }}>Context &amp; limits · {reviewOptions.turnLimit}</button>}
-                    {!link && !sessionMode && <TeamPlanButton once={draft.assignmentOnce} active={Boolean(workspace?.teamAssignment?.mode || Object.values(teamPlan ?? {}).some(Boolean) || planPair(draft.mode))} onClick={() => { setError(""); setNotice(""); setModal("teamwork"); }} />}
-                    {!link && workspace && <button className="button small session-team-button" aria-pressed={sessionMode} type="button" disabled={locked} onClick={() => {
-                      setError(""); setNotice(""); setModal("session-team");
-                    }}><IconUsers size={15} />Session Team{roster.length > 0 && " · " + roster.length}</button>}
-                    {!sessionMode && ["codex", "claude"].map(modelButton)}
-                  </div>
-                  <div className="deck-control-label deck-control-separator">Tools &amp; context</div>
+                    {(link || chatOnly) && ["codex", "claude"].map(modelButton)}
+                  </div>}
+                  {!chatOnly && <>
                   <div className="deck-control-options">
-                    <button className="button small" type="button" aria-label="Slash commands" aria-pressed={commandsOpen}
-                      onClick={() => { setCommandPalette(commandsOpen ? "dismissed" : "manual"); setCommandIndex(0); draftInput.current?.focus(); }}>Commands /</button>
-                    <PermissionPicker key={taskId} mode={workspace?.permissionMode} busy={busy} working={working}
-                      unavailable={!workspace ? "Open a task to choose its permissions."
-                        : workspace.readOnly ? "This project is read-only."
-                        : conversation || armedComputer || !supportsRunPermissions(draft.mode) ? "This workflow uses its own tool restrictions." : ""}
-                      choose={(mode) => perform("save-run-permissions", { taskId, mode })}
-                      learn={() => perform("provider-page", "codex-approvals")} />
-                    <button className="button small" type="button" disabled={locked || !workspace || Boolean(link) || !computerProviders.length}
-                      onClick={() => openComputerWindow(true)} title="Share a Chrome window for one turn"><IconBrandChrome size={15} />Chrome</button>
-                  </div>
-                  <div className="deck-control-options">
-                      <button className="button small" type="button" aria-label="Attach text file" disabled={busy || !workspace} onClick={attachText}><IconPaperclip size={15} />Attach text file</button>
-                      <button className="button small" type="button" aria-label="Attach images" title="Attach PNG or JPEG, or paste a screenshot" disabled={busy || !workspace || draft.images?.length >= 4} onClick={attachImages}><IconPhoto size={15} />Attach images</button>
-                      <button className="button small" type="button" disabled={busy || !workspace} onClick={() => openLinkAttachment()}>Attach URL</button>
-                      <button className="button small" type="button" disabled={busy || !workspace || draft.images?.length >= 4} onClick={openWindowCapture}>Capture window</button>
-                      <button className="button small" type="button" disabled={locked || !workspace || Boolean(link) || !computerProviders.length}
-                        onClick={openComputerWindow}>Computer Use</button>
-                    {workspace && <button className="thread-text-button thread-compose-context" type="button" onClick={() => { setError(""); setModal("skills"); }}>
-                      Skills {skills.filter((skill) => skill.enabled || draftSkills.includes(skill.id)).length}
-                    </button>}
-                    <button className="thread-text-button thread-compose-context" type="button" onClick={() => go("context")}>
-                      Context {workspace?.notes.filter((note) => note.enabled && note.source !== "Skill").length ?? 0}
-                    </button>
-                    {workspace && <button className="thread-text-button thread-compose-context" type="button" disabled={locked} onClick={() => inspectRun("scope")}>Run scope</button>}
                     {draft.reviewSince && <button className="button small" type="button" onClick={() => setDraft({ ...draft, reviewSince: undefined })}>
                       Changed files only <IconX size={13} /></button>}
                     {!link && workspace && ["claude", "codex-review"].includes(draft.mode) && !draft.reviewOf && !draft.reviewSince &&
@@ -2769,9 +3201,18 @@ export function LiveApp() {
                     {!link && workspace?.worktree && draft.reviewTarget?.type !== "commit" && ["team", "claude-team", "build-review", "claude-build-review", "claude", "codex-review"].includes(draft.mode) &&
                       <button className="thread-text-button thread-compose-context" type="button" disabled={locked}
                         onClick={() => inspectRun("files")}>Review files{draft.reviewFiles === undefined ? "" : " · " + draft.reviewFiles.length}</button>}
-                  </div>
-                </ControlPopover>
-                {workspace && <span className="thread-compose-context compose-scope-chip">{workspace.readOnly ? "Read-only" : link?.folderMode === "original" ? "Original" : "Worktree"}</span>}
+                  </div></>}
+                </ControlPopover>}
+                {projectWorkspace && <PermissionPicker key={"permissions:" + taskId + ":" + sessionMode}
+                  mode={sessionMode ? workspace.sessionTeamPermissionMode : workspace.permissionMode} busy={busy} working={working}
+                  choices={sessionMode ? sessionTeamPermissionModes : undefined}
+                  unavailable={workspace.readOnly ? "This project is read-only."
+                    : sessionMode && !sessionTeamHasWriter(roster) ? "Add a Codex or Claude Code builder in Session Team to set approvals." : ""}
+                  scope={sessionMode ? "Applies to Codex and Claude Code builders. Other roles stay read-only." : undefined}
+                  restriction={!sessionMode && (conversation || manualReview || armedComputer || !supportsRunPermissions(draft.mode))
+                    ? "This workflow has its own restrictions. Choose a permission for future writer turns." : ""}
+                  choose={(mode) => perform("save-run-permissions", { taskId, mode, sessionTeam: sessionMode })}
+                  learn={() => perform("provider-page", "codex-approvals")} />}
                 <VoiceChat key={taskId} api={api} taskId={taskId} locked={locked} run={latestRun} runId={voiceRunId} preferences={preferences}
                   onTranscript={(text) => {
                     setDraft((current) => ({ ...current, prompt: [current.prompt.trimEnd(), text].filter(Boolean).join("\n").slice(0, 18000) }));
@@ -2780,18 +3221,35 @@ export function LiveApp() {
                   }}>
                   {link && !working && <button className="button small" type="button" disabled={locked || !hasDraft || !ready || readOnlyConflict}
                     onClick={() => startDraft(draft.mode, true)}>Review &amp; attach</button>}
-                  {working && <button className="button small" type="button" disabled={busy} onClick={() => perform("stop")}><IconPlayerStop size={14} />Stop</button>}
+                  {working && <button className="button small" type="button" disabled={busy} onClick={() => perform("stop", { taskId, runId: runId.current })}><IconPlayerStop size={14} />Stop</button>}
                   {activeSteerMode && <button className="button small" type="button" aria-keyshortcuts="Control+Enter"
                     title="Send a follow-up to an active agent · Ctrl+Enter"
                     disabled={busy || !hasDraft || !draftSteerAgents.length || Boolean(commandsOpen && slash)} onClick={requestSteer}>
                     <IconArrowRight size={14} />Steer{draftSteerAgents.length === 1 ? " " + names[draftSteerAgents[0]] : ""}
                   </button>}
+                  {workspace && !link && !armedComputer && <ControlPopover className="deck-ask-picker"
+                    title={askAgent ? "Answer by " + names[askAgent] + " · Choose who answers" : "Choose who answers"}
+                    icon={askAgent ? <Brand agent={askAgent} size={15} /> : <IconMessage size={15} aria-hidden="true" />}
+                    label={askAgent ? "Ask " + names[askAgent] : "Ask"}>
+                    <div className="deck-control-label">Answer this message</div>
+                    <div className="deck-control-options">
+                      <button className="button small" type="button" aria-pressed={!askAgent}
+                        onClick={() => { setError(""); setDraft((current) => ({ ...current, askAgent: undefined })); draftInput.current?.focus(); }}>
+                        Current workflow
+                      </button>
+                      {["codex", "claude"].map((agent) => <button className="button small" type="button" key={agent} aria-pressed={askAgent === agent}
+                        disabled={Boolean(askIssue)} onClick={() => { setError(""); setDraft((current) => ({ ...current, askAgent: agent })); draftInput.current?.focus(); }}>
+                        <Brand agent={agent} size={14} />{names[agent]}
+                      </button>)}
+                    </div>
+                    <small className="setting-detail">{askIssue || "Asks one agent without opening project files."}</small>
+                  </ControlPopover>}
                   <button className="button primary small" type="submit" disabled={commandsOpen && slash
                     ? !matchingCommands.some((command) => command.name === slash.name && !commandReason(command))
-                    : busy || Boolean(state.backgroundRun) || !workspace || !hasDraft || readOnlyConflict || Boolean(assignmentIssue) ||
+                    : busy || Boolean(state.backgroundRun) || !workspace || !hasDraft || readOnlyConflict || Boolean(assignmentIssue || askAgent && askIssue) ||
                       expiredComputer || computerModeChanged || Boolean(armedComputer && working) ||
-                      (working && (link || sessionMode || latestRun?.sessionTeam)) || (!working && !ready)}>
-                    {commandsOpen && slash ? "Command" : working && !sessionMode && !latestRun?.sessionTeam ? "Queue" : link ? "Send to " + names[linkedAgent] : "Send"}<IconArrowUp size={15} />
+                      (working && !queueFollowup) || (!working && !ready)}>
+                    {commandsOpen && slash ? "Command" : startingRun && !working ? autoIntent ? "Checking intent…" : "Starting…" : queueFollowup ? "Queue" : link ? "Send to " + names[linkedAgent] : "Send"}<IconArrowUp size={15} />
                   </button>
                 </VoiceChat>
               </div>
@@ -2802,9 +3260,9 @@ export function LiveApp() {
                   (linkedRecovery.available ? " Review a handoff draft." : " The other provider is unavailable.")
                 : linkedBlock === "source" ? "The native session is still working. Watch it or recheck after the turn."
                   : linkedBlock === "stale" ? "Git or the native chat changed after the check. Recheck before sending."
-                    : disconnected.length ? names[linkedAgent] + " needs a connected CLI."
+                    : disconnected.length ? names[linkedAgent] + " needs a connected CLI. Open Connections above."
                       : "This project is read-only. Choose Review."}</span>
-              <div className="thread-actions">
+              {(linkedRecovery || linkedBlock || !disconnected.length) && <div className="thread-actions">
                 {linkedRecovery ? <>
                   <button className="button small" type="button" onClick={() => go("usage")}>Open usage</button>
                   {linkedRecovery.available && <button className="button small primary" type="button" disabled={locked} onClick={stageLinkedRecovery}>
@@ -2813,25 +3271,29 @@ export function LiveApp() {
                 </> : linkedBlock ? <>
                   {linkedBlock === "source" && <button className="button small" type="button" onClick={watchLinkedSources}>Watch sources</button>}
                   <button className="button small" type="button" disabled={locked || !hasDraft} onClick={() => startDraft(draft.mode, true)}>Recheck before send</button>
-                </> : disconnected.length ? <button className="button small" type="button" onClick={() => openSettings("connections")}>Open connections</button>
-                  : <button className="button small" type="button" onClick={() => setDraft(changeWorkflow(draft, linkedAgent === "codex" ? "codex-review" : "claude"))}>Switch to Review</button>}
-              </div>
+                </> : <button className="button small" type="button" onClick={() => setDraft(changeWorkflow(draft, linkedAgent === "codex" ? "codex-review" : "claude"))}>Switch to Review</button>}
+              </div>}
             </div>}
             <div className="thread-hint">
-              <span id="thread-hint">{!workspace ? "Choose a Git repository to start." : state.backgroundRun ? "A scheduled run is using the runner."
-                : working ? link || latestRun?.sessionTeam ? "Send the next message after this turn."
-                  : (preferences.sendOnEnter ? "Enter queues" : "Use Queue") + (draftSteerAgents.length ? " · Ctrl+Enter sends a follow-up" : "")
+              {projectWorkspace && !link && !armedComputer && !askAgent && !working && ready && !assignmentIssue && supportsTeamDirection(workspace.sessionTeam)
+                ? <div id="thread-hint" className="deck-direction-control"><TeamDirectionPicker value={teamDirection(workspace.sessionTeam, draft.mode)} order={roster[0]?.provider}
+                  disabled={locked} choose={chooseTeamDirection} /></div>
+                : <span id="thread-hint" role={assignmentIssue && error === assignmentIssue ? "alert" : undefined}>{!workspace ? "Choose a Git repository to start." : state.backgroundRun ? "A scheduled run is using the runner."
+                : working ? !queueFollowup ? "Send the next message after this turn."
+                  : askAgent ? "Queue for " + names[askAgent] + " · Starts after the current run"
+                  : queueTeamFollowup ? "Enter queues · Starts after the current team run"
+                    : (preferences.sendOnEnter ? "Enter queues" : "Use Queue") + (draftSteerAgents.length ? " · Ctrl+Enter sends a follow-up" : "")
                 : assignmentIssue || (!conversation && reviewDepth === "smart" && ready && buildThenReview(draft.mode) && !limited.length
                   ? names[requested[0]] + " builds · " + (smartPath ? "Review conditional on " + smartPath + " passing Git checks" : names[requested[1]] + " reviews")
-                  : routeHint)}</span>
+                  : routeHint)}</span>}
               {workspace && !locked && assignmentIssue && <button type="button" className="thread-text-button"
                 onClick={() => { setError(""); setModal("teamwork"); }}>Divide responsibilities</button>}
-              {workspace && !link && !locked && parallelDraft && <button className="thread-text-button" type="button"
+              {workspace && !link && !locked && parallelDraft && !conversation && <button className="thread-text-button" type="button"
                 title="The reviewer receives the builder's report and Git changes"
                 onClick={() => setDraft((current) => changeWorkflow(current, handoffMode))}>Use builder → reviewer</button>}
-              {answer && !working && !link && !runs.findLast((run) => run.agents.claude?.answer === answer)?.discussion &&
-                !runs.findLast((run) => run.agents.claude?.answer === answer)?.greeting && <button className="thread-text-button" onClick={() => fillDraft({
-                ...writerHandoffDraft(runs.findLast((run) => run.agents.claude?.answer === answer), "claude"),
+              {claudeReplyRun && !working && !link && !claudeReplyRun.teamPlan && !claudeReplyRun.discussion &&
+                !claudeReplyRun.greeting && <button className="thread-text-button" onClick={() => fillDraft({
+                ...writerHandoffDraft(claudeReplyRun, "claude"),
                 prompt: "Review these findings from Claude Code and address any supported issues in the worktree:\n\n" + answer.slice(0, 16000),
               })}>Draft Claude → Codex handoff</button>}
               {restoredDraft && hasDraft && <span className="setting-detail" role="status">Draft restored from this PC</span>}
@@ -2841,6 +3303,8 @@ export function LiveApp() {
                 }}>{workspace.savedDraft?.prompt === draft.prompt.trim() && workspace.savedDraft?.mode === draft.mode ? "Update saved draft" : "Keep draft"}</button>}
             </div>
             {!modal && notice && <p className="thread-hint" role="status">{notice}</p>}
+            {!modal && notification && locked && notification.taskId !== taskId &&
+              <p className="thread-hint" role="status">The notification will open after this task finishes.</p>}
           </div>
         </section>}
         {layout.inspector && <PanelDivider side="inspector" panel={layout.inspector} layoutRef={layoutRef} save={savePaneWidth} />}
@@ -2857,16 +3321,19 @@ export function LiveApp() {
             {tab === "outputs" && <TaskPanel taskId={taskId} api={api} refresh={taskPanelRevision} thumbnail={panelThumbnail}
               add={(section) => { setError(""); setNotice(""); setPanelSection(section); setModal("panel-add"); }}
               open={openTaskPanel} remove={(id) => updateTaskPanel({ id, action: "remove" })} />}
-            {tab === "changes" && <>
-              {workspace && <button className="button small" type="button" disabled={locked} onClick={() => reviewDelivery()}>Check delivery</button>}
+            {tab === "changes" && projectWorkspace && <>
+              <button className="button small" type="button" disabled={locked} onClick={() => reviewDelivery()}>Check delivery</button>
               {changesPanel()}
             </>}
             {tab === "usage" && usagePanel()}
-            {tab === "context" && contextPanel(false)}
+            {tab === "context" && projectWorkspace && contextPanel(false)}
+            {chatOnly && (tab === "changes" || tab === "context") && <p className="setting-detail">Open a project to view files and project context.</p>}
           </div>
         </aside>}
       </div>
-      {modal && <Modal title={modelAgent ? names[modelAgent] + " model and effort" : modal === "panel-add" ? (panelSection === "outputs" ? "Add output" : "Add source") : modalTitles[modal]} close={modal === "batch-delete" && busy ? () => {} : close} roster={modal === "session-team"} wide={!["target", "codex", "panel-add", "panel-detail", "session-actions", "steer"].includes(modal)}>
+      {modal && <Modal title={modelAgent ? names[modelAgent] + " model and effort" : modal === "panel-add" ? (panelSection === "outputs" ? "Add output" : "Add source") : modalTitles[modal]}
+        close={modal === "teamwork" ? () => (teamBriefClose.current ?? close)() : modal === "batch-delete" && busy ? () => {} : close}
+        roster={modal === "session-team"} wide={!["target", "codex", "panel-add", "panel-detail", "session-actions", "steer"].includes(modal)}>
         {modal === "steer" && <>
           <p className="dialog-intro">{draftSteerAgents.length
             ? "Choose one agent. Codex receives the message in its active turn. Claude answers after its current response in the same session."
@@ -2879,7 +3346,7 @@ export function LiveApp() {
         {error && <p className="live-error" role="alert">{error}</p>}
         {notice && <p className="review-complete" role="status">{notice}</p>}
         {modal === "session-actions" && sessionActions && <SessionActions key={(sessionActions.provider ?? sessionActions.repo) + sessionActions.id}
-          entry={sessionActions} busy={locked} perform={applySessionAction} close={close} />}
+          entry={sessionActions} busy={locked} perform={applySessionAction} />}
         {modal === "batch-delete" && batchDelete && <BatchSessionDeletion entries={batchDelete.entries} result={batchDelete.result}
           busy={locked} perform={deleteSelectedSessions} close={close} />}
         {modal === "attach-link" && <LinkAttachment initialUrl={linkAttachmentUrl} busy={busy}
@@ -2887,19 +3354,29 @@ export function LiveApp() {
         {modal === "capture-window" && <WindowAttachment api={api} windows={captureChoices} busy={busy}
           refresh={refreshCaptureChoices} capture={(id) => perform("preview-window-capture", id)}
           attach={async (token) => {
-            if (draft.images?.length >= 4) { setError("Attach up to four images."); return; }
-            const image = await perform("attach-window-capture", token);
-            if (image) { addImages([image]); close(); }
+            const image = await perform("attach-window-capture", { token, existing: draft.images });
+            if (image) { addAttachments([image]); close(); }
           }} />}
         {["computer-window", "chrome-window"].includes(modal) && <WindowAttachment api={api} windows={captureChoices} busy={busy}
           refresh={() => refreshCaptureChoices(modal === "chrome-window")} capture={(id) => perform("preview-computer-window", id)}
           attach={shareComputerWindow} providers={computerProviders} chromeOnly={modal === "chrome-window"} canEdit={!workspace?.readOnly} />}
-        {modal === "native-session" && nativePreview && <NativeSession preview={nativePreview}
-          pinned={(state.nativePins ?? []).some(({ id, provider }) => id === nativePreview.session.id && provider === nativePreview.session.provider)}
-          pin={() => pinSession(nativePreview.session)} older={olderNativeMessages} busy={locked} repositories={repositories}
-          chooseRepo={() => open("choose-repo")} action={perform} create={createHandoff} link={() => checkLinkedSource(nativePreview.session)} />}
-        {modal === "linked-source" && linkedSource && <LinkedSource session={linkedSource.session} check={linkedSource.check} fork={linkedSource.fork}
-          busy={locked} refresh={() => checkLinkedSource(linkedSource.session, linkedSource.fork)} open={openLinked} />}
+        {["native-fork", "native-handoff"].includes(modal) && nativePreview &&
+          <NativeChatTransfer key={modal + ":" + sessionKey(nativePreview.session)} preview={nativePreview}
+          older={olderNativeMessages} busy={locked} repositories={repositories}
+          recents={[...new Map([...nativeRecents.sessions, ...(state.nativePins ?? [])]
+            .map((session) => [session.provider + ":" + session.id, session])).values()]}
+          pullSessions={pullSessions}
+          chooseRepo={() => open("choose-repo")} action={perform} create={createHandoff} />}
+        {modal === "code-graph" && workspace && <CodeGraph initial={draft.teamOptions?.codeGraph} busy={locked}
+          query={(query, reportError) => perform("code-graph", { ...query, taskId }, reportError)}
+          attach={(codeGraph) => {
+            setDraft((current) => ({ ...changeWorkflow(current, buildThenReview(current.mode) ? current.mode : "build-review"),
+              teamOptions: { ...current.teamOptions, codeGraph } }));
+            close();
+          }} />}
+        {modal === "linked-source" && linkedSource && <LinkedSource session={linkedSource.session} check={linkedSource.check}
+          busy={locked} refresh={() => checkLinkedSource(linkedSource.session)} open={openLinked}
+          preview={() => openNativeChat(linkedSource.session)} />}
         {modal === "linked-send" && linkedSend && <LinkedSend preview={linkedSend.preview} draft={linkedSend.payload} busy={locked}
           prepareAttachments={(selection) => perform("linked-attachments", { taskId, token: linkedSend.preview.token, ...selection })}
           send={async (include, attachment) => {
@@ -2957,14 +3434,57 @@ export function LiveApp() {
             }}>Use this branch and commit</button>
           </div>
         </> : busy && <p role="status">Checking repo and branch…</p>)}
+        {modal === "blocked-plan-project" && blockedPlanProject && <>
+          <p className="dialog-intro">Choose the repository that contains the files. AI Deck creates a draft there with the original request, attachments and quoted context.</p>
+          {blockedPlanProject.target && <HandoffLocation label="Verified destination" location={blockedPlanProject.target} />}
+          <div className="dialog-actions">
+            <button className="button small" type="button" disabled={locked} onClick={async () => {
+              const { run } = blockedPlanProject;
+              setBlockedPlanProject({ run });
+              const result = await perform("blocked-plan-target", { taskId, runId: run.id });
+              if (result?.target) setBlockedPlanProject({ run, target: result.target });
+            }}>Choose repository</button>
+            <button className="button small primary" type="button" disabled={locked || !blockedPlanProject.target} onClick={async () => {
+              const { run, target } = blockedPlanProject;
+              if (await open("blocked-plan-draft", { taskId, runId: run.id, checked: target })) {
+                close();
+                setNotice("Draft ready in the verified project. Review it before sending.");
+              }
+            }}>Create draft</button>
+          </div>
+        </>}
+        {modal === "blocked-plan-base" && blockedPlanBase && <>
+          <p className="dialog-intro">Choose a Git branch already available on this PC. AI Deck prepares a new draft and uses its checked commit when you send.</p>
+          {blockedPlanBase.current && <p className="setting-detail">Previous worktree <code>{blockedPlanBase.current.slice(0, 12)}</code></p>}
+          {blockedPlanBase.refs?.length > 0 && <label className="field"><strong>Git base</strong>
+            <select value={blockedPlanBase.ref} disabled={locked} onChange={(event) => setBlockedPlanBase({ ...blockedPlanBase, ref: event.target.value })}>
+              <option value="">Choose branch</option>
+              {blockedPlanBase.refs.map(({ ref, branch, commit }) => <option value={ref} key={ref}>{branch} · {commit.slice(0, 12)}</option>)}
+            </select>
+          </label>}
+          {blockedPlanBase.refs?.length === 0 && <p className="setting-detail">No other local Git bases are available.</p>}
+          <div className="dialog-actions">
+            <button className="button small" type="button" disabled={locked} onClick={() => choosePlanBase(blockedPlanBase.run)}>Refresh branches</button>
+            <button className="button small primary" type="button" disabled={locked || !blockedPlanBase.ref} onClick={async () => {
+              const { run, refs, ref } = blockedPlanBase;
+              const checked = refs.find((item) => item.ref === ref);
+              if (checked && await open("blocked-plan-base-draft", { taskId, runId: run.id, checked })) {
+                close();
+                setNotice("Draft ready on the verified Git base.");
+              }
+            }}>Create draft</button>
+          </div>
+        </>}
         {modal === "panel-add" && <TaskPanelEntry key={panelSection} section={panelSection} save={updateTaskPanel} busy={busy} />}
         {modal === "panel-detail" && panelDetail && <>
           <h3>{panelDetail.name}{panelDetail.agent && " · " + names[panelDetail.agent]}</h3>
           <p className="setting-detail task-panel-detail">{panelDetail.detail}</p>
         </>}
         {modal === "image" && (imagePreview
-          ? <figure className="thread-image-preview"><img src={imagePreview.source} alt={imagePreview.name} /><figcaption>{imagePreview.name}</figcaption></figure>
-          : !error && <p role="status">Loading image…</p>)}
+          ? imagePreview.source
+            ? <figure className="thread-image-preview"><img src={imagePreview.source} alt={imagePreview.name} /><figcaption>{imagePreview.name}</figcaption></figure>
+            : <div><strong>{imagePreview.name}</strong><pre className="file-preview">{imagePreview.text}</pre></div>
+          : !error && <p role="status">Loading attachment…</p>)}
         {modal === "library" && (librarySkill ? <LibrarySkillPreview skill={librarySkill} workspace={workspace}
           copy={skills.find((skill) => skill.libraryId === librarySkill.id)}
           origin={workspace?.repo === librarySkill.repo && skills.some((skill) => skill.id === librarySkill.noteId)}
@@ -3019,12 +3539,13 @@ export function LiveApp() {
           projectDefault={workspace?.teamwork} projectMode={workspace?.teamMode}
           running={working ? runs.at(-1) : null} queued={workspace?.queue.length ?? 0} presets={state.rolePresets ?? []}
           editPreset={(payload) => perform("edit-role-preset", payload)}
-          canSave={Boolean(workspace)} canSaveProject={Boolean(workspace) && !locked} busy={busy} close={close}
+          pickFiles={(agent) => perform("choose-team-paths", { taskId, agent })}
+          canSave={Boolean(workspace)} canSaveProject={Boolean(workspace) && !locked} busy={busy} close={close} closeRequest={teamBriefClose}
           apply={(mode, teamwork) => applyTeamDraft(mode, teamwork, true)} saveSession={saveTeamSession} resetSession={() => saveTeamSession(undefined, undefined, true)}
           saveDefault={async (mode, teamwork) => {
             if (await action({ action: "team-default", teamwork, mode })) {
               if (workspace.teamAssignment?.mode) close();
-              else applyTeamDraft(mode, undefined);
+              else applyTeamDraft(mode, undefined, false, !needsAutomaticAssignments(mode, teamwork));
               setNotice("Project team brief saved.");
             }
           }} /></>}
@@ -3114,6 +3635,7 @@ export function LiveApp() {
           fork={async () => { if (await open("codex-task-action", { action: "fork" })) close(); }} />}
       </Modal>}
     </main>
+    </>
   );
 }
 

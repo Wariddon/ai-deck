@@ -22,12 +22,13 @@ export const parallelChecksMode = "parallel-checks";
 
 export const defaultTeamMode = "build-review";
 
+export function needsAutomaticAssignments(mode, teamwork) {
+  return separateEdits(mode) && !teamwork?.codexPaths?.trim() && !teamwork?.claudePaths?.trim();
+}
+
 export function separateEditsIssue(mode, teamwork) {
   if (!separateEdits(mode)) return "";
-  const scope = (agent) => (teamwork?.[agent] ?? "").trim().replace(/\s+/gu, " ").toLowerCase();
-  const codex = scope("codex");
-  const claude = scope("claude");
-  if (!codex || !claude || codex === claude) return "Give Codex and Claude different responsibilities in Team Brief before using Separate edits.";
+  if (needsAutomaticAssignments(mode, teamwork)) return "Choose write paths for Codex and Claude Code.";
   try { separateWriteScopes(teamwork); }
   catch (error) { return error.message; }
   return "";
@@ -37,18 +38,47 @@ export function isTeamGreeting(text) {
   return /^(?:สวัสดี\s*(?:(?:ครับ|ค่ะ|คะ)\s*)?(?:ทีม(?:ฉัน|ของฉัน)?\s*)?(?:สบายดี(?:ไหม|มั้ย))?|สบายดี(?:ไหม|มั้ย)|(?:hi|hello|hey)[,\s]*(?:team|everyone)?)\s*(?:ครับ|ค่ะ|คะ)?\s*[.!！?？👋]*$/iu.test(text.trim());
 }
 
+const greetingWord = String.raw`(?:สวัสดี\s*(?:ครับ|ค่ะ|คะ)?|(?:hi|hello|hey)\b)`;
+const peerName = String.raw`(?:codex|claude(?:\s+code)?)\b`;
+const peerGreeting = new RegExp(
+  String.raw`^${greetingWord}[,\s]*(${peerName})[,.!！?？👋\s]*(?:(?:และ|กับ|and\b|&|\+)\s*)?` +
+  String.raw`(?:${greetingWord}[,\s]*)?(${peerName})\s*(?:ครับ|ค่ะ|คะ|นะ)?\s*[.!！?？👋]*$`, "iu");
+
+export function isPeerGreeting(text) {
+  const match = peerGreeting.exec(text.trim());
+  return Boolean(match && /^codex$/iu.test(match[1]) !== /^codex$/iu.test(match[2]));
+}
+
+export function supportsMessageIntent(draft) {
+  return ["team", "build-review", "parallel-write"].includes(workflowFamily(draft.mode)) && !draft.images?.length &&
+    !draft.skillIds?.length && !draft.reviewOf && !draft.reviewTarget && !draft.reviewSince && draft.reviewFiles === undefined &&
+    !draft.followupRunId && !draft.linkedStepId;
+}
+
 export function teamConversation(draft) {
+  if (draft.askAgent) return "question";
   if (draft.mode === discussionMode) return "discussion";
-  if (!["team", "build-review", "parallel-write"].includes(workflowFamily(draft.mode)) || draft.images?.length ||
-      draft.skillIds?.length || draft.reviewOf || draft.reviewTarget || draft.reviewSince || draft.reviewFiles !== undefined ||
-      draft.followupRunId || draft.linkedStepId) return;
+  if (!supportsMessageIntent(draft)) return;
+  if (draft.messageIntent === "chat") return "question";
+  if (draft.messageIntent) return;
   const text = draft.prompt?.trim() ?? "";
   const thaiExchange = /^(?:(?:ผม|ฉัน)?\s*(?:แค่)?\s*(?:อยาก)?\s*ให้\s*)?(?:(?:พวกคุณ|คุณสองคน|ทั้งสองคน|ทั้งคู่|สองตัว|มัน|(?:Codex\s*(?:กับ|และ|\+)\s*Claude(?: Code)?|Claude(?: Code)?\s*(?:กับ|และ|\+)\s*Codex))\s*)?(?:(?:ลอง|ช่วย)\s*)?คุย\s*กัน\s*(?:เอง|เฉย\s*ๆ|หน่อย)?\s*(?:ได้(?:ไหม|มั้ย)|หน่อย)?\s*(?:ครับ|ค่ะ|คะ|นะ)?\s*[.!！?？]*$/iu;
-  if (thaiExchange.test(text) || discussionContinuation(text) ||
+  if (isPeerGreeting(text) || thaiExchange.test(text) || discussionContinuation(text) ||
       startsDiscussionTopic(text) ||
-      /^(?:(?:คุณ)?(?:ทั้งสองคน|ทั้งคู่)\s*สบายดี(?:ไหม|มั้ย)|(?:can you (?:two|both) |please )?talk to each other|how are you both)\s*(?:ครับ|ค่ะ|คะ)?\s*[.!！?？]*$/iu.test(text)) return "discussion";
+      /^(?:(?:คุณ)?(?:ทั้งสอง(?:คน)?|ทั้งคู่)\s*(?:สบายดี(?:ไหม|มั้ย)|เป็น(?:ยัง)?ไงบ้าง)|(?:can you (?:two|both) |please )?talk to each other|how are you both)\s*(?:ครับ|ค่ะ|คะ)?\s*[.!！?？]*$/iu.test(text)) return "discussion";
   if (isTeamGreeting(text)) return "greeting";
   if (/^(?:ถามหัวหน้าทีม|ถามทั่วไป|ask the lead|general question)\s*[:：]\s*\S/iu.test(text)) return "question";
+  const thaiAdvice = /^(?:(?:ช่วย\s*)?แนะนำ\s*(?:ที|หน่อย)?\s*[,，]?\s*)?(?:วันนี้\s*(?:(?:ผม|ฉัน|เรา)\s*)?(?:ควร\s*)?ทำ(?:อะไร|ไร)\s*ดี|ทำ(?:อะไร|ไร)\s*ดี\s*วันนี้)\s*(?:ครับ|ค่ะ|คะ|นะ)?\s*[.!！?？]*$/u;
+  if (thaiAdvice.test(text)) return "question";
+}
+
+export function needsMessageIntent(draft) {
+  return Boolean(draft.prompt?.trim() && !draft.messageIntent && supportsMessageIntent(draft) && !teamConversation(draft));
+}
+
+export function supportsDirectQuestion(draft) {
+  return !draft.skillIds?.length && !draft.teamOptions?.codeGraph && !draft.reviewOf && !draft.reviewTarget &&
+    !draft.reviewSince && draft.reviewFiles === undefined && !draft.followupRunId && !draft.linkedStepId;
 }
 
 export function startsDiscussionTopic(text) {
@@ -70,7 +100,8 @@ export function swapTeamAssignment(mode, teamwork) {
 }
 
 export function changeWorkflow(draft, mode) {
-  return draft.mode === mode ? draft : { ...draft, mode, reviewOf: null, reviewFiles: undefined, reviewTarget: undefined, reviewSince: undefined, followupRunId: undefined, linkedStepId: undefined };
+  return draft.mode === mode ? draft : { ...draft, mode, reviewOf: null, reviewFiles: undefined, reviewTarget: undefined, reviewSince: undefined,
+    followupRunId: undefined, followupCriterion: undefined, linkedStepId: undefined, messageIntent: undefined, askAgent: undefined };
 }
 
 export function steerMode(run) {
@@ -81,16 +112,19 @@ export function steerMode(run) {
 export function steerableDraft(draft, mode) {
   return Boolean(mode && draft?.mode === mode && !draft.steering && !draft.assignmentOnce && draft.teamwork == null &&
     !draft.skillIds?.length && draft.reviewFiles === undefined && !draft.reviewOf && !draft.reviewTarget && !draft.reviewSince && !draft.followupRunId && !draft.linkedStepId &&
-    !teamConversation(draft));
+    !teamConversation(draft) && draft.messageIntent !== "review");
 }
 
 export const effectiveTeamwork = (draft, assignment, project) => draft ?? assignment?.teamwork ?? project;
 
 export function defaultDraftMode(workspace) {
+  if (workspace?.chatOnly) return discussionMode;
   if (workspace?.linkedSession) {
     return workspace.linkedSession.lastMode ?? (workspace.linkedSession.source.provider === "codex" ? "codex-review" : "claude");
   }
-  if (workspace?.sessionTeam?.members?.length && workspace.sessionTeam.useByDefault) return "session-team";
+  if (workspace?.sessionTeam?.members?.length && workspace.sessionTeam.useByDefault) {
+    return workspace.sessionTeam.interaction === "discuss" ? discussionMode : "session-team";
+  }
   if (workspace?.teamAssignment?.mode) return workspace.teamAssignment.mode;
   const recent = !workspace?.teamAssignment?.inherit &&
     workspace?.runHistory?.findLast((run) => run.mode !== "session-team" && !run.assignmentOnce && !run.continuedFrom &&
@@ -111,7 +145,7 @@ export function legacyEmptyDraftMode(workspace) {
 export function handoffTeamwork(teamwork, owner, agent) {
   return { ...teamwork, [agent]: teamwork?.[owner] ?? "" };
 }
-export const teamFields = ["brief", "codex", "claude", "outcome", "codexPaths", "claudePaths"];
+export const teamFields = ["brief", "constraints", "questions", "codex", "claude", "outcome", "codexPaths", "claudePaths"];
 
 export function planPair(mode) {
   return Object.hasOwn(plans, mode) ? plans[mode] : undefined;
@@ -137,6 +171,7 @@ export function normalizeTeamwork(value) {
     if (typeof text !== "string" || text.length > 1500 || text.includes("\0")) throw new Error("Keep each team field under 1,500 characters.");
     return [field, text.trim()];
   });
+  if (value.planner === "claude") entries.push(["planner", "claude"]);
   return Object.fromEntries(entries.filter(([, text]) => text));
 }
 
@@ -150,8 +185,10 @@ export function selectedContext(notes, skillIds = []) {
 export function teamInstructions(brief, agent) {
   return [
     brief?.brief && "Shared team brief:\n" + brief.brief,
+    brief?.constraints && "User constraints:\n" + brief.constraints,
     brief?.[agent] && "Your responsibility in this run:\n" + brief[agent],
     brief?.outcome && "The user’s completion and handoff requirements:\n" + brief.outcome,
+    brief?.questions && "Open questions to verify:\n" + brief.questions,
   ].filter(Boolean).join("\n\n");
 }
 

@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState } from "react";
-import { IconArrowsExchange, IconBolt, IconGripVertical, IconLayersLinked } from "@tabler/icons-react";
-import { agentRole, discussionMode, effectiveTeamwork, separateEditsIssue, swapTeamAssignment, teamFields, teamWorkflowMode, workflowFamily } from "../desktop/collaboration.mjs";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
+import { IconArrowsExchange, IconBolt, IconGripVertical } from "@tabler/icons-react";
+import { agentRole, discussionMode, effectiveTeamwork, needsAutomaticAssignments, parallelChecksMode, separateEditsIssue, swapTeamAssignment, teamFields, teamWorkflowMode, workflowFamily } from "../desktop/collaboration.mjs";
 import { routeMode } from "../desktop/usage-routing.mjs";
 import { agentNames, AssignmentEvidence, modeLabel, projectName } from "./TeamThread.jsx";
 
 const teamChoices = {
   [discussionMode]: "Discuss together · no edits",
+  [parallelChecksMode]: "Team · Independent checks",
   "auto-team": "Auto Team · agree, implement and cross-review",
   "build-review": "Implement → Review the resulting diff",
   "codex-plan-claude": "Plan → Approve → Implement",
   team: "Implement and review the starting snapshot",
-  "parallel-write": "Edit in separate worktrees",
+  "parallel-write": "Both edit · Separate worktrees",
 };
 const soloChoices = ["codex", "codex-plan", "codex-review", "claude", "claude-plan", "claude-write"];
 const roleNames = { plan: "Plan", review: "Review", write: "Implement" };
@@ -21,31 +22,43 @@ const roleExample = {
 };
 
 export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, readOnly, projectDefault, projectMode,
-  running, queued, presets, editPreset, canSave, canSaveProject, busy, apply, saveSession, resetSession, saveDefault, brand, close }) {
+  running, queued, presets, editPreset, pickFiles, canSave, canSaveProject, busy, apply, saveSession, resetSession, saveDefault, brand, close, closeRequest }) {
   const [flow, setFlow] = useState(mode);
   const [saveScope, setSaveScope] = useState(canSave && !once ? "session" : "next");
   const originalBrief = effectiveTeamwork(value, session, projectDefault) ?? {};
   const [brief, setBrief] = useState(originalBrief);
-  const dirty = flow !== mode || teamFields.some((key) => (originalBrief[key] ?? "") !== (brief[key] ?? ""));
+  const dirty = flow !== mode || originalBrief.planner !== brief.planner ||
+    teamFields.some((key) => (originalBrief[key] ?? "") !== (brief[key] ?? ""));
   const [dragAgent, setDragAgent] = useState(null);
   const [announcement, setAnnouncement] = useState("");
   const [presetName, setPresetName] = useState("");
   const [presetId, setPresetId] = useState("");
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const closingDirty = confirmDiscard && dirty;
+  function requestClose() {
+    if (busy) return;
+    if (dirty) setConfirmDiscard(true);
+    else close();
+  }
+  useImperativeHandle(closeRequest, () => requestClose);
   const selectedPreset = presets.find((preset) => preset.id === presetId);
-  const agents = routeMode(flow, {}).requested;
   const family = workflowFamily(flow);
   const automatic = family === "auto-team";
-  const separateIssue = separateEditsIssue(flow, brief);
+  const agents = automatic && brief.planner === "claude" ? ["claude", "codex"] : routeMode(flow, {}).requested;
+  const autoAssign = needsAutomaticAssignments(flow, brief);
+  const separateIssue = autoAssign ? "" : separateEditsIssue(flow, brief);
+  const saveDisabled = busy || Boolean(separateIssue) || autoAssign && (readOnly || !canSave) || saveScope === "project" && !canSaveProject;
   const discussion = flow === discussionMode;
-  const canSwap = agents.length === 2 && !automatic && !discussion;
+  const canSwap = agents.length === 2 && !discussion && flow !== parallelChecksMode;
   const ordered = family === "build-review" || family === "codex-plan-claude";
   const summary = ({
-    "auto-team": "Codex proposes a plan and Claude checks it and assigns the work. Approve before either edits. The team reviews the diff and can request one fix round per assignment.",
+    "auto-team": agentNames[agents[0]] + " finds files and proposes a plan. " + agentNames[agents[1]] + " checks the graph and assigns the work. Approve before either edits.",
     "codex-plan-claude": "Approve the read-only plan before implementation starts.",
     "build-review": "The reviewer receives the resulting diff and the builder’s handoff.",
-    "parallel-write": "Give each writer its own paths. Each agent edits a separate worktree. AI Deck checks both Git diffs after the run.",
+    "parallel-write": "Leave both file lists empty for automatic assignment, or pick different files for each agent.",
     [discussionMode]: "AI Deck sends Codex’s opening reply to Claude. Each agent replies once, without project tools.",
+    [parallelChecksMode]: "Both agents check the same snapshot independently with read-only access.",
     team: "The reviewer uses the worktree snapshot captured before the run.",
   })[family] ?? "Only the selected agent runs.";
 
@@ -58,6 +71,12 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
   }
 
   function swap() {
+    if (automatic) {
+      setBrief({ ...brief, planner: agents[1] === "claude" ? "claude" : undefined });
+      setDragAgent(null);
+      setAnnouncement(agentNames[agents[1]] + " now proposes the plan. " + agentNames[agents[0]] + " checks it.");
+      return;
+    }
     const next = swapTeamAssignment(flow, brief);
     if (!next) return;
     const [first, second] = routeMode(next.mode, {}).requested;
@@ -65,6 +84,27 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
     setBrief(next.teamwork);
     setDragAgent(null);
     setAnnouncement(agentNames[first] + " now owns the first card. " + agentNames[second] + " owns the second.");
+  }
+
+  function chooseWorkflow(next) {
+    if (next === "auto-team" && !automatic) setBrief({ ...brief, planner: agents[0] === "claude" ? "claude" : undefined });
+    setFlow(teamWorkflowMode(next, agents[0]));
+    setAnnouncement("");
+  }
+
+  async function addWriteFiles(agent) {
+    const result = await pickFiles(agent);
+    if (!result?.paths.length) return;
+    const key = agent + "Paths";
+    const current = (brief[key] ?? "").split(/\r?\n/u).map((file) => file.trim()).filter(Boolean);
+    const paths = [...new Set([...current, ...result.paths])];
+    const text = paths.join("\n");
+    if (paths.length > 24 || text.length > 1500) {
+      setAnnouncement("Choose up to 24 paths within 1,500 characters for each writer.");
+      return;
+    }
+    setBrief((previous) => ({ ...previous, [key]: text }));
+    setAnnouncement("Added write paths for " + agentNames[agent] + ".");
   }
 
   function field(name, label, placeholder, rows = 2) {
@@ -76,7 +116,7 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
 
   return <form className="deck-team-form" onSubmit={(event) => {
     event.preventDefault();
-    if (busy || separateIssue) return;
+    if (saveDisabled) return;
     if (saveScope === "project" && canSaveProject) void saveDefault(flow, brief);
     else if (saveScope === "session" && canSave) void saveSession(flow, brief);
     else apply(flow, brief);
@@ -85,27 +125,28 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
       <div><p className="deck-kicker">Shared team brief</p><strong title={sessionTitle}>{sessionTitle || "Current draft"}</strong></div>
       <span className="source-pill">{dirty ? "Unsaved changes" : once ? "Next message only" : value !== undefined || session && session.mode !== mode ? "Draft override" : session ? "Session default" : "Project brief"}</span>
     </div>
-    {running && <AssignmentEvidence mode={running.mode} teamwork={running.teamwork} label="Current run roles" lowMemory={running.lowMemory} />}
+    {running && <AssignmentEvidence mode={running.mode} teamwork={running.teamwork} planner={running.autoTeam?.planner} label="Current run roles" lowMemory={running.lowMemory} />}
     {queued > 0 && <p className="setting-detail deck-team-hint">{queued} {queued === 1 ? "message keeps its" : "messages keep their"} saved roles in the queue.</p>}
     <div className="deck-team-controls">
-      <label className="field"><strong>Workflow</strong><select value={family} onChange={(event) => {
-        setFlow(teamWorkflowMode(event.target.value, agents[0]));
-        setAnnouncement("");
-      }}>
+      <label className="field"><strong>Workflow</strong><select value={family} onChange={(event) => chooseWorkflow(event.target.value)}>
         <optgroup label="Team">{Object.entries(teamChoices).map(([choice, label]) => <option key={choice} value={choice}>{label}</option>)}</optgroup>
         <optgroup label="One agent">{soloChoices.map((choice) => <option key={choice} value={choice}>{modeLabel(choice, lowMemory)}</option>)}</optgroup>
       </select></label>
+      {canSave && <button className="button small" type="button" disabled={busy || readOnly}
+        aria-pressed={family === "parallel-write"} onClick={() => chooseWorkflow("parallel-write")}>Both edit</button>}
       {canSwap && <button className="button small" type="button" onClick={swap}><IconArrowsExchange size={16} />Swap agents</button>}
     </div>
     <p className="setting-detail deck-team-hint">{summary}{lowMemory && agents.length === 2 && " · Low RAM runs one agent at a time."}</p>
-    {canSwap && <p className="setting-detail deck-team-hint">Drag or use Swap agents. Responsibilities stay with the role.</p>}
+    {canSwap && <p className="setting-detail deck-team-hint">{automatic || autoAssign
+      ? "Drag or use Swap agents to change who proposes and who checks the plan."
+      : "Drag or use Swap agents. Responsibilities stay with the role."}</p>}
     <div className={"deck-role-board" + (agents.length === 2 ? " has-two-roles" : "")} aria-label="Role board">
       {agents.map((agent, index) => {
         const role = agentRole(flow, agent);
-        const step = automatic ? "Planning step " + (index + 1) : !canSwap ? "Solo" : ordered || lowMemory ? "Step " + (index + 1) : "Lane " + (index === 0 ? "A" : "B");
+        const step = automatic ? "Planning step " + (index + 1) : agents.length === 1 ? "Solo" : ordered || lowMemory ? "Step " + (index + 1) : "Lane " + (index === 0 ? "A" : "B");
         const eligible = Boolean(dragAgent && dragAgent !== agent);
         return <section className={"deck-role-card" + (eligible ? " is-drop-target" : "")}
-          data-slot={index + 1} data-agent={agent} aria-label={step + " " + roleNames[role]}
+          data-slot={index + 1} data-agent={agent} aria-label={step + " " + (automatic ? index ? "Check & assign" : "Propose" : roleNames[role])}
           key={index} onDragOver={(event) => {
             if (!eligible) return;
             event.preventDefault();
@@ -130,20 +171,27 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
             {brand(agent)}<strong>{agentNames[agent]}</strong>
           </div>
           <p className="deck-role-input"><strong>Sees</strong> {discussion ? index ? "Your message and the opening reply" : "Your message"
-            : automatic && index ? "Codex’s proposal, the current files and the shared brief" : roleInput(role)}</p>
-          {!discussion && field(agent, automatic ? "Assignment preferences" : "Responsibilities",
+            : automatic && index ? agentNames[agents[0]] + "’s proposal, the dependency graph and the shared brief" : roleInput(role)}</p>
+          {!discussion && field(agent, automatic ? "Assignment preferences" : family === "parallel-write" ? "Responsibilities (optional)" : "Responsibilities",
             automatic ? "Example: prefer test coverage and keep edits scoped." : roleExample[role])}
-          {family === "parallel-write" && field(agent + "Paths", "Write paths · " + agentNames[agent],
-            agent === "codex" ? "src/api/\nsrc/routes.js" : "tests/\nREADME.md")}
+          {family === "parallel-write" && <>
+            {field(agent + "Paths", "Write paths · " + agentNames[agent], agent === "codex" ? "src/api/\nsrc/routes.js" : "tests/\nREADME.md")}
+            <div className="thread-actions"><button className="button small" type="button" disabled={!canSave || busy || readOnly}
+              aria-label={"Pick files for " + agentNames[agent]} onClick={() => void addWriteFiles(agent)}>Pick files…</button></div>
+          </>}
         </section>;
       })}
     </div>
-    {family === "parallel-write" && <p className="setting-detail deck-team-hint">Use one repository-relative path per line. End folder paths with a slash.</p>}
-    {separateIssue && <p className="live-error" role="status">{separateIssue}</p>}
+    {family === "parallel-write" && <p className="setting-detail deck-team-hint">{autoAssign
+      ? agentNames[agents[0]] + " will propose the file assignments and " + agentNames[agents[1]] + " will check them before you approve edits."
+      : "Use one repository-relative path per line. End folder paths with a slash. Applying roles to the draft selects Edit files."}</p>}
+    {separateIssue && <p className="setting-detail deck-team-hint" role="status">{separateIssue}</p>}
     {readOnly && <p className="setting-detail deck-team-hint">This project is read-only.</p>}
     <div className="deck-form-grid deck-team-notes">
-      {field("brief", "Shared brief", "What should both agents know?")}
-      {field("outcome", "Done when / handoff", "What should they check and hand over?")}
+      {field("brief", "Goal and shared context", "What should both agents accomplish?")}
+      {field("outcome", "Acceptance and handoff", "What evidence will show the work is complete?")}
+      {field("constraints", "Constraints", "What limits or existing behavior must the team respect?")}
+      {field("questions", "Open questions", "Which assumptions still need evidence or a decision?")}
     </div>
     <details className="deck-role-presets">
       <summary>Role presets</summary>
@@ -175,7 +223,8 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
     </details>
     <p className="deck-role-announcement" role="status">{announcement}</p>
     <div className="deck-team-save">
-      <label className="field"><strong>Apply to</strong>
+      {closingDirty && <p className="setting-detail deck-team-unsaved" role="status">Save your changes or discard them to close Team Brief.</p>}
+      <label className="field"><strong>Save to</strong>
         <select value={saveScope === "project" && !canSaveProject ? "session" : saveScope} disabled={busy} onChange={(event) => setSaveScope(event.target.value)}>
           <option value="next">Next message only</option>
           {canSave && <option value="session">This session</option>}
@@ -183,10 +232,15 @@ export function TeamPlan({ mode, lowMemory, value, once, session, sessionTitle, 
         </select>
       </label>
       <div className="dialog-actions deck-team-actions">
-        <button className="button small" type="button" onClick={close}>Cancel</button>
-        {canSave && (value !== undefined || session || projectMode && projectMode !== flow) && <button className="button small" type="button" disabled={busy}
+        {closingDirty ? <>
+          <button className="button small" type="button" disabled={busy} onClick={() => setConfirmDiscard(false)}>Keep editing</button>
+          <button className="button small" type="button" disabled={busy} onClick={close}>Discard changes</button>
+        </> : <button className="button small" type="button" disabled={busy} onClick={requestClose}>Cancel</button>}
+        {!closingDirty && canSave && (value !== undefined || session || projectMode && projectMode !== flow) && <button className="button small" type="button" disabled={busy}
           onClick={resetSession}>Use project default</button>}
-        <button className="button small primary" disabled={busy || Boolean(separateIssue) || (saveScope === "project" && !canSaveProject)}>Apply roles</button>
+        <button className="button small primary" type="submit" disabled={saveDisabled}>
+          {saveScope === "next" ? "Apply to next message" : "Save team setup"}
+        </button>
       </div>
     </div>
   </form>;
@@ -324,9 +378,9 @@ export const slashCommands = [
   { name: "skill", label: "Choose a shared skill for this draft", project: true },
   { name: "skills", label: "Open project skills" },
   { name: "library", label: "Open the local skill library" },
-  { name: "inbox", label: "Open the team inbox across projects" },
   { name: "plan", label: "Select read-only planning for one agent", mode: true },
   { name: "review", label: "Select read-only review for one agent", mode: true },
+  { name: "checks", label: "Run independent read-only checks with both agents", mode: "parallel-checks" },
   { name: "team", label: "Select Team mode", mode: "team" },
   { name: "discuss", label: "Discuss a topic with Codex and Claude without opening the project", mode: discussionMode },
   { name: "build-review", label: "Codex builds, Claude reviews", mode: "build-review" },
@@ -360,10 +414,4 @@ export function CommandMenu({ commands, selected, choose, reason }) {
       {!commands.length && <p className="setting-detail">No matching command.</p>}
     </div>
   </div>;
-}
-
-export function TeamPlanButton({ active, once, onClick }) {
-  return <button className="button small" type="button" onClick={onClick} aria-label="Team Brief">
-    <IconLayersLinked size={14} />Team Brief{(active || once) && <span className="source-pill">{once ? "Once" : "Set"}</span>}
-  </button>;
 }

@@ -5,21 +5,30 @@ const peer = (agent) => agent === "codex" ? "claude" : "codex";
 const labels = { codex: "Codex", claude: "Claude Code" };
 const reviewFormat = "Start with exactly AI_DECK_REVIEW: PASS, AI_DECK_REVIEW: CHANGES, or AI_DECK_REVIEW: BLOCKED, then a newline and your findings. PASS means no actionable findings on the evidence you could inspect. List missing checks separately. Use CHANGES for fixes within the approved assignment and BLOCKED for missing information or changes requiring a new plan.";
 
-function parsePlan(output, allowSplit) {
+function parsePlan(output, allowSplit, checkoutHead) {
   const match = /^AI_DECK_AUTO: (CODEX|CLAUDE|SPLIT|NEEDS_INPUT|BLOCKED)\r?\n([\s\S]+)$/u.exec(output?.trim() ?? "");
   if (!match || !match[2].trim() || match[2].length > 12000) {
     return { state: "unclassified", text: "The team did not return a complete assignment. Ask for a concise plan." };
   }
   const [, choice, text] = match;
-  if (choice === "SPLIT" && !allowSplit) return { state: "blocked", text: "Separate edits require two clean worktrees at the same base. Replan with a single writer.\n\n" + text };
+  if (choice === "SPLIT" && !allowSplit) return { state: "blocked", text: "Separate edits require two clean worktrees at the same base. Replan with a single writer." };
   if (choice === "NEEDS_INPUT" || choice === "BLOCKED") return { state: choice === "NEEDS_INPUT" ? "needs-input" : "blocked", text };
   const builder = choice === "CLAUDE" ? "claude" : "codex";
   const strategy = choice === "SPLIT" ? "split" : "single";
   try {
     const body = JSON.parse(text);
     if (typeof body?.summary !== "string" || !body.summary.trim() || body.summary.length > 4000) throw new Error("Summarize the plan and any risks.");
+    const requiredBase = typeof body.requiredBase === "string" ? body.requiredBase.trim() : "";
+    if (checkoutHead && !/^\S{1,256}$/u.test(requiredBase)) {
+      throw new Error("Set requiredBase to the verified checkout HEAD if the work can start here. Use NEEDS_INPUT if it requires a different checkout.");
+    }
+    if (checkoutHead && requiredBase.toLowerCase() !== checkoutHead.toLowerCase()) {
+      return { state: "needs-input", requiredBase,
+        text: `The plan requires ${requiredBase}, but this worktree is at ${checkoutHead.slice(0, 12)}. ` +
+          "Choose the required checkout and replan, or ask the team for a plan that starts here.\n\n" + body.summary.trim() };
+    }
     const assignments = validateAssignments(body.assignments, strategy === "split" ? agents : [builder]);
-    return { state: "ready", text: body.summary.trim(), strategy, builder, assignments };
+    return { state: "ready", text: body.summary.trim(), strategy, builder, assignments, ...(checkoutHead && { requiredBase: checkoutHead }) };
   } catch (error) {
     return { state: "unclassified", text: error instanceof SyntaxError ? "The team did not return a structured assignment. Ask it to replan." : error.message };
   }
@@ -35,37 +44,52 @@ function stopResult(status, agent, detail) {
   return { status: ["limited", "interrupted"].includes(status) ? status : "blocked", agent, detail };
 }
 
-async function planAutoTeam({ state, allowSplit, stopped, turn, progress, checkpoint }) {
+async function planAutoTeam({ state, allowSplit, checkoutHead, checkoutRefs = [], stopped, turn, progress, checkpoint, assignmentEvidence }) {
+  const planner = state.planner ?? "codex";
+  const reviewer = peer(planner);
+  const checkoutEvidence = checkoutHead && `AI Deck verified the current worktree HEAD as ${checkoutHead}. ` +
+    "Plan against this checkout. Treat a required change of checkout, branch or base commit as a blocker and identify what is missing.";
+  const refEvidence = checkoutRefs.length && "Git's locally recorded ref tips (reference metadata, separate from the current worktree):\n" +
+    checkoutRefs.map(({ ref, commit }) => `${ref} at ${commit}`).join("\n");
   if (!state.proposal) {
-    progress("codex", "propose");
-    const proposal = await turn("codex", { role: "plan", instructions:
-      "Propose a team assignment. Identify relevant paths, dependencies and acceptance tests. Recommend one writer and one reviewer, or two writers with disjoint file scopes if independent. Include questions and blockers. Both agents may be assigned any role." });
+    progress(planner, "propose");
+    const proposal = await turn(planner, { role: "plan", instructions: [
+      "Propose a team assignment. Identify relevant paths, dependencies and acceptance tests. Prefer two writers when the task can be split into independent work with disjoint paths. Otherwise recommend one writer and one reviewer. Include questions and blockers.",
+      checkoutEvidence,
+      refEvidence,
+    ].filter(Boolean).join("\n") });
     if (stopped() || proposal.status !== "completed" || !proposal.output?.trim()) {
-      return stopResult(stopped() ? "interrupted" : proposal.status, "codex", "The initial proposal did not finish.");
+      return stopResult(stopped() ? "interrupted" : proposal.status, planner, "The initial proposal did not finish.");
     }
     state.proposal = proposal.output.slice(0, 10000);
     checkpoint();
   }
   if (stopped()) return stopResult("interrupted");
-  progress("claude", "negotiate");
-  const options = { role: "plan", handoff: { from: "codex", kind: "proposal", text: state.proposal },
+  const dependencies = allowSplit && await assignmentEvidence?.(state.proposal);
+  if (stopped()) return stopResult("interrupted");
+  progress(reviewer, "negotiate");
+  const options = { role: "plan", handoff: { from: planner, kind: "proposal", text: state.proposal },
     instructions: [
       "Independently check the proposal against the checkout. Resolve omissions and overlapping edits. Decide each agent’s assignment using the task and written responsibilities.",
-      allowSplit ? "Use SPLIT only for two independent scopes. State which files or directories each agent may edit and what should be checked on the combined diff."
+      checkoutEvidence,
+      refEvidence,
+      allowSplit ? "Choose SPLIT if there are two meaningful, independent sets of files to edit. State exactly which paths each agent may edit and what to check on the combined diff. Choose one writer if the edits overlap or depend on each other."
         : "Use a single writer and assign the other agent independent review. Separate worktrees are unavailable for this checkout.",
+      dependencies,
       "Start with exactly one line: AI_DECK_AUTO: CODEX (Codex writes), AI_DECK_AUTO: CLAUDE (Claude writes), " +
         "AI_DECK_AUTO: SPLIT (both write), AI_DECK_AUTO: NEEDS_INPUT, or AI_DECK_AUTO: BLOCKED. Output only the marker and value on that line.",
-      'For CODEX, CLAUDE or SPLIT, follow the marker with one JSON object and no code fence. Shape: {"summary":"steps and risks","assignments":{"codex":{"task":"its job","paths":["src/a.js"],"acceptance":["observable outcome"]},"claude":{"task":"its job","paths":[],"acceptance":["observable outcome"]}}}.',
+      'For CODEX, CLAUDE or SPLIT, follow the marker with one JSON object and no code fence. Shape: {"requiredBase":"full commit hash","summary":"steps and risks","assignments":{"codex":{"task":"its job","paths":["src/a.js"],"acceptance":["observable outcome"]},"claude":{"task":"its job","paths":[],"acceptance":["observable outcome"]}}}.',
+      checkoutHead && "Use a writer decision only when the work can start on the verified HEAD. Set requiredBase to the full commit hash above. If another checkout is necessary, use NEEDS_INPUT and name the required checkout and why it is needed.",
       "Give each writer exact repository-relative files or directories with a trailing slash. A reviewer has an empty paths array. SPLIT writers must be independent. For NEEDS_INPUT or BLOCKED, give the question or blocker in plain text.",
       "For SPLIT, each assignment's acceptance criteria must be verifiable in its own worktree. Put cross-worktree criteria in the summary for final integration.",
-    ].join("\n") };
-  let decision = await turn("claude", options);
-  let plan = parsePlan(decision.output, allowSplit);
+    ].filter(Boolean).join("\n") };
+  let decision = await turn(reviewer, options);
+  let plan = parsePlan(decision.output, allowSplit, checkoutHead);
   if (!stopped() && decision.status === "completed" && plan.state === "unclassified") {
-    decision = await turn("claude", { ...options, instructions: options.instructions + "\nCorrect the previous plan: " + plan.text });
-    plan = parsePlan(decision.output, allowSplit);
+    decision = await turn(reviewer, { ...options, instructions: options.instructions + "\nCorrect the previous plan: " + plan.text });
+    plan = parsePlan(decision.output, allowSplit, checkoutHead);
   }
-  if (stopped() || decision.status !== "completed") return stopResult(stopped() ? "interrupted" : decision.status, "claude", "The team decision did not finish.");
+  if (stopped() || decision.status !== "completed") return stopResult(stopped() ? "interrupted" : decision.status, reviewer, "The team decision did not finish.");
   return { status: plan.state === "ready" ? "approval" : "blocked", plan };
 }
 

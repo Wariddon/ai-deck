@@ -34,3 +34,10 @@ test("unknown, disconnected, expired and API usage remain unknown while a report
   assert.equal(quotaBadgeWindow("claude", { status: "ready",
     quota: [report("reported", 80, null, now - 31 * 60_000)] }, now), null);
 });
+
+test("a partial account report cannot hide a still-current reported percentage", () => {
+  const quota = [report("five_hour", 18, now + 60_000, now - 1_000)];
+  const accountQuota = { fetchedAt: now - 10, windows: [report("five_hour", null)] };
+  assert.equal(quotaBadgeWindow("claude", { status: "ready", quota, accountQuota }, now).usedPercent, 18);
+  assert.equal(quotaBadgeWindow("claude", { status: "ready", quota, accountQuota }, now + 60_000), null);
+});

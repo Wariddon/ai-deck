@@ -29,8 +29,20 @@ function recordStageEvent(run, agent, event) {
   const stage = run.stages?.findLast((entry) => entry.agent === agent && entry.durationMs === undefined);
   const clock = stage && stageClocks.get(stage);
   if (!clock) return;
+  if (event.type === "provider-call") {
+    stage.dispatchMs ??= Math.round(performance.now() - clock.started);
+    stage.turns = (stage.turns ?? 0) + 1;
+  }
+  if (event.type === "provider-usage") {
+    const usage = stage.tokens ??= { input: 0, output: 0, cached: 0, total: 0 };
+    for (const key of Object.keys(usage)) usage[key] += event.usage[key] ?? 0;
+  }
   if (stage.firstActivityMs === undefined && ["message", "delta", "command-start", "approval", "question"].includes(event.type)) {
     stage.firstActivityMs = Math.round(performance.now() - clock.started);
+  }
+  const firstReply = stage.firstReplyMs === undefined && (event.type === "message" || event.type === "delta") && Boolean(event.text?.trim());
+  if (firstReply) {
+    stage.firstReplyMs = Math.round(performance.now() - clock.started);
   }
   if (event.type === "command-start" && event.key) {
     if (!clock.commands.size) clock.toolStarted = performance.now();
@@ -38,6 +50,7 @@ function recordStageEvent(run, agent, event) {
   } else if (event.type === "command-result" && clock.commands.delete(event.key) && !clock.commands.size) {
     clock.toolMs += performance.now() - clock.toolStarted;
   }
+  return firstReply;
 }
 
 function evidenceText(value) {
@@ -76,7 +89,11 @@ function recordEvent(run, agent, event) {
   const entry = run.agents[agent];
   if (!entry) return;
   if (event.type === "approval-decision" || event.type === "command-result") recordEvidence(run, agent, event);
-  if (event.type === "status") entry.status = event.status;
+  if (event.type === "status") {
+    entry.status = event.status;
+    if (typeof event.reason === "string" && event.reason.trim()) entry.statusReason = event.reason.slice(0, 600);
+    else delete entry.statusReason;
+  }
   if (event.type === "run-model") {
     if (event.model) entry.reportedModel = event.model;
     if (event.effort) entry.reportedEffort = event.effort;

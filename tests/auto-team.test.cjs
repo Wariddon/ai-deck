@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { sharedCheckSource, validateRequiredChecks, formatRequiredChecks } = require("../desktop/team-contract.cjs");
 const { planAutoTeam, executeAutoTeam, parsePlan, reviewResult } = require("../desktop/auto-team.cjs");
-const { continuationFor, routeMode, singleAgentFallback } = require("../desktop/usage-routing.mjs");
+const { autoTeamPlanNeedsBaseCheck, continuationFor, routeMode, singleAgentFallback } = require("../desktop/usage-routing.mjs");
 const { newRun, finishRun, restoreWorkspace } = require("../desktop/run-history.cjs");
 
 test("adjacent configured checks share a result only with matching commands and both owners opting in", () => {
@@ -25,8 +25,9 @@ const pass = done("AI_DECK_REVIEW: PASS\nInspected the diff.");
 const changes = done("AI_DECK_REVIEW: CHANGES\nPreserve existing configuration.");
 const state = () => ({ results: {} });
 const assignment = (task, paths) => ({ task, paths, acceptance: ["Verify the agreed result"] });
-const planText = (mode, codex, claude) => "AI_DECK_AUTO: " + mode + "\n" +
-  JSON.stringify({ summary: "Implement and verify", assignments: { codex, claude } });
+const checkoutHead = "59e3aad0123456789abcdef0123456789abcdef0";
+const planText = (mode, codex, claude, requiredBase) => "AI_DECK_AUTO: " + mode + "\n" +
+  JSON.stringify({ summary: "Implement and verify", assignments: { codex, claude }, requiredBase });
 
 function flow(turn, extra = {}) {
   return { state: state(), turn, progress() {}, checkpoint() {}, stopped: () => false, lowMemory: true,
@@ -38,13 +39,55 @@ test("planning passes Codex’s proposal to Claude read-only, then yields an app
   const calls = [];
   const result = await planAutoTeam(flow(async (agent, options) => {
     calls.push([agent, options.role, options.handoff?.text]);
-    return done(agent === "codex" ? "Write and check the UI." : planText("CLAUDE", assignment("Review", []), assignment("Implement", ["src/app.jsx"])));
-  }));
+    assert.ok(options.instructions.includes(checkoutHead));
+    if (agent === "claude") assert.match(options.instructions, /Graph evidence: source and test are coupled\./u);
+    return done(agent === "codex" ? "Write and check the UI." : planText("CLAUDE", assignment("Review", []), assignment("Implement", ["src/app.jsx"]), checkoutHead));
+  }, { allowSplit: true, checkoutHead, assignmentEvidence: (proposal) => {
+    assert.equal(proposal, "Write and check the UI.");
+    return "Graph evidence: source and test are coupled.";
+  } }));
   assert.deepEqual(calls, [["codex", "plan", undefined], ["claude", "plan", "Write and check the UI."]]);
   assert.equal(result.status, "approval");
   assert.equal(result.plan.builder, "claude");
+  assert.equal(result.plan.requiredBase, checkoutHead);
   assert.equal(parsePlan("AI_DECK_AUTO: SPLIT\nTwo assignments.", false).state, "blocked");
   assert.equal(parsePlan("Use both providers.", true).state, "unclassified");
+});
+
+test("a writer assignment on a different checkout needs input and gets no approval or retry", async () => {
+  const refCommit = "037d115fedcba9876543210fedcba9876543210f";
+  const checkoutRefs = [{ ref: "refs/remotes/origin/main", branch: "origin/main", commit: refCommit }];
+  for (const requiredBase of ["origin/main", refCommit]) {
+    const calls = [];
+    const result = await planAutoTeam(flow(async (agent, stage) => {
+      calls.push([agent, stage.role]);
+      assert.ok(stage.instructions.includes(`current worktree HEAD as ${checkoutHead}`));
+      assert.ok(stage.instructions.includes(`refs/remotes/origin/main at ${refCommit}`));
+      return done(agent === "codex" ? "Use the version with the new UI." :
+        planText("CODEX", assignment("Implement", ["src/app.jsx"]), assignment("Review", []), requiredBase));
+    }, { checkoutHead, checkoutRefs }));
+    assert.deepEqual(calls, [["codex", "plan"], ["claude", "plan"]]);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.plan.state, "needs-input");
+    assert.equal(result.plan.requiredBase, requiredBase);
+    assert.ok(result.plan.text.includes(requiredBase));
+    assert.ok(result.plan.text.includes(checkoutHead.slice(0, 12)));
+    assert.equal(result.plan.assignments, undefined);
+    assert.doesNotMatch(result.plan.text, /AI_DECK_AUTO|"assignments"/u);
+  }
+});
+
+test("a writer decision missing verified base evidence retries once and remains unclassified", async () => {
+  const calls = [];
+  const result = await planAutoTeam(flow(async (agent, stage) => {
+    calls.push(agent);
+    if (agent === "codex") return done("Use the current UI.");
+    if (calls.length === 3) assert.match(stage.instructions, /Correct the previous plan: Set requiredBase/u);
+    return done(planText("CODEX", assignment("Implement", ["src/app.jsx"]), assignment("Review", [])));
+  }, { checkoutHead }));
+  assert.deepEqual(calls, ["codex", "claude", "claude"]);
+  assert.equal(result.status, "blocked");
+  assert.equal(result.plan.state, "unclassified");
 });
 
 test("a quota pause preserves the proposal so the second planner can resume alone", async () => {
@@ -56,6 +99,26 @@ test("a quota pause preserves the proposal so the second planner can resume alon
     return done(planText("CODEX", assignment("Implement", ["src/app.jsx"]), assignment("Review", [])));
   }, { state: saved }));
   assert.equal(result.status, "approval");
+});
+
+test("swapped planning passes Claude’s proposal and graph to Codex after a quota pause", async () => {
+  const saved = { ...state(), planner: "claude" };
+  const calls = [];
+  const paused = await planAutoTeam(flow(async (agent, { role }) => {
+    calls.push([agent, role]);
+    return agent === "claude" ? done("Claude’s proposal") : { status: "limited" };
+  }, { state: saved }));
+  assert.deepEqual(calls, [["claude", "plan"], ["codex", "plan"]]);
+  assert.equal(paused.agent, "codex");
+  const resumed = await planAutoTeam(flow(async (agent, stage) => {
+    assert.equal(agent, "codex");
+    assert.equal(stage.role, "plan");
+    assert.deepEqual(stage.handoff, { from: "claude", kind: "proposal", text: "Claude’s proposal" });
+    assert.match(stage.instructions, /Graph evidence/u);
+    return done(planText("SPLIT", assignment("Implement", ["ui.mjs"]), assignment("Implement", ["mail.mjs"])));
+  }, { state: saved, allowSplit: true, assignmentEvidence: () => "Graph evidence" }));
+  assert.equal(resumed.status, "approval");
+  assert.equal(resumed.plan.strategy, "split");
 });
 
 test("the reviewer receives a fresh diff and test evidence and sends findings back for one revision", async () => {
@@ -168,6 +231,7 @@ test("Auto Team requires both providers and resumes a checkpoint only while its 
   assert.deepEqual(routeMode("auto-team", { codex: ready, claude: ready }).available, ["codex", "claude"]);
   assert.deepEqual(routeMode("auto-team", { codex: ready, claude: { ...ready, usageLimit: {} } }).available, []);
   const plan = { id: "plan", finishedAt: "now", teamPlan: { state: "ready", strategy: "single",
+    requiredBase: checkoutHead, git: { head: checkoutHead },
     from: "claude", to: "codex", worktree: "worktree", applyStatus: "limited", applyRunId: "apply" } };
   const apply = { id: "apply", finishedAt: "now", autoTeam: { status: "limited", resume: { main: {} } } };
   const task = { worktree: "worktree", runHistory: [plan, apply] };
@@ -196,12 +260,27 @@ test("closing during Auto Team records an interruption and repairs earlier saved
 });
 
 test("a blocked Auto Team implementation does not hide an earlier plan", () => {
-  const teamPlan = { state: "ready", from: "claude", to: "codex", strategy: "single", worktree: "lane" };
+  const teamPlan = { state: "ready", from: "claude", to: "codex", strategy: "single", worktree: "lane",
+    requiredBase: checkoutHead, git: { head: checkoutHead } };
   const ready = { id: "ready", finishedAt: "time", teamPlan };
   const blocked = { id: "blocked", finishedAt: "time", teamPlan: { ...teamPlan, applyStatus: "blocked" } };
   const workspace = { worktree: "lane", runHistory: [ready, blocked] };
   assert.equal(continuationFor(workspace, blocked.id), null);
   assert.equal(continuationFor(workspace).runId, ready.id);
+});
+
+test("Auto Team holds a saved ready plan until its required base matches the recorded checkout", () => {
+  const teamPlan = { state: "ready", from: "claude", to: "codex", strategy: "single", worktree: "lane", git: { head: checkoutHead } };
+  const run = { id: "plan", finishedAt: "time", teamPlan };
+  const task = { worktree: "lane", runHistory: [run] };
+  for (const requiredBase of [undefined, "origin/main", "a".repeat(40)]) {
+    teamPlan.requiredBase = requiredBase;
+    assert.equal(autoTeamPlanNeedsBaseCheck(run), true);
+    assert.equal(continuationFor(task), null);
+  }
+  teamPlan.requiredBase = checkoutHead;
+  assert.equal(autoTeamPlanNeedsBaseCheck(run), false);
+  assert.equal(continuationFor(task).runId, run.id);
 });
 
 test("Auto Team falls back to read-only planning when either provider is disconnected", () => {

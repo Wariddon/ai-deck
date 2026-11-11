@@ -27,16 +27,19 @@ export function providerUsesApi(agent, authMethod) {
 export function quotaBadgeWindow(agent, connection, now = Date.now()) {
   if (connection?.status !== "ready" || providerUsesApi(agent, connection.authMethod)) return null;
   const account = connection.accountQuota;
+  const hasPercentage = ({ usedPercent }) => Number.isFinite(usedPercent) && usedPercent >= 0 && usedPercent <= 100;
+  const reportedAt = account?.windows?.some(hasPercentage) ? account.fetchedAt : 0;
   const windows = [...(account?.windows ?? []),
-    ...(connection.quota ?? []).filter(({ observedAt }) => (observedAt ?? 0) >= (account?.fetchedAt ?? 0))];
+    ...(connection.quota ?? []).filter(({ observedAt }) => (observedAt ?? 0) >= (reportedAt ?? 0))];
   const current = new Map();
   for (const window of windows) {
+    if (!hasPercentage(window)) continue;
     if (window.resetAt ? window.resetAt <= now : now - (window.observedAt ?? 0) >= 30 * 60_000) continue;
     const key = window.id;
     const previous = current.get(key);
     if (!previous || (window.observedAt ?? 0) >= (previous.observedAt ?? 0)) current.set(key, window);
   }
-  const numeric = [...current.values()].filter(({ usedPercent }) => Number.isFinite(usedPercent) && usedPercent >= 0 && usedPercent <= 100);
+  const numeric = [...current.values()];
   const primary = agent === "codex" ? numeric.filter(({ id }) => typeof id === "string" && id.startsWith("codex:")) : [];
   return (primary.length ? primary : numeric).sort((left, right) => right.usedPercent - left.usedPercent)[0] ?? null;
 }
@@ -52,14 +55,18 @@ export function routeMode(mode, connections, now = Date.now(), leadOnly = false)
   const remaining = requested.filter((agent) => !limited.includes(agent));
   const planner = planPair(mode)?.[0];
   const disconnected = remaining.filter((agent) => (!planner || planner === agent) && connections[agent]?.status !== "ready");
-  return { requested, limited, disconnected, available: disconnected.length || (autoTeam(mode) || mode === discussionMode) && limited.length || planner && limited.includes(planner)
+  return { requested, limited, disconnected, available: disconnected.length || autoTeam(mode) && limited.length || planner && limited.includes(planner)
     ? [] : remaining.filter((agent) => connections[agent]?.status === "ready") };
+}
+
+export function messageIntentAgents(mode, connections, now = Date.now()) {
+  return routeMode(mode, connections, now).requested.filter((agent) => routeMode(agent, connections, now).available.length);
 }
 
 export function singleAgentFallback(mode, connections, now = Date.now()) {
   if (mode === discussionMode) return null;
   const { requested, disconnected, limited } = routeMode(mode, connections, now);
-  if (requested.length !== 2 || !disconnected.length) return null;
+  if (requested.length !== 2 || !disconnected.length && !(autoTeam(mode) && limited.length)) return null;
   const agent = requested.find((name) => !limited.includes(name) && !disconnected.includes(name));
   if (!agent) return null;
   if (autoTeam(mode)) return { agent, mode: agent + "-plan" };
@@ -81,6 +88,16 @@ export function linkedUsageRecovery(workspace, mode, connections, now = Date.now
   return { from, agent, mode: nextMode, limitedRun, available: routeMode(nextMode, connections, now).available.includes(agent) };
 }
 
+export function autoTeamPlanBaseMatches(plan) {
+  return typeof plan?.requiredBase === "string" && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(plan.requiredBase) &&
+    plan.requiredBase === plan.git?.head;
+}
+
+export function autoTeamPlanNeedsBaseCheck(run) {
+  return Boolean(run?.finishedAt && run.teamPlan?.strategy && unresolvedTeamPlan(run) &&
+    run.teamPlan.applyStatus !== "running" && !autoTeamPlanBaseMatches(run.teamPlan));
+}
+
 export function continuationFor(workspace, runId) {
   if (!workspace?.worktree || workspace.linkedSession) return null;
   const runs = workspace.runHistory ?? [];
@@ -96,6 +113,7 @@ export function continuationFor(workspace, runId) {
     if (!readyPlan(entry)) return null;
     const { from, to: agent } = entry.teamPlan;
     if (entry.teamPlan.strategy) {
+      if (!autoTeamPlanBaseMatches(entry.teamPlan)) return null;
       const previous = runs.find(({ id }) => id === entry.teamPlan.applyRunId);
       const resumable = entry.teamPlan.applyStatus === "limited" && previous?.autoTeam?.resume;
       if (entry.teamPlan.applyStatus && !resumable) return null;

@@ -6,6 +6,8 @@ const messageLimit = 32;
 const maxText = 24000;
 const claudePageBytes = 2 * 1024 * 1024;
 const claudeSessionFile = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.jsonl$/iu;
+const claudeMetadataCache = new Map();
+const metadataCacheLimit = 160;
 
 function displayTitle(...values) {
   for (const value of values) {
@@ -138,10 +140,30 @@ async function entriesAt(dir) {
   catch (error) { if (error.code === "ENOENT") return []; throw error; }
 }
 
-async function listClaudeSessions(root) {
+async function cachedClaudeMetadata(candidate, root) {
+  const key = path.resolve(root) + "\n" + candidate.file;
+  const stamp = [candidate.updatedAt, candidate.size, candidate.changedAt, candidate.device, candidate.inode].join(":");
+  const cached = claudeMetadataCache.get(key);
+  if (cached?.stamp === stamp) {
+    claudeMetadataCache.delete(key);
+    claudeMetadataCache.set(key, cached);
+    return { ...cached.row };
+  }
+  const row = await claudeMetadata(candidate, root);
+  if (row) {
+    claudeMetadataCache.delete(key);
+    claudeMetadataCache.set(key, { stamp, row: { ...row } });
+    if (claudeMetadataCache.size > metadataCacheLimit) claudeMetadataCache.delete(claudeMetadataCache.keys().next().value);
+  } else claudeMetadataCache.delete(key);
+  return row;
+}
+
+async function listClaudeSessions(root, { signal } = {}) {
+  signal?.throwIfAborted();
   const candidates = [];
   const folders = (await entriesAt(root)).filter((entry) => entry.isDirectory());
   for (const folder of folders) {
+    signal?.throwIfAborted();
     const dir = path.join(root, folder.name);
     for (const file of await entriesAt(dir)) {
       if (file.isFile() && claudeSessionFile.test(file.name)) {
@@ -150,16 +172,21 @@ async function listClaudeSessions(root) {
     }
   }
   for (let index = 0; index < candidates.length; index += 24) {
+    signal?.throwIfAborted();
     await Promise.all(candidates.slice(index, index + 24).map(async (candidate) => {
-      try { candidate.updatedAt = (await fs.stat(candidate.file)).mtimeMs; } catch {}
+      try {
+        const stat = await fs.stat(candidate.file);
+        Object.assign(candidate, { updatedAt: stat.mtimeMs, size: stat.size, changedAt: stat.ctimeMs, device: stat.dev, inode: stat.ino });
+      } catch {}
     }));
   }
   const sorted = candidates.filter(({ updatedAt }) => updatedAt).sort((a, b) => b.updatedAt - a.updatedAt);
   const rows = [];
   const seen = new Set();
   for (const candidate of sorted) {
+    signal?.throwIfAborted();
     if (seen.has(candidate.id)) continue;
-    const row = await claudeMetadata(candidate, root).catch(() => null);
+    const row = await cachedClaudeMetadata(candidate, root).catch(() => null);
     if (!row) continue;
     rows.push(row);
     seen.add(candidate.id);
@@ -224,4 +251,15 @@ function parseLine(line) {
   try { return JSON.parse(line); } catch { return null; }
 }
 
-module.exports = { listCodexSessions, readCodexSession, listClaudeSessions, readClaudeSession, findClaudeSession };
+function nativeChatDelivery({ prompt, previousIds }, messages) {
+  const index = messages.findIndex(({ id, role, text }) => role === "user" && text === prompt && !previousIds.has(id));
+  if (index < 0) return;
+  for (let newer = index - 1; newer >= 0; newer--) {
+    const { id, role } = messages[newer];
+    if (role === "user") break;
+    if (role === "assistant" && !previousIds.has(id)) return "replied";
+  }
+  return "saved";
+}
+
+module.exports = { listCodexSessions, readCodexSession, listClaudeSessions, readClaudeSession, findClaudeSession, nativeChatDelivery };

@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { IconArrowDown, IconArrowUp, IconGripVertical, IconPlus, IconRefresh, IconShieldLock, IconUsers } from "@tabler/icons-react";
 import { nativeTeamProvider, promoteTeamLead, removeTreeMember, sessionTeamOrder, sessionTeamTree, teamParentChoices, teamPositions, teamProviders } from "../desktop/session-team.mjs";
-import { agentOutput } from "../desktop/collaboration.mjs";
+import { agentOutput, effectiveTeamwork } from "../desktop/collaboration.mjs";
 import { Brand } from "./TeamThread.jsx";
 import { SettingSelect } from "./SettingsCenter.jsx";
 import "./session-team.css";
@@ -121,6 +121,7 @@ export function SessionTeamEditor({ workspace, config, lowMemory, locked, perfor
     newMember("codex", workspace.readOnly ? "plan" : "write"), newMember("claude", "review"),
   ]);
   const [sharing, setSharing] = useState(() => Object.fromEntries(shareOptions.map(([key]) => [key, workspace.sessionTeam?.[key] === true])));
+  const [brief, setBrief] = useState(() => effectiveTeamwork(undefined, workspace.teamAssignment, workspace.teamwork) ?? {});
   const [useByDefault, setUseByDefault] = useState(workspace.sessionTeam?.useByDefault ?? true);
   const [newProvider, setNewProvider] = useState("gemini");
   const [catalogs, setCatalogs] = useState({});
@@ -206,7 +207,7 @@ export function SessionTeamEditor({ workspace, config, lowMemory, locked, perfor
       }
       seen.add(key);
     }
-    await save({ members, topology, parallelBranches, summaryMemberId, ...sharing, useByDefault });
+    await save({ members, topology, parallelBranches, summaryMemberId, ...sharing, brief, useByDefault });
   }
 
   return <form className="session-team-editor" onSubmit={submit}>
@@ -245,6 +246,7 @@ export function SessionTeamEditor({ workspace, config, lowMemory, locked, perfor
             <button className="button small" type="button" disabled={locked || members.length >= 8} onClick={add}><IconPlus size={15} />Add member</button>
           </div>
         </section>
+        <div className="roster-detail-stack">
         {selected ? <MemberFields member={selected} index={members.indexOf(selected)} members={members} config={config}
           locked={locked} readOnly={workspace.readOnly} models={catalogs[selected.provider]} loading={loadingProvider === selected.provider}
           connect={() => setPanel("providers")}
@@ -256,6 +258,18 @@ export function SessionTeamEditor({ workspace, config, lowMemory, locked, perfor
           }} />
           : <section className="roster-details roster-empty"><IconUsers size={24} /><strong>Add a member to start</strong>
             <p className="setting-detail">Choose a provider to set its role and model.</p></section>}
+        <details className="roster-details">
+          <summary>Shared brief</summary>
+          <div className="deck-form-grid">
+            {[["brief", "Goal and shared context"], ["outcome", "Acceptance and handoff"],
+              ["constraints", "Constraints"], ["questions", "Open questions"]].map(([key, label]) =>
+              <label className="field" key={key}><strong>{label}</strong><textarea aria-label={label} rows={2} maxLength={1500}
+                disabled={locked} value={brief[key] ?? ""} onChange={(event) => setBrief({ ...brief, [key]: event.target.value })} /></label>)}
+          </div>
+          <p className="setting-detail">Saved for this session and included with matching Team Decisions.</p>
+        </details>
+        <p className="setting-detail">Reviewers automatically check the current brief and evidence in a fresh conversation.</p>
+        </div>
       </div>}
       {panel === "map" && <section className="team-map-editor" aria-label="Team map editor">
         <div className="team-map-controls">

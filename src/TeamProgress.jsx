@@ -4,6 +4,8 @@ import { TeamHandoffs } from "./TeamHandoff.jsx";
 import { teamAgentName } from "../desktop/team-result.mjs";
 import "./team-progress.css";
 
+export { AutoTeamAssignments } from "./TeamHandoff.jsx";
+
 const phases = {
   propose: "Proposing the plan",
   negotiate: "Checking the plan and assigning work",
@@ -14,9 +16,14 @@ const phases = {
   recheck: "Checking the revised changes",
   "prepare-combined": "Preparing a combined checkout",
   "required-checks": "Running required checks on the final checkout",
+  "approved-check": "AI Deck is running the saved check",
+  "answer evidence request": "Finding evidence for the reviewer",
+  "recheck evidence": "Checking the test result",
+  repair: "Addressing review findings",
   integration: "Checking the combined changes",
 };
 const defaultPhase = { plan: "Planning", review: "Reviewing", write: "Implementing" };
+const activityPhase = (activity, fallback) => typeof activity === "string" ? activity : activity?.phase ?? fallback;
 const statusesText = {
   completed: "Stage finished", failed: "Failed", interrupted: "Stopped", skipped: "Skipped",
   limited: "Usage limit reached", "awaiting-approval": "Waiting for your approval",
@@ -37,7 +44,7 @@ export function TeamBoard({ run, statuses, activity, working }) {
     <div className="deck-team-board">
       {Object.entries(run.agents).map(([agent, record]) => {
         const status = (working ? statuses[agent] : undefined) ?? record.status;
-        const phase = phases[activity[agent] ?? run.autoTeam?.activity?.[agent]];
+        const phase = phases[activityPhase(activity[agent], run.autoTeam?.activity?.[agent])];
         const assignment = run.teamPlan?.assignments?.[agent]?.task ?? run.teamwork?.[agent] ??
           (run.mode === "parallel-checks" ? agent === Object.keys(run.agents)[0] ? "Implementation and risks" : "Tests and reproduction" : undefined);
         const delivered = handoffs.filter((entry) => entry.from === agent && entry.sent);
@@ -66,18 +73,30 @@ export function TeamBoard({ run, statuses, activity, working }) {
 }
 
 export function TeamProgress({ run, statuses, activity, reportedModels, pending, working }) {
-  if (!run || Object.keys(run.agents).length !== 2) return null;
+  if (!run || Object.keys(run.agents).length !== 2 && !run.resumedEvidence && !run.resumedRepair) return null;
+  const discussionHandoff = run.discussion && run.collaboration?.handoffs?.findLast((card) => card.kind === "discussion reply");
   const hasActive = Object.entries(run.agents).some(([agent, record]) =>
     ["preparing", "running"].includes(statuses[agent] ?? record.status));
   return <section className="deck-team-progress" aria-label="Team activity">
     {Object.entries(run.agents).map(([agent, record]) => {
       const status = statuses[agent] ?? record.status;
-      const phase = phases[activity[agent] ?? run.autoTeam?.activity[agent]];
+      const progress = activity[agent];
+      const stage = activityPhase(progress, run.autoTeam?.activity?.[agent]);
+      const phase = phases[stage] ?? (stage === "discussion" && discussionHandoff?.to === agent
+        ? "Responding to " + agentNames[discussionHandoff.from] : undefined);
       const summarizing = run.collaboration?.summarizing === agent;
-      const active = working && !pending.has(agent) && (summarizing || ["preparing", "running"].includes(status));
+      const active = working && !pending.has(agent) && (summarizing || stage === "approved-check" || ["preparing", "running"].includes(status));
+      const handoff = run.collaboration?.handoffs?.findLast((card) => card.to === agent);
+      const sendingHandoff = active && status === "running" && handoff && !handoff.sent;
       const model = reportedModels[agent] || record.reportedModel || record.settings?.model || "Default model";
       const detail = summarizing ? "Writing the team answer" : pending.has(agent) ? "Waiting for your response"
-        : active ? phase ?? (run.discussion ? "Discussing" : status === "preparing" ? "Preparing workspace" : defaultPhase[agentRole(run.mode, agent)])
+        : active && stage === "approved-check" && progress?.criterionId ? "Waiting for test result · " + progress.criterionId
+        : sendingHandoff ? run.discussion ? "Receiving " + agentNames[handoff.from] + "’s reply"
+          : handoff.sha256 ? "Sending review evidence" : "Sending the handoff"
+        : active && status === "running" && progress?.phase && handoff?.sent && handoff.sha256 && !progress.replyStarted
+          ? "Evidence received · waiting for first reply" + (progress?.criterionId ? " · " + progress.criterionId : "")
+        : active ? (phase ?? (run.discussion ? "Preparing a reply" : status === "preparing" ? "Preparing workspace" : defaultPhase[agentRole(run.mode, agent)])) +
+          (progress?.criterionId ? " · " + progress.criterionId : "")
         : working && status === "queued" ? hasActive ? "Waiting for teammate" : "Waiting to start"
         : run.autoTeam?.status === "approval" ? "Waiting for your approval"
         : statusesText[status] ?? "Waiting to start";
@@ -102,23 +121,13 @@ function stepLabel(id) {
   return who + (stage === "fix" ? " · Revision" : " · Implementation");
 }
 
-export function AutoTeamAssignments({ assignments }) {
-  if (!assignments) return null;
-  return <div className="deck-tool-grid live-context-list">
-    {Object.entries(assignments).map(([agent, { task, paths, acceptance }]) => <section className="deck-box" key={agent}>
-      <strong>{agentNames[agent]} · {paths.length ? "Implement" : "Review after implementation"}</strong>
-      <p className="setting-detail">{task}</p>
-      {paths.length > 0 && <pre className="file-preview">{paths.join("\n")}</pre>}
-      <ul>{acceptance.map((item, index) => <li key={index}>{item}</li>)}</ul>
-    </section>)}
-  </div>;
-}
-
 export function AutoTeamRecord({ record }) {
   if (!record) return null;
   return <section className="live-note">
     <strong>{teamResults[record.status] ?? "Auto Team"}</strong>
     {record.detail && <p className="setting-detail">{record.detail}</p>}
+    {record.assignmentGraph && <p className="setting-detail">JS/TS dependency graph · {record.assignmentGraph.files} files · {record.assignmentGraph.groups} groups
+      {record.assignmentGraph.partial && " · Partial"}</p>}
     {record.scopeViolation && <details open>
       <summary>{agentNames[record.scopeViolation.agent]} changed paths outside the approved assignment</summary>
       <pre className="file-preview deck-continuation">{record.scopeViolation.files.join("\n")}</pre>
@@ -132,7 +141,7 @@ export function AutoTeamRecord({ record }) {
       </details>)}
     </section>}
     {record.partial && <p className="setting-detail">Some review inputs were partial. Check what the reviewer could see before accepting the result.</p>}
-    {record.proposal && <details><summary>Codex proposal</summary><pre className="file-preview deck-continuation">{record.proposal}</pre></details>}
+    {record.proposal && <details><summary>{agentNames[record.planner ?? "codex"]} proposal</summary><pre className="file-preview deck-continuation">{record.proposal}</pre></details>}
     {Object.entries(record.handoffs ?? {}).map(([id, handoff]) => <details key={"handoff:" + id}>
       <summary>{agentNames[handoff.from] ?? "AI Deck checks"} → {agentNames[handoff.to]} · {handoff.kind}</summary>
       {handoff.next && <p className="setting-detail">{handoff.next}</p>}

@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { claudeLimitEvent, codexLimit, textLimit } = require("../desktop/usage-limit.cjs");
-const { routeMode } = require("../desktop/usage-routing.mjs");
+const { routeMode, singleAgentFallback } = require("../desktop/usage-routing.mjs");
 const { runFlow } = require("../desktop/team-flow.cjs");
 
 test("only provider-confirmed usage failures hold a connection", () => {
@@ -25,10 +25,31 @@ test("team routes around one limit, solo never changes provider, and two holds b
   const limited = { ...ready, usageLimit: { kind: "usage", resetAt: now + 5000 } };
   assert.deepEqual(routeMode("team", { codex: ready, claude: limited }, now).available, ["codex"]);
   assert.deepEqual(routeMode("build-review", { codex: limited, claude: ready }, now).available, ["claude"]);
+  assert.deepEqual(routeMode("team-discussion", { codex: limited, claude: ready }, now).available, ["claude"]);
+  assert.deepEqual(routeMode("auto-team", { codex: limited, claude: ready }, now).available, []);
+  assert.deepEqual(singleAgentFallback("auto-team", { codex: limited, claude: ready }, now), { agent: "claude", mode: "claude-plan" });
   assert.deepEqual(routeMode("claude", { codex: ready, claude: limited }, now).available, []);
   assert.deepEqual(routeMode("team", { codex: limited, claude: limited }, now).available, []);
   assert.deepEqual(routeMode("team", { codex: limited, claude: { status: "signIn" } }, now).disconnected, ["claude"]);
   assert.deepEqual(routeMode("team", { codex: limited, claude: ready }, now + 5000).available, ["codex", "claude"]);
+});
+
+test("discussion answers with the available peer after a known or new usage limit", async () => {
+  for (const available of [["claude"], ["codex"], ["codex", "claude"]]) {
+    const calls = [];
+    await runFlow({
+      mode: "team-discussion", discussion: true, agents: ["codex", "claude"], available, stopped: () => false,
+      runAgent: async (agent, _review, handoff, stage) => {
+        assert.equal(handoff, undefined);
+        calls.push([agent, stage.limitedPeer]);
+        return { status: stage.limitedPeer ? "completed" : "limited", output: "Reply" };
+      },
+      readReview: assert.fail,
+      skipReview: assert.fail,
+    });
+    assert.deepEqual(calls, available.length === 2 ? [["codex", undefined], ["claude", "codex"]]
+      : [[available[0], available[0] === "codex" ? "claude" : "codex"]]);
+  }
 });
 
 test("build-review uses Claude read-only after Codex reaches its limit, even without a diff", async () => {
@@ -40,6 +61,23 @@ test("build-review uses Claude read-only after Codex reaches its limit, even wit
     skipReview: assert.fail,
   });
   assert.deepEqual(order, ["codex", "fallback", "claude"]);
+});
+
+test("reviewing partial changes never certifies a build interrupted by quota", async () => {
+  let verdict;
+  await runFlow({
+    mode: "build-review", agents: ["codex", "claude"], available: ["claude"], stopped: () => false, policy: "normal",
+    readReview: async () => ({ hasChanges: true, info: { includedPaths: ["retry.cjs"] } }),
+    reviewStillCurrent: async () => true,
+    runAgent: async (agent, _review, _handoff, stage) => {
+      assert.equal(agent, "claude");
+      assert.equal(stage.role, "review");
+      return { status: "completed", output: "AI_DECK_REVIEW: PASS\nThe visible changes look correct." };
+    },
+    saveVerdict: (result) => { verdict = result; },
+  });
+  assert.equal(verdict.verdict, "partial");
+  assert.match(verdict.text, /implementation is still pending/u);
 });
 
 test("known Claude limit avoids both its process and review capture", async () => {

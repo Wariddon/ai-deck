@@ -1,6 +1,6 @@
 const { randomUUID } = require("node:crypto");
 const { unresolvedTeamPlan } = require("./collaboration.mjs");
-const { continuationFor } = require("./usage-routing.mjs");
+const { savedEvidenceCheckpoint } = require("./team-criteria.mjs");
 
 const taskFields = ["worktree", "base", "codexThread", "claudeSession", "usage", "runHistory"];
 const taskTitle = (prompt) => prompt.trim().replace(/\s+/gu, " ").slice(0, 65) || "New task";
@@ -37,22 +37,40 @@ function selectedTask(workspace) {
 }
 
 function taskSummary(task) {
+  const attention = taskAttention(task);
   return { id: task.id, title: task.title, openedAt: task.openedAt, runs: task.runHistory.length, queued: task.queue.length,
+    ...(attention && { attention }),
     ...(task.archivedAt && { archived: true }) };
+}
+
+function taskAttention(task) {
+  if (task.archivedAt) return;
+  const runs = task.runHistory;
+  const latest = runs.at(-1);
+  if (latest && !latest.finishedAt) return;
+  if (latest?.teamPlan && latest.teamPlan.state !== "ready") return { label: "Plan needs your input", runId: latest.id };
+  const plan = runs.findLast((run) => run.finishedAt && unresolvedTeamPlan(run) && run.teamPlan.applyStatus !== "running");
+  if (plan) return { label: "Saved plan awaiting a decision", runId: plan.id };
+  const review = runs.findLast((run) => run.finishedAt && run.reviewPending);
+  if (review) return { label: "Review pending", runId: review.id };
+  if (task.queuePaused && task.queue.length) return { label: "Queue paused" };
+}
+
+function runView(run) {
+  const checkpoint = savedEvidenceCheckpoint(run);
+  if (!checkpoint) return run;
+  return { ...run, collaboration: { ...run.collaboration,
+    reviewCheckpoint: { reviewer: checkpoint.reviewer, sha256: checkpoint.packet.info.sha256, files: checkpoint.packet.info.includedPaths,
+      ...(checkpoint.focus && { criterionId: checkpoint.focus.id, ...(checkpoint.focus.kind === "repair" && { kind: "repair" }) }) } } };
 }
 
 function workspaceView(workspace) {
   if (!workspace) return null;
   const { tasks, ...settings } = workspace;
   const task = selectedTask(workspace);
-  const { linkedUndo, ...publicTask } = task;
-  const runHistory = task.runHistory.map((run) => {
-    const checkpoint = run.collaboration?.reviewCheckpoint;
-    if (!checkpoint) return run;
-    return { ...run, collaboration: { ...run.collaboration,
-      reviewCheckpoint: { reviewer: checkpoint.reviewer, sha256: checkpoint.packet.info.sha256, files: checkpoint.packet.info.includedPaths } } };
-  });
-  return { ...settings, ...publicTask, runHistory, taskId: task.id, canUndoLinkedApply: Boolean(linkedUndo), tasks: tasks.map(taskSummary) };
+  const { linkedUndo, sessionTeamChats, ...publicTask } = task;
+  return { ...settings, ...publicTask, runHistory: task.runHistory.map(runView), taskId: task.id,
+    canUndoLinkedApply: Boolean(linkedUndo), tasks: tasks.map(taskSummary) };
 }
 
 function canDrain(run, stopped, paused) {
@@ -61,38 +79,4 @@ function canDrain(run, stopped, paused) {
   return statuses.includes("completed") && statuses.every((status) => status === "completed" || status === "skipped");
 }
 
-function teamInbox(workspaces) {
-  const rows = [];
-  for (const workspace of Object.values(workspaces)) {
-    for (const task of workspace.tasks) {
-      if (task.archivedAt) continue;
-      const latest = task.runHistory.at(-1);
-      const summary = { repo: workspace.repo, taskId: task.id, title: task.title };
-      const addRun = (kind, run, detail) => rows.push({
-        ...summary, id: kind + ":" + run.id, kind, runId: run.id, prompt: run.prompt?.slice(0, 180), updatedAt: run.finishedAt, ...detail,
-      });
-      for (const run of task.runHistory) {
-        const plan = run.teamPlan;
-        if (run.finishedAt && unresolvedTeamPlan(run) && plan.applyStatus !== "running") {
-          addRun("approval", run, { from: plan.from, to: plan.to, applyStatus: plan.applyStatus,
-            unavailable: workspace.readOnly ? "Project is read-only" : plan.worktree !== task.worktree ||
-              (plan.base && plan.base !== task.base) ? "Original worktree unavailable" : undefined });
-        }
-      }
-      if (latest?.finishedAt && latest.teamPlan && latest.teamPlan.state !== "ready") {
-        addRun("plan-input", latest, { from: latest.teamPlan.from, planState: latest.teamPlan.state });
-      }
-      const pendingReview = task.runHistory.findLast((run) => run.finishedAt && run.reviewPending);
-      if (pendingReview) addRun("review", pendingReview, { to: pendingReview.pendingReviewer ?? "claude" });
-      const handoff = latest && continuationFor({ ...task, readOnly: workspace.readOnly }, latest.id);
-      if (handoff?.kind === "usage-handoff") addRun("usage", latest, { from: handoff.from, to: handoff.agent });
-      if (task.queuePaused && task.queue.length) rows.push({
-        ...summary, id: "queue:" + task.id, kind: "queue", count: task.queue.length,
-        updatedAt: task.queue[0].queuedAt ?? latest?.finishedAt ?? task.openedAt,
-      });
-    }
-  }
-  return rows.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-}
-
-module.exports = { newTask, taskTitle, ensureTasks, selectedTask, taskSummary, workspaceView, canDrain, teamInbox };
+module.exports = { newTask, taskTitle, ensureTasks, selectedTask, taskSummary, taskAttention, runView, workspaceView, canDrain };

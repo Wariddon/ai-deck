@@ -9,27 +9,32 @@ const { readQuestions, validateAnswers } = require("./questions.cjs");
 const { scopeIncludes } = require("./team-paths.mjs");
 const { codexPermissions } = require("./run-permissions.mjs");
 const { computerName } = require("./computer-use.cjs");
+const { attachmentInput } = require("./task-images.cjs");
 
 const processExitGraceMs = 3500;
 
 function codexInput(text, images = []) {
-  return [{ type: "text", text }, ...images.map(({ filename }) => ({ type: "localImage", path: filename }))];
+  return [{ type: "text", text: attachmentInput(text, images) },
+    ...images.filter(({ kind }) => kind !== "text").map(({ filename }) => ({ type: "localImage", path: filename }))];
 }
 
 function claudeInput(text, images = []) {
-  if (!images.length) return text;
+  const content = attachmentInput(text, images);
+  const photos = images.filter(({ kind }) => kind !== "text");
+  if (!photos.length) return content;
   return [
-    { type: "text", text },
-    ...images.map(({ filename }) => ({ type: "image", source: {
+    { type: "text", text: content },
+    ...photos.map(({ filename }) => ({ type: "image", source: {
       type: "base64", media_type: filename.endsWith(".png") ? "image/png" : "image/jpeg", data: readFileSync(filename, "base64"),
     } })),
   ];
 }
 
-function capture(exe, args, { cwd, timeout = 12000, limit = 256 * 1024 } = {}) {
+function capture(exe, args, { cwd, timeout = 12000, limit = 256 * 1024, signal } = {}) {
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, {
-      cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+      cwd, signal, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     });
     let stdout = "";
@@ -414,8 +419,11 @@ function claudeFileTools(role, interactive, allowCommands) {
 }
 
 function claudeProjectPlugins(plugins, role, computer) {
+  if (role === "test") return [];
   return plugins.filter((plugin) => plugin.enabled !== false && plugin.scope !== "codex" &&
-    (role === "review" || computer && plugin.name === computerName));
+    (role === "review" || role === "write" || role === "plan" && plugin.readTools?.length || computer && plugin.name === computerName))
+    .map((plugin) => role === "plan" ? { ...plugin, tools: plugin.tools.filter(tool => plugin.readTools?.includes(tool)) } : plugin)
+    .filter(plugin => plugin.tools.length);
 }
 
 function claudeSettings({ speed, outputStyle, language, maxEffort }) {
@@ -442,6 +450,7 @@ function claudeArguments(plugins, resume, options = {}) {
     ...(options.accountUsage ? [] : ["--disable-slash-commands"]),
     "--tools", claudeFileTools(role, interactive, options.allowCommands).join(","),
     "--permission-mode", mode, "--strict-mcp-config",
+    ...(options.systemPrompt ? ["--append-system-prompt", options.systemPrompt] : []),
     "--mcp-config", JSON.stringify({ mcpServers }),
     ...(role === "review" || mode === "bypassPermissions" ? [] : ["--restricted"]),
     ...(model ? ["--model", model] : []),
@@ -608,6 +617,8 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
   const mcpTools = claudeProjectPlugins(plugins, role, options.computer).flatMap((plugin) => plugin.tools.map((tool) => `mcp__${plugin.name}__${tool}`));
   const allowed = new Set([...fileTools, ...mcpTools]);
   const computerTools = options.computer ? new Set(mcpTools.filter((tool) => tool.startsWith("mcp__" + computerName + "__"))) : new Set();
+  const projectReadTools = new Set(claudeProjectPlugins(plugins, role, options.computer).filter(plugin => plugin.builtIn && plugin.name === "ai_deck_project")
+    .flatMap(plugin => plugin.readTools.map(tool => `mcp__${plugin.name}__${tool}`)));
   const ask = new Set(["Edit", "Write", "Bash", "AskUserQuestion", ...mcpTools.filter((tool) => !computerTools.has(tool))]);
   const canSteer = () => Boolean(interactive && initialized && !stopped && !loopError && remaining === 1 && child.stdin.writable);
   const write = (message) => {
@@ -696,12 +707,12 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
           return;
         }
         const decision = stopped || !allowed.has(tool) ? "deny"
-          : computerTools.has(tool) ? "allow"
+          : computerTools.has(tool) || projectReadTools.has(tool) ? "allow"
           : ask.has(tool) ? "ask" : undefined;
         return respond(id, decision ? hookDecision(decision) : {});
       }
       if (request.subtype === "can_use_tool" && !stopped && allowed.has(request.tool_name)) {
-        if (computerTools.has(request.tool_name)) {
+        if (computerTools.has(request.tool_name) || projectReadTools.has(request.tool_name)) {
           return respond(id, { behavior: "allow", updatedInput: request.input, toolUseID: request.tool_use_id });
         }
         if (isEdit(request.tool_name) && !fullAccess) {
@@ -904,7 +915,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     }).catch((error) => { stderr = error.message; child.kill(); });
   } else {
     emit({ type: "provider-call" });
-    child.stdin.end(prompt, "utf8");
+    child.stdin.end(attachmentInput(prompt, options.images ?? []), "utf8");
   }
   const done = new Promise((resolve) => {
     child.once("error", (error) => resolve({ status: "failed", error: error.message, sessionId }));

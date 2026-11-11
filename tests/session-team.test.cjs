@@ -107,7 +107,8 @@ test("legacy teams keep private reports and history out of supplemental prompts,
   assert.equal(sessionMemberInputs({ member: { ...external, instructions: "Private individual instructions" },
     team, ...shared, handoffs }).projectData, true);
   const optedIn = sessionMemberInputs({ member: external, team: { ...team, shareReports: true }, ...shared, handoffs });
-  assert.equal(optedIn.prior, shared.prior);
+  assert.equal(optedIn.prior, ""); // Fresh reviewers still omit old conversation history.
+  assert.equal(sessionMemberInputs({ member: external, team: { ...team, shareReports: true, freshReview: false }, ...shared, handoffs }).prior, shared.prior);
   assert.deepEqual(optedIn.handoffs, handoffs);
   const nativeInputs = sessionMemberInputs({ member: native, team, ...shared, handoffs });
   assert.equal(nativeInputs.prompt, shared.projectPrompt);

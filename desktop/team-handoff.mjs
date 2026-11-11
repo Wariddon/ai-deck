@@ -1,3 +1,5 @@
+import { codeGraphQuery } from "./code-graph-query.mjs";
+
 export const reviewPolicies = {
   economy: { label: "Economy", diffLimit: 8000, newLimit: 3000, reportLimit: 650,
     description: "Compact diff and one focused review when files change." },
@@ -19,6 +21,7 @@ export function teamRunOptions(policy, value) {
   const selection = (ids) => Array.isArray(ids) ? [...new Set(ids.filter((id) => typeof id === "string" && id.length <= 120))].slice(0, 60) : undefined;
   const writerNotes = selection(source?.writerNotes);
   const reviewerNotes = selection(source?.reviewerNotes);
+  const codeGraph = codeGraphQuery(value?.codeGraph);
   return {
     context: {
       ...(writerNotes && { writerNotes }), ...(reviewerNotes && { reviewerNotes }),
@@ -30,6 +33,11 @@ export function teamRunOptions(policy, value) {
       ? value.turnLimit : policy === "thorough" ? 4 : policy === "normal" ? 3 : 2,
     alwaysReview: value?.alwaysReview === true,
     runChecks: value?.runChecks === true,
+    autoEvidenceChecks: value?.autoEvidenceChecks === true,
+    freshReview: true,
+    teamReviewSkill: value?.teamReviewSkill !== false,
+    traceBug: value?.teamReviewSkill !== false && value?.traceBug === true,
+    ...(codeGraph && { codeGraph }),
     ...(value?.askForEvidence === true && { askForEvidence: true }),
   };
 }

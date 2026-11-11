@@ -60,13 +60,14 @@ export function SessionButton({ entry, busy, manage }) {
     aria-label={"Manage session " + entry.title} title="Session actions" onClick={() => manage(entry)}><IconDots size={16} /></button>;
 }
 
-export function SessionActions({ entry, busy, perform, close }) {
+export function SessionActions({ entry, busy, perform }) {
   const [action, setAction] = useState("");
   const [title, setTitle] = useState(entry.title.slice(0, 100));
   const [confirmed, setConfirmed] = useState(false);
   const scope = entry.provider === "codex" ? "Codex source chat" : entry.provider === "claude" ? "Claude Code local source chat" : "AI Deck task";
   const choices = [
-    ...(!entry.archived ? [["fork", "Fork", IconGitBranch], ["archive", "Archive", IconArchive]]
+    ...(!entry.archived ? [...(!entry.provider ? [["fork", "Fork", IconGitBranch]] : []),
+      ["archive", "Archive", IconArchive]]
       : [["restore", "Restore", IconRestore]]),
     ["rename", "Rename", IconEdit], ["delete", "Delete", IconTrash],
   ];
@@ -85,10 +86,8 @@ export function SessionActions({ entry, busy, perform, close }) {
     <h3>{entry.title}</h3>
     {entry.provider === "claude" && <p className="setting-detail">Source transcript changes require closed Claude Code sessions.</p>}
     {!action ? <div className="deck-session-action-grid">
-      {choices.map(([value, label, Icon]) => <button key={value} type="button" className="button small" disabled={busy} onClick={() => {
-        if (value === "fork" && entry.provider) void perform(value);
-        else setAction(value);
-      }}><Icon size={16} />{label}</button>)}
+      {choices.map(([value, label, Icon]) => <button key={value} type="button" className="button small" disabled={busy}
+        onClick={() => setAction(value)}><Icon size={16} />{label}</button>)}
     </div> : <form onSubmit={(event) => {
       event.preventDefault();
       if (busy || action === "delete" && !confirmed || action === "rename" && !title.trim()) return;
@@ -107,7 +106,6 @@ export function SessionActions({ entry, busy, perform, close }) {
         </button>
       </div>
     </form>}
-    {!action && <div className="dialog-actions"><button className="button small" type="button" onClick={close}>Close</button></div>}
   </div>;
 }
 

@@ -1,15 +1,26 @@
 const { buildThenReview, classifyTeamPlan, parallelChecksMode, planPair, teamReviewer } = require("./collaboration.mjs");
 const { reviewResult, reviewFormat } = require("./auto-team.cjs");
+const { criteriaReplyFormat, newReviewChecks, recordCriteria, repairCriterionFocus, scopedEvidenceRequest, verifiedCheck, withCriterionEvidence } = require("./team-criteria.mjs");
 
 async function runFlow({ mode, agents, available = agents, lowMemory = false, stopped, runAgent, readReview, skipReview, savePlan,
   policy, saveVerdict, reviewStillCurrent, verifyRepair, repairAllowed = true,
-  checkpointReview, smartSkip, alwaysReview = false, askForEvidence = false, turnsLeft = () => Infinity, pauseReview, scopedHandoff, discussion = false }) {
+  checkpointReview, smartSkip, alwaysReview = false, askForEvidence = false, turnsLeft = () => Infinity, pauseReview, scopedHandoff, discussion = false, criteria = [],
+  approvedEvidenceChecks = [], runEvidenceCheck }) {
   if (discussion) {
     const [first, second] = agents;
-    if (stopped() || !available.includes(first) || !available.includes(second)) return;
+    if (stopped() || !available.length) return;
     const stage = { role: "review", kind: "discussion" };
+    if (available.length === 1) {
+      const [agent] = available;
+      await runAgent(agent, undefined, undefined, { ...stage, limitedPeer: agent === first ? second : first });
+      return;
+    }
     const opening = await runAgent(first, undefined, undefined, stage);
     if (stopped()) return;
+    if (opening?.status === "limited") {
+      await runAgent(second, undefined, undefined, { ...stage, limitedPeer: first });
+      return;
+    }
     if (opening?.status !== "completed" || !opening.output?.trim()) {
       skipReview("The opening reply was unavailable. The teammate was not called.", second);
       return;
@@ -76,37 +87,71 @@ async function runFlow({ mode, agents, available = agents, lowMemory = false, st
     }
     const reviewStage = { role: "review", instructions: reviewFormat +
       " Keep the verdict and findings concise. After the verdict line, use the language of the user's request unless they asked for a different language." };
-    const reviewOnce = async (packet, peer, kind) => {
-      const mayAsk = askForEvidence && kind === "review" && !limited && !packet.peerOnly && !packet.info.partial && turnsLeft() >= 4;
-      const instructions = mayAsk ? reviewStage.instructions +
-        "\nFor one material missing fact the builder can check without editing, you may instead start with AI_DECK_NEEDS_EVIDENCE and state exactly one question." : reviewStage.instructions;
-      const result = await runAgent(reviewer, packet, peer, { ...reviewStage, instructions, kind });
+    const summaryReserve = policy === "economy" ? 0 : 1;
+    const reviewOnce = async (packet, peer, kind, focus) => {
+      const budget = turnsLeft();
+      const canAskBuilder = budget >= 3 + summaryReserve;
+      const eligibleChecks = budget >= 2 ? approvedEvidenceChecks : [];
+      const mayAsk = askForEvidence && kind === "review" && !limited && !packet.peerOnly && !packet.info.partial &&
+        (canAskBuilder || criteria.length > 0 && eligibleChecks.length > 0);
+      const instructions = [reviewStage.instructions,
+        criteria.length > 0 && criteriaReplyFormat(focus),
+        focus && (focus.kind === "repair" ? "Reassess only " + focus.id + " using the revised diff for its declared files. The other file-local criteria retain their earlier decisions."
+          : "Only reassess " + focus.id + ". The source snapshot is unchanged. Use the earlier decisions and newly supplied evidence. Do not re-review the other criteria."),
+        mayAsk && (criteria.length
+          ? "Ask only if exactly one criterion remains blocked, all others pass, and the missing evidence can change the verdict. First reuse any supplied matching result. When asking, replace the verdict line with AI_DECK_NEEDS_EVIDENCE: R1. Then add Question: one specific question ending in ?, Impact: what decision this changes, and " +
+            (canAskBuilder ? "Check: a matching saved or recorded check ID, or none." : "Check: a matching saved A ID. If no saved check matches, report the criterion as blocked.") +
+            " Put each field on its own line and follow with all criterion lines."
+          : "For one material missing fact the builder can check without editing, you may instead start with AI_DECK_NEEDS_EVIDENCE and state exactly one question."),
+        mayAsk && eligibleChecks.length > 0 && "If a configured check can settle the gap, use its A ID in Check. AI Deck runs only the matching saved command. Approved checks:\n" +
+          eligibleChecks.map(({ id, name, command }) => id + " · " + name + " · " + command).join("\n"),
+      ].filter(Boolean).join("\n");
+      const result = await runAgent(reviewer, packet, peer, { ...reviewStage, instructions, kind, focus });
       if (stopped() || result.status !== "completed") return null;
       if (!await reviewStillCurrent(packet)) {
         saveVerdict({ verdict: "blocked", text: "The checkout changed during review or could not be verified." });
         return null;
       }
-      const question = mayAsk && /^AI_DECK_NEEDS_EVIDENCE\r?\n([\s\S]+)$/u.exec(result.output?.trim() ?? "")?.[1].trim();
-      if (question && question.length <= 700 && turnsLeft() >= 3) {
-        const evidence = await runAgent(builder, undefined, { from: reviewer, kind: "evidence request", text: question }, {
+      const request = mayAsk && criteria.length && scopedEvidenceRequest(result.output, criteria, packet.checks ?? [], eligibleChecks);
+      const question = request ? request.id + " · " + request.question + "\nDecision affected: " + request.impact :
+        mayAsk && !criteria.length && /^AI_DECK_NEEDS_EVIDENCE\r?\n([\s\S]+)$/u.exec(result.output?.trim() ?? "")?.[1].trim();
+      if (question && question.length <= 700 && turnsLeft() >= (request?.approvedCheck ? 1 : 2 + summaryReserve)) {
+        const observed = request && withCriterionEvidence({ criteria: request.results }, packet).criteria;
+        if (observed) request.results = observed;
+        const evidence = request?.approvedCheck
+          ? await runEvidenceCheck?.(request, packet)
+          : await runAgent(builder, undefined, { from: reviewer, kind: "evidence request", text: question }, {
           role: "review", kind: "answer evidence request",
+          focus: request || undefined,
           instructions: "Answer only the teammate's question from available evidence. Read-only. State what you checked and what remains unknown.",
         });
         if (stopped()) return null;
         if (evidence?.status !== "completed" || !evidence.output?.trim() || !await reviewStillCurrent(packet)) {
-          saveVerdict({ verdict: "blocked", text: "The requested evidence could not be verified against the reviewed checkout.\n\n" + question });
+          saveVerdict({ verdict: "blocked", text: "The requested evidence could not be verified against the reviewed checkout.\n\n" + question, criteria: observed });
           return null;
         }
-        const next = await readReview("after-build", reviewer);
+        const next = request?.approvedCheck ? packet : await readReview("after-build", reviewer);
         if (stopped()) return null;
-        if (!await reviewStillCurrent(packet)) {
+        if (!request?.approvedCheck && !await reviewStillCurrent(packet)) {
           saveVerdict({ verdict: "blocked", text: "The checkout changed while preparing the evidence recheck." });
           return null;
         }
-        return reviewOnce(next, { ...peer, kind: "evidence reply", text: evidence.output }, "recheck evidence");
+        const scoped = request ? { ...next, checks: [...(evidence.checks ?? []), ...newReviewChecks(packet.checks, next.checks)],
+          body: "Source snapshot unchanged. Use the prior criterion decisions and the new evidence below.",
+          info: { ...next.info, includedPaths: [], evidenceDelta: true, previousReviewHash: packet.info.sha256 } } : next;
+        const reply = { ...peer, ...(request?.approvedCheck && { from: "checks" }), kind: "evidence reply", text: evidence.output };
+        if (request && scoped.checks?.some(verifiedCheck)) await checkpointReview?.(scoped, reply, reviewer, request);
+        if (stopped()) return null;
+        return reviewOnce(scoped, reply, "recheck evidence", request || undefined);
       }
-      const verdict = reviewResult(result.output);
-      if (verdict.verdict === "pass" && packet.info.partial) verdict.verdict = "partial";
+      const verdict = withCriterionEvidence(recordCriteria(reviewResult(result.output), result.output, criteria, focus), packet, focus);
+      if (focus?.extraNotes) verdict.extraNotes = focus.extraNotes;
+      if (focus && (focus.kind === "repair" || packet.checks?.some(verifiedCheck)) &&
+          (verdict.malformed || !verdict.criteria?.some(({ id }) => id === focus.id))) return null;
+      if (verdict.verdict === "pass" && limited) {
+        verdict.verdict = "partial";
+        verdict.text = "The builder reached its usage limit. The review covers the available changes while implementation is still pending.\n\n" + verdict.text;
+      } else if (verdict.verdict === "pass" && packet.info.partial) verdict.verdict = "partial";
       else if (verdict.verdict === "pass" && packet.peerOnly) verdict.verdict = "report";
       saveVerdict(verdict);
       return verdict;
@@ -120,19 +165,22 @@ async function runFlow({ mode, agents, available = agents, lowMemory = false, st
         ". Leave other files, HEAD and staging alone. Stop and explain if the fix needs a broader scope.",
     });
     if (stopped() || repair.status !== "completed") return;
-    const next = await readReview("after-build", reviewer);
+    const next = await readReview("after-build", reviewer, criteria.length ? review : undefined);
     if (!await verifyRepair(review, next)) {
       saveVerdict({ verdict: "blocked", text: "The repair left the reviewed scope, changed Git staging, or produced no verifiable change." });
       return;
     }
     const repaired = { from: builder, kind: "repair", text: repair.output, status: repair.status };
-    await checkpointReview?.(next, repaired, reviewer);
+    const focus = !next.info.partial && next.repairDelta && repairCriterionFocus(criteria, verdict, review, next.repairDelta, next.repairedPaths);
+    const packet = focus ? { ...next.repairDelta, fullInfo: next.info,
+      checks: (next.repairDelta.checks ?? []).filter((check) => check.freshness === "matched") } : next;
+    await checkpointReview?.(packet, repaired, reviewer, focus);
     if (stopped()) return;
     if (turnsLeft() < 1) {
       pauseReview?.(reviewer, "Turn limit reached. Recheck the saved repair diff when ready.");
       return;
     }
-    await reviewOnce(next, repaired, "recheck");
+    await reviewOnce(packet, repaired, "recheck", focus);
     return;
   }
 

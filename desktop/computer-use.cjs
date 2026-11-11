@@ -163,7 +163,7 @@ async function startComputerServer(tools) {
       let result;
       if (method === "initialize") {
         result = { protocolVersion: protocols.has(params?.protocolVersion) ? params.protocolVersion : "2025-03-26",
-          serverInfo: { name: "AI Deck Computer Use", version: "1" }, capabilities: { tools: {} } };
+          serverInfo: tools.serverInfo ?? { name: "AI Deck Computer Use", version: "1" }, capabilities: { tools: {} } };
       } else if (method === "ping") result = {};
       else if (method === "tools/list") result = { tools: toolDefinitions };
       else if (method === "tools/call") {
@@ -179,7 +179,8 @@ async function startComputerServer(tools) {
     server.listen(0, "127.0.0.1", resolve);
   });
   return {
-    plugin: { name: computerName, url: "http://127.0.0.1:" + server.address().port + route, tools: toolDefinitions.map(({ name }) => name) },
+    plugin: { name: tools.name ?? computerName, url: "http://127.0.0.1:" + server.address().port + route, tools: toolDefinitions.map(({ name }) => name),
+      ...(tools.readTools && { readTools: tools.readTools, builtIn: true }) },
     close() { tools.close(); server.close(); server.closeAllConnections(); },
   };
 }

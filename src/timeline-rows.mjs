@@ -25,14 +25,13 @@ export function conversationTurns(rows, runs) {
   return turns;
 }
 
-export function appendLiveRow(rows, row, delta = false) {
+function writeLiveRow(rows, row, delta) {
   const index = rows.findLastIndex(({ id }) => id === row.id);
   const text = (delta ? (rows[index]?.text ?? "") + row.text : row.text).slice(-30000);
   const next = { ...row, text, ...(rows[index]?.profile && !row.profile && { profile: rows[index].profile }) };
   if (index >= 0) {
-    const updated = rows.slice();
-    updated[index] = next;
-    return updated;
+    rows[index] = next;
+    return;
   }
   const matches = isWorkStep(row) ? isWorkStep : isMessage(row) ? isMessage : null;
   if (matches) {
@@ -40,10 +39,52 @@ export function appendLiveRow(rows, row, delta = false) {
     const prefix = turnId(row) + ":";
     let count = 0;
     for (let index = rows.length - 1; index >= 0 && rows[index].id.startsWith(prefix); index--) {
-      if (matches(rows[index]) && ++count === limit) return [...rows.slice(0, index), ...rows.slice(index + 1), next];
+      if (matches(rows[index]) && ++count === limit) {
+        rows.splice(index, 1);
+        break;
+      }
     }
   }
-  return [...rows, next];
+  rows.push(next);
+}
+
+export function appendLiveRow(rows, row, delta = false) {
+  const next = rows.slice();
+  writeLiveRow(next, row, delta);
+  return next;
+}
+
+export function appendLiveDeltas(rows, batch) {
+  const next = rows.slice();
+  for (const row of batch) writeLiveRow(next, row, true);
+  return next;
+}
+
+export function applyRunUpdate(workspace, { taskId, run, codexThread }) {
+  const current = workspace?.runHistory?.at(-1);
+  if (!current || workspace.taskId !== taskId || current.id !== run.id || current.finishedAt) return workspace;
+  return { ...workspace, codexThread, runHistory: [...workspace.runHistory.slice(0, -1), run] };
+}
+
+export function frameDeltas(publish, schedule, cancel) {
+  const pending = new Map();
+  let frame;
+  function discard() {
+    if (frame !== undefined) cancel(frame);
+    frame = undefined;
+    pending.clear();
+  }
+  function flush() {
+    const rows = [...pending.values()];
+    discard();
+    if (rows.length) publish(rows);
+  }
+  return { flush, discard, append(row) {
+    const previous = pending.get(row.id);
+    pending.set(row.id, { ...row, text: ((previous?.text ?? "") + row.text).slice(-30000),
+      ...(previous?.profile && !row.profile && { profile: previous.profile }) });
+    frame ??= schedule(flush);
+  } };
 }
 
 export function retainTimelineRows(rows, runs) {

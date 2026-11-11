@@ -5,6 +5,7 @@ import { HandoffLocation } from "./NativeRecents.jsx";
 import { DeckLoading } from "./DeckLoading.jsx";
 import { groupLinkedCommands, linkedNextAction, linkedTimelineRows, mergeLinkedPage } from "./linked-timeline.mjs";
 import { OnDemandDetails, WorkSteps } from "./WorkActivity.jsx";
+import { ChatMarkdown } from "./ChatMarkdown.jsx";
 
 export const linkedModeNames = {
   "codex-review": "Codex · Review", codex: "Codex · Edit",
@@ -23,12 +24,19 @@ export function LinkedCheckout({ target }) {
   </>;
 }
 
-export function LinkedSource({ session, check, busy, refresh, open, fork = false }) {
-  const [folderMode, setFolderMode] = useState(fork ? "copy" : "original");
+const sourceIssues = {
+  "unknown-folder": "This chat has no recorded local folder.",
+  "missing-folder": "The chat’s recorded folder is missing.",
+  "no-git": "The chat’s recorded folder exists, but it is outside a Git repository.",
+  "unverified-checkout": "AI Deck could not verify the Git checkout for this chat.",
+};
+
+export function LinkedSource({ session, check, busy, refresh, open, preview }) {
+  const [folderMode, setFolderMode] = useState("original");
   const [paused, setPaused] = useState(false);
   return <div className="thread-handoff-form">
     <p className="thread-session-provider"><Brand agent={session.provider} size={17} /><strong>{session.title}</strong></p>
-    {check ? <>
+    {check?.target ? <>
       <LinkedCheckout target={check.target} />
       {check.recordedBranch && check.recordedBranch !== check.target.branch && <p className="setting-detail">
         The original chat recorded branch {check.recordedBranch}. Review the current checkout above.
@@ -58,7 +66,12 @@ export function LinkedSource({ session, check, busy, refresh, open, fork = false
           {folderMode === "original" ? "Open linked conversation" : "Create separate copy"}
         </button>
       </div>
-    </> : busy && <p role="status">Reading the session and Git checkout…</p>}
+    </> : busy ? <p role="status">Checking the original folder…</p> : check?.issue && <>
+      <p role="status">{sourceIssues[check.issue]}</p>
+      {check.sourceFolder && <p className="setting-detail">Recorded folder · {check.sourceFolder}</p>}
+      <p className="setting-detail">Open the saved messages to continue in chat-only mode or select excerpts for a new task.</p>
+      <button className="button small primary" type="button" onClick={preview}>Open chat messages</button>
+    </>}
     <button className="button small" type="button" disabled={busy} onClick={refresh}>Refresh source check</button>
   </div>;
 }
@@ -303,10 +316,10 @@ export function LinkedTimeline({ api, taskId, agent, link, runs, busy, draftOpen
         {row.message.role === "user" ? <div className="thread-prompt">
           <div className="thread-prompt-body"><div className="thread-chat-author" title={formatTime(row.at)}>
             You · {agentNames[row.agent]}
-          </div><p>{row.message.text}{row.message.clipped && "…"}</p></div>
+          </div><p data-chat-quote="You">{row.message.text}{row.message.clipped && "…"}</p></div>
         </div> : <div className="thread-chat-reply">
           <div className="thread-chat-author" title={formatTime(row.at)}><Brand agent={row.agent} size={13} /><strong>{agentNames[row.agent]}</strong></div>
-          <p className="thread-message">{row.message.text}{row.message.clipped && "…"}</p>
+          <ChatMarkdown className="thread-message" quote={agentNames[row.agent]} text={row.message.text + (row.message.clipped ? "…" : "")} />
         </div>}
       </div>;
       if (row.kind === "commands") return <div key={row.key} className="linked-chat-row thread-chat-work">

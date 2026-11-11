@@ -16,16 +16,29 @@
   },
   "dependencies": {
     "@tabler/icons-react": "^3.50.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/tha": "1.0.0",
     "@vitejs/plugin-react": "5.0.4",
     "jsonc-parser": "3.3.1",
+    "officeparser": "8.7.1",
+    "pdfjs-dist": "6.2.108",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "simple-icons": "^16.37.0",
+    "tesseract.js": "7.0.0",
     "toml-eslint-parser": "1.0.3",
+    "typescript": "5.9.3",
     "vite": "6.4.6"
   },
   "devDependencies": {
     "electron": "^45.2.3",
     "esbuild": "0.25.12"
+  },
+  "overrides": {
+    "tesseract.js": {
+      "wasm-feature-detect": "1.8.0"
+    }
   }
 }

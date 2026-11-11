@@ -6,8 +6,11 @@ const { test } = require("node:test");
 const { runFlow } = require("../desktop/team-flow.cjs");
 const { reviewSnapshot, changedReviewPaths } = require("../desktop/review-snapshot.cjs");
 const { newRun, finishRun } = require("../desktop/run-history.cjs");
-const { discussionPrompt, previousDiscussion, receiptUsage, recordedSummaryLeader, teamLeaderPrompt, visibleTeamAnswer } = require("../desktop/team-result.mjs");
+const { comparisonMetrics, discussionPrompt, economySummary, previousDiscussion, receiptUsage, recordedSummaryLeader, teamLeaderPrompt, verifiedTeamSummary, visibleTeamAnswer } = require("../desktop/team-result.mjs");
 const { priorTeamResult, teamRunOptions } = require("../desktop/team-handoff.mjs");
+const { recordCriteria, reviewCriteria, savedCriterionChecks, savedEvidenceCheckpoint } = require("../desktop/team-criteria.mjs");
+const { teamReviewGuidance } = require("../desktop/team-review-skill.cjs");
+const { workspaceView } = require("../desktop/tasks.cjs");
 
 test("a legacy team result shows both reports while a new lead reply takes precedence", () => {
   const run = newRun("build-review", "แก้ไฟล์ทดสอบ", ["codex", "claude"]);
@@ -17,17 +20,28 @@ test("a legacy team result shows both reports while a new lead reply takes prece
   assert.equal(recordedSummaryLeader(run), undefined);
   finishRun(run);
   assert.equal(recordedSummaryLeader(run), "codex");
-  assert.deepEqual(visibleTeamAnswer(run), { text: "Updated fixture.txt.", note: "No actionable findings.", noteLabel: "Review" });
+  assert.deepEqual(visibleTeamAnswer(run), { agent: "codex", text: "Updated fixture.txt.",
+    note: "No actionable findings.", noteAgent: "claude", noteLabel: "Review" });
   const prompt = teamLeaderPrompt(run, "codex", "node --test · passed · matched");
   for (const evidence of ["แก้ไฟล์ทดสอบ", "Updated fixture.txt.", "No actionable findings.", "passed · matched"]) assert.ok(prompt.includes(evidence));
   assert.equal(prompt.includes("AI_DECK_REVIEW"), false);
   run.collaboration.finalReply = { agent: "codex", text: "Updated and independently reviewed." };
   assert.equal(recordedSummaryLeader(run), undefined);
-  assert.deepEqual(visibleTeamAnswer(run), { leader: "Codex", text: "Updated and independently reviewed." });
+  assert.deepEqual(visibleTeamAnswer(run), { agent: "codex", leader: "Codex", text: "Updated and independently reviewed." });
   assert.equal(visibleTeamAnswer({ ...run, discussion: true }), null);
   assert.equal(teamRunOptions("normal").turnLimit, 3);
   assert.equal(teamRunOptions("normal", { turnLimit: 2 }).turnLimit, 2);
   assert.equal(teamRunOptions("economy").turnLimit, 2);
+});
+
+test("Session Team identifies the native members who wrote each visible report", () => {
+  const run = newRun("session-team", "Review the sample", ["builder-id", "reviewer-id"]);
+  const note = "## ผลตรวจ\n\n- **ผ่าน** สำหรับ `sample.txt`\n\n```bash\nprintf sample\n```";
+  Object.assign(run.agents["builder-id"], { provider: "codex", position: "write", status: "completed", answer: "Sample updated." });
+  Object.assign(run.agents["reviewer-id"], { provider: "claude", position: "review", status: "completed", answer: note });
+  assert.deepEqual(visibleTeamAnswer(run), { agent: "builder-id", text: "Sample updated.", note, noteAgent: "reviewer-id", noteLabel: "Review" });
+  run.collaboration = { findings: "AI Deck could not verify the file scope." };
+  assert.equal(visibleTeamAnswer(run).noteAgent, undefined);
 });
 
 test("the lead receives repeated reviewer findings once and keeps unique evidence", () => {
@@ -123,6 +137,239 @@ test("a material evidence question gets one read-only answer and one recheck, re
   assert.equal(calls[3].handoff.kind, "evidence reply");
   assert.doesNotMatch(calls[3].stage.instructions, /AI_DECK_NEEDS_EVIDENCE/);
   assert.equal(verdict.verdict, "pass");
+});
+
+test("an evidence question is tied to a blocked criterion and rechecks only newly observed evidence", async () => {
+  const criteria = reviewCriteria("Implement retry.\nR1: Cap delay at 30 seconds.\nR2: Preserve the early schedule.");
+  assert.deepEqual(criteria.map(({ id }) => id), ["R1", "R2"]);
+  const recorded = { command: "node --test early.cjs", freshness: "matched", exitCode: 0 };
+  const extra = { command: "node --test cap.cjs", freshness: "matched", exitCode: 0 };
+  const packet = { hasChanges: true, body: "original patch", checks: [recorded], info: { sha256: "original", partial: false } };
+  for (const existingCheck of ["none", "E1"]) {
+    const calls = [];
+    let verdict;
+    await runFlow({
+      mode: "build-review", agents: ["codex", "claude"], stopped: () => false,
+      policy: "normal", criteria, askForEvidence: true, turnsLeft: () => 5 - calls.length,
+      readReview: async () => calls.length > 2 ? { ...packet, checks: [extra, recorded] } : packet,
+      reviewStillCurrent: async () => true, saveVerdict: (result) => { verdict = result; },
+      runAgent: async (agent, review, handoff, stage) => {
+        calls.push({ agent, review, handoff, stage });
+        const outputs = ["Changed retry.cjs.",
+          "AI_DECK_REVIEW: BLOCKED\nAI_DECK_NEEDS_EVIDENCE: R1\nQuestion: Did the cap test pass?\nImpact: Required before approving.\nCheck: " +
+          existingCheck + "\nR1 BLOCKED — need cap test\nR2 PASS — E1 passed",
+          "The cap test passed.", "AI_DECK_REVIEW: PASS\nR1 PASS — cap test passed"];
+        return { status: "completed", output: outputs[calls.length - 1] };
+      },
+    });
+    if (existingCheck === "E1") {
+      assert.equal(calls.length, 2);
+      assert.equal(verdict.verdict, "blocked");
+    } else {
+      assert.equal(calls.length, 4);
+      assert.equal(calls[2].stage.role, "review");
+      assert.equal(calls[3].stage.focus.id, "R1");
+      assert.equal(calls[3].review.info.previousReviewHash, "original");
+      assert.deepEqual(calls[3].review.checks, [extra]);
+      assert.doesNotMatch(calls[3].review.body, /original patch/u);
+      assert.equal(verdict.verdict, "pass");
+      assert.deepEqual(verdict.criteria.map(({ id }) => id).sort(), ["R1", "R2"]);
+    }
+  }
+  const duplicate = "R1 PASS — claimed\nR1 CHANGES — conflicting\nR2 PASS — evidence";
+  assert.equal(recordCriteria({ verdict: "pass", text: duplicate }, duplicate, criteria).verdict, "blocked");
+  const markdown = "- R1 PASS — cap verified\n2. **R2 PASS** — early schedule verified";
+  assert.equal(recordCriteria({ verdict: "pass", text: markdown }, markdown, criteria).verdict, "pass");
+  assert.equal(recordCriteria({ verdict: "pass", text: markdown }, markdown + "\n- R1 BLOCKED — conflicting", criteria).verdict, "blocked");
+});
+
+test("approved evidence skips the builder callback, records only the new check, and rejects unknown IDs", async () => {
+  const criteria = reviewCriteria("R1: Verify the cap.");
+  const configured = [{ id: "A1", name: "Cap contract", command: "node --test cap.cjs" }];
+  const packet = { hasChanges: true, checks: [], info: { sha256: "snapshot", partial: false, includedPaths: ["retry.cjs"] } };
+  for (const approvedId of ["A1", "A9"]) {
+    const calls = [];
+    const observed = { ...configured[0], exitCode: 0, freshness: "matched", criterionId: "R1" };
+    let result;
+    await runFlow({
+      mode: "build-review", agents: ["codex", "claude"], stopped: () => false, policy: "normal",
+      criteria, askForEvidence: true, approvedEvidenceChecks: configured, turnsLeft: () => 3 - calls.length,
+      readReview: async () => packet, reviewStillCurrent: async () => true, saveVerdict: (value) => { result = value; },
+      runEvidenceCheck: async (request) => {
+        assert.equal(request.approvedCheck, "A1");
+        return { status: "completed", output: "Passed on copy.", checks: [observed] };
+      },
+      runAgent: async (agent, review, handoff) => {
+        calls.push(agent);
+        if (calls.length === 3) {
+          assert.equal(handoff.from, "checks");
+          assert.deepEqual(review.checks, [observed]);
+          assert.deepEqual(review.info.includedPaths, []);
+        }
+        const outputs = ["Changed retry.cjs", "AI_DECK_NEEDS_EVIDENCE: R1\nQuestion: Does the cap test pass?\nImpact: Needed to approve.\nCheck: " +
+          approvedId + "\nR1 BLOCKED — missing test", "AI_DECK_REVIEW: PASS\nR1 PASS — E1 passed"];
+        return { status: "completed", output: outputs[calls.length - 1] };
+      },
+    });
+    assert.deepEqual(calls, approvedId === "A1" ? ["codex", "claude", "claude"] : ["codex", "claude"]);
+    assert.equal(result.verdict, approvedId === "A1" ? "pass" : "blocked");
+    if (approvedId === "A1") assert.equal(result.criteria[0].evidence.checks[0].command, observed.command);
+  }
+});
+
+test("a failed evidence recheck keeps the verified result and criterion decisions without recalling the builder", async () => {
+  const criteria = reviewCriteria("R1: Cap delay.\nR3: Run tests.");
+  const packet = { hasChanges: true, checks: [], info: { sha256: "snapshot", partial: false, includedPaths: ["retry.cjs"] } };
+  const check = { command: "node --test retry.cjs", freshness: "matched", exitCode: 0, criterionId: "R3" };
+  for (const failure of [{ status: "failed" }, { status: "completed", output: "" },
+    { status: "completed", output: "AI_DECK_REVIEW: PASS\nFinished without an R3 decision." }]) {
+    const calls = [];
+    let saved;
+    await runFlow({
+      mode: "build-review", agents: ["codex", "claude"], stopped: () => false, policy: "normal", criteria,
+      askForEvidence: true, approvedEvidenceChecks: [{ id: "A1", command: check.command }],
+      turnsLeft: () => 5 - calls.length, readReview: async () => packet, reviewStillCurrent: async () => true,
+      saveVerdict: assert.fail, checkpointReview: async (review, handoff, reviewer, focus) => { saved = { review, handoff, reviewer, focus }; },
+      runEvidenceCheck: async () => ({ status: "completed", output: "Pass", checks: [check] }),
+      runAgent: async (agent) => {
+        calls.push(agent);
+        if (calls.length === 1) return { status: "completed", output: "Implemented." };
+        if (calls.length === 2) return { status: "completed", output: "AI_DECK_NEEDS_EVIDENCE: R3\nQuestion: Does the test pass?\nImpact: Needed to approve.\nCheck: A1\nR1 PASS — diff\nR3 BLOCKED — test pending" };
+        assert.deepEqual(saved.review.checks, [check]);
+        assert.equal(saved.focus.id, "R3");
+        return failure;
+      },
+    });
+    assert.deepEqual(calls, ["codex", "claude", "claude"]);
+    assert.deepEqual(saved.focus.results.map(({ id, status }) => [id, status]), [["R1", "pass"], ["R3", "blocked"]]);
+  }
+});
+
+test("an earlier app can resume a saved evidence handoff only from its original snapshot", () => {
+  const run = newRun("build-review", "Check retry", ["codex", "claude"]);
+  const checkpoint = { reviewer: "claude", packet: { info: { sha256: "same", includedPaths: ["retry.cjs"] } } };
+  const handoff = { kind: "evidence reply", criterionId: "R3", evidenceDelta: true, sha256: "same", previousReviewHash: "same",
+    from: "checks", summary: "Pass", checks: [{ freshness: "matched", exitCode: 0 }] };
+  run.agents.claude.answer = "R1 PASS — diff\nR3 BLOCKED — need the test";
+  run.collaboration = { reviewCheckpoint: checkpoint, handoffs: [handoff], criteria: [{ id: "R1" }, { id: "R3" }] };
+  const saved = savedEvidenceCheckpoint(run);
+  assert.equal(saved.focus.id, "R3");
+  assert.deepEqual(saved.packet.checks, handoff.checks);
+  assert.deepEqual(saved.packet.info.includedPaths, []);
+  const publicRun = workspaceView({ currentTask: "task", tasks: [{ id: "task", runHistory: [run], queue: [] }] }).runHistory[0];
+  assert.equal(publicRun.collaboration.reviewCheckpoint.criterionId, "R3");
+  assert.equal(publicRun.collaboration.reviewCheckpoint.packet, undefined);
+  handoff.sha256 = "changed";
+  assert.equal(savedEvidenceCheckpoint(run), checkpoint);
+});
+
+test("economy uses recorded criterion decisions only with a complete current review", () => {
+  const run = newRun("build-review", "Set a cap", ["codex", "claude"]);
+  run.reviewSnapshot = { phase: "after-build", partial: false };
+  run.collaboration = { policy: "economy", verdict: "pass", criteria: [{ id: "R1", text: "Cap" }],
+    criterionResults: [{ id: "R1", status: "pass", detail: "Cap verified." }], handoffs: [] };
+  assert.deepEqual(visibleTeamAnswer(run), { text: "R1 · Cap verified.", recorded: true });
+  run.collaboration.handoffs.push({ checks: [{ freshness: "matched", exitCode: 1 }] });
+  assert.equal(economySummary(run), undefined);
+  run.collaboration.handoffs = [];
+  run.reviewSnapshot.partial = true;
+  assert.equal(economySummary(run), undefined);
+});
+
+test("criterion follow-up uses only its observed check from the saved snapshot", () => {
+  const matching = { freshness: "matched", exitCode: 0, criterionId: "R3" };
+  const evidence = { snapshot: "current", checks: [matching, { ...matching, criterionId: "R2" }, { ...matching, freshness: "stale" }] };
+  const run = { reviewSnapshot: { sha256: "current" }, collaboration: { criterionResults: [{ id: "R3", detail: "Verified.", evidence }] } };
+  assert.deepEqual(savedCriterionChecks(run, "R3"), { detail: "Verified.", checks: [{ ...matching, priorRun: true }] });
+  evidence.snapshot = "old";
+  assert.equal(savedCriterionChecks(run, "R3"), undefined);
+});
+
+test("a recorded team answer requires current passing evidence and preserves extra reviewer notes for the lead", () => {
+  const run = newRun("build-review", "Set a cap", ["codex", "claude"]);
+  const check = { freshness: "matched", exitCode: 0 };
+  run.reviewSnapshot = { phase: "after-build", sha256: "current", partial: false };
+  run.collaboration = { policy: "normal", verdict: "pass", reviewObservation: { stamp: "current" },
+    findings: "R1 PASS — Cap verified.", criteria: [{ id: "R1", text: "Cap" }],
+    criterionResults: [{ id: "R1", status: "pass", detail: "Cap verified.", evidence: { snapshot: "current", checks: [check] } }],
+    handoffs: [{ sent: true, sha256: "current", checks: [check] }] };
+  assert.equal(verifiedTeamSummary(run), "R1 · Cap verified.");
+  run.collaboration.preReviewChecksIncomplete = true;
+  assert.equal(verifiedTeamSummary(run), undefined);
+  delete run.collaboration.preReviewChecksIncomplete;
+  run.collaboration.findings = "R1 PASS — Cap verified.\nR1 PASS — Cap verified.";
+  assert.equal(verifiedTeamSummary(run), undefined);
+  run.collaboration.findings = "R1 PASS — Cap verified.";
+  run.collaboration.findings += "\nไม่มี check ที่ขาด";
+  assert.equal(verifiedTeamSummary(run), "R1 · Cap verified.");
+  check.freshness = "stale";
+  assert.equal(verifiedTeamSummary(run), undefined);
+  check.freshness = "matched";
+  run.collaboration.findings += "\nRollout risk remains.";
+  assert.equal(verifiedTeamSummary(run), undefined);
+  run.collaboration.findings = "R1 PASS — Cap verified.";
+  run.collaboration.reviewEarlierNotes = "Earlier concern.";
+  assert.equal(verifiedTeamSummary(run), undefined);
+  for (const record of Object.values(run.agents)) Object.assign(record, { status: "completed", answer: "Report." });
+  assert.match(visibleTeamAnswer(run).note, /Earlier concern\./u);
+});
+
+test("a repair rechecks one file-local criterion and falls back to the full diff when scopes overlap", async () => {
+  for (const secondFile of ["label.txt", "retry.cjs"]) {
+    const criteria = reviewCriteria("R1 [files: retry.cjs]: Cap\nR2 [files: " + secondFile + "]: Label");
+    const before = { hasChanges: true, info: { sha256: "before", includedPaths: ["retry.cjs", "label.txt"] } };
+    const after = { info: { sha256: "after", includedPaths: ["retry.cjs", "label.txt"] }, repairedPaths: ["retry.cjs"],
+      repairDelta: { info: { sha256: "delta", includedPaths: ["retry.cjs"] }, checks: [] } };
+    let result;
+    let saved;
+    await runFlow({
+      mode: "build-review", agents: ["codex", "claude"], stopped: () => false, policy: "thorough", criteria,
+      readReview: async (_phase, _reviewer, previous) => previous ? after : before,
+      reviewStillCurrent: async () => true, verifyRepair: async () => true,
+      checkpointReview: async (packet, handoff, reviewer, focus) => { saved = { packet, handoff, reviewer, focus }; },
+      saveVerdict: (value) => { result = value; },
+      runAgent: async (agent, packet, _peer, stage) => {
+        if (agent === "codex") return { status: "completed", output: "Edited." };
+        if (stage.kind === "review") return { status: "completed", output: "AI_DECK_REVIEW: CHANGES\nR1 CHANGES — Fix cap.\nR2 PASS — Label matches." };
+        const focused = secondFile === "label.txt";
+        assert.equal(stage.focus?.id, focused ? "R1" : undefined);
+        assert.deepEqual(packet.info.includedPaths, focused ? ["retry.cjs"] : ["retry.cjs", "label.txt"]);
+        assert.equal(saved.packet, packet);
+        assert.equal(saved.focus, stage.focus);
+        return { status: "completed", output: "AI_DECK_REVIEW: PASS\nR1 PASS — Cap fixed." + (focused ? "" : "\nR2 PASS — Label matches.") };
+      },
+    });
+    assert.equal(result.verdict, "pass");
+    assert.equal(Boolean(result.criteria.find(({ id }) => id === "R2").evidence.retained), secondFile === "label.txt");
+  }
+});
+
+test("comparison totals include manual summaries once and distinguish missing usage reports", () => {
+  const run = newRun("build-review", "Set a cap", ["codex", "claude"]);
+  const lead = { providerCalls: 1, runTokens: { input: 50, cached: 30, output: 4, total: 54, reports: 1 } };
+  Object.assign(run.agents.codex, lead);
+  run.agents.claude.providerCalls = 1;
+  run.collaboration = { finalReply: { usage: lead } };
+  finishRun(run);
+  assert.deepEqual({ ...comparisonMetrics(run), wallMs: 0 },
+    { turns: 2, total: 54, cached: 30, uncached: 20, output: 4, partial: true, wallMs: 0 });
+  run.collaboration.finalReply.extraUsage = lead;
+  assert.equal(comparisonMetrics(run).turns, 3);
+  assert.equal(comparisonMetrics(run).total, 108);
+});
+
+test("the bundled review skill gives each stage only the guidance for its role", () => {
+  const normal = teamRunOptions("normal");
+  const names = (options, role, stage) => teamReviewGuidance(options, role, stage).map(({ name }) => name);
+  assert.deepEqual(names(normal, "write"), ["verification-before-completion"]);
+  assert.deepEqual(names(normal, "review", "answer evidence request"), ["receiving-code-review"]);
+  assert.deepEqual(names(normal, "write", "repair"), ["receiving-code-review"]);
+  assert.deepEqual(names(normal, "summary"), ["verification-before-completion"]);
+  const debug = teamRunOptions("normal", { traceBug: true });
+  assert.deepEqual(names(debug, "write"), ["verification-before-completion", "systematic-debugging"]);
+  assert.deepEqual(names(debug, "review", "review"), ["verification-before-completion"]);
+  assert.deepEqual(names(teamRunOptions("normal", { traceBug: true, teamReviewSkill: false }), "write"), []);
+  assert.deepEqual(names(undefined, "review"), []);
 });
 
 test("independent checks share one snapshot and overlap only outside Low RAM mode", async () => {

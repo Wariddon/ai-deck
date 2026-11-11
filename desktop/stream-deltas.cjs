@@ -17,4 +17,30 @@ function batchDeltas(emit) {
   return { append, flush };
 }
 
-module.exports = { batchDeltas };
+function streamSummaryPreview(publish) {
+  let key;
+  let text = "";
+  let timer;
+  let lastPublished;
+  return {
+    update(event) {
+      if (!["message", "delta"].includes(event.type) || typeof event.text !== "string") return;
+      text = ((event.type === "delta" && key === event.key ? text : "") + event.text).slice(0, 2200);
+      key = event.key;
+      timer ??= setTimeout(() => {
+        timer = undefined;
+        const preview = text.trim();
+        if (preview && preview !== lastPublished) {
+          lastPublished = preview;
+          publish(preview);
+        }
+      }, 40);
+    },
+    discard() {
+      clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
+module.exports = { batchDeltas, streamSummaryPreview };

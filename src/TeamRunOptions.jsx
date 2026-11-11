@@ -16,11 +16,14 @@ export function TeamRunOptions({ policy, value, notes, skillIds, prompt, builder
     <div className="team-option-grid">
       <label><input type="checkbox" checked={context.brief} onChange={(event) => set("brief", event.target.checked)} /> Team Brief and roles</label>
       <label><input type="checkbox" checked={context.decisions} onChange={(event) => set("decisions", event.target.checked)} /> Team Decisions ({decisions})</label>
-      <label><input type="checkbox" checked={context.history} onChange={(event) => set("history", event.target.checked)} /> Resume provider chats and share the last team outcome</label>
+      <label><input type="checkbox" checked={context.history} onChange={(event) => set("history", event.target.checked)} /> Resume builder history and share the last team outcome</label>
       <label><input type="checkbox" checked={context.diff} onChange={(event) => set("diff", event.target.checked)} /> Send Git diff to reviewer</label>
+      <label><input type="checkbox" checked={options.teamReviewSkill}
+        onChange={(event) => setOptions({ ...options, teamReviewSkill: event.target.checked })} /> AI Deck Team Review skill</label>
+      <label><input type="checkbox" checked={options.teamReviewSkill && options.traceBug} disabled={!options.teamReviewSkill}
+        onChange={(event) => setOptions({ ...options, traceBug: event.target.checked })} /> Trace a reproducible bug before editing</label>
     </div>
-    <p className="setting-detail">{context.history ? "Resumed chats may contain knowledge sent in earlier turns."
-      : "Both agents start fresh for this run. Their existing provider chats remain available."}</p>
+    <p className="setting-detail">The reviewer automatically starts a fresh conversation with the brief, selected sources and current evidence.</p>
     {!context.diff && <p className="setting-detail">Review evidence will be marked partial. The reviewer still gets the task and the builder’s summary.</p>}
     <div className="team-context-matrix" role="group" aria-label="Knowledge and skills per agent">
       <strong>Knowledge and skills</strong><strong>{builder}</strong><strong>{reviewer}</strong>
@@ -37,18 +40,27 @@ export function TeamRunOptions({ policy, value, notes, skillIds, prompt, builder
         {[1, 2, 3, 4, 5].map((limit) => <option key={limit}>{limit}</option>)}</select></label>
       <label><input type="checkbox" checked={Boolean(options.askForEvidence)}
         onChange={(event) => setOptions({ ...options, askForEvidence: event.target.checked,
-          turnLimit: event.target.checked ? 5 : options.turnLimit })} /> Let the reviewer ask once for missing evidence</label>
+          turnLimit: event.target.checked ? 5 : options.turnLimit })} /> Allow one question for a blocked criterion</label>
+      {checks > 0 && <label><input type="checkbox" checked={options.autoEvidenceChecks} disabled={!options.askForEvidence}
+        onChange={(event) => setOptions({ ...options, autoEvidenceChecks: event.target.checked })} /> Run a saved Required check for missing evidence</label>}
       <label><input type="checkbox" checked={options.alwaysReview}
         onChange={(event) => setOptions({ ...options, alwaysReview: event.target.checked })} /> Ask the reviewer even when no files change</label>
-      {policy === "smart" && checks > 0 && <label><input type="checkbox" checked={options.runChecks}
-        onChange={(event) => setOptions({ ...options, runChecks: event.target.checked })} /> Run {checks} configured checks on an isolated copy before skipping review</label>}
+      {checks > 0 && <label><input type="checkbox" checked={options.runChecks}
+        onChange={(event) => setOptions({ ...options, runChecks: event.target.checked })} /> {policy === "smart"
+          ? `Run ${checks} configured checks on an isolated copy before skipping review`
+          : "Run approved project checks before review when evidence is missing"}</label>}
     </div>
     <p className="setting-detail">{smallPath
       ? "Smart can skip review if only " + smallPath + " changes and Git checks pass."
       : options.alwaysReview ? "The reviewer checks the diff or the builder’s report when the turn limit allows it."
         : "The reviewer runs when the builder changes files and the turn limit allows it."}
       {options.turnLimit === 1 && " A review that needs another turn can be resumed explicitly from the saved diff."}</p>
-    <p className="setting-detail">The team lead writes the final answer after review when a turn is left. Otherwise, the timeline shows the recorded results together.</p>
+    <p className="setting-detail">{policy === "economy" ? "Economy assembles a single answer from complete recorded criterion results."
+      : "AI Deck can summarize complete verified results. The team lead explains open points when a turn is left."}</p>
+    {options.askForEvidence && options.autoEvidenceChecks && options.turnLimit === 3 &&
+      <p className="setting-detail">A saved check can use the last turn for review. AI Deck then shows the recorded results.</p>}
+    {policy === "thorough" && <p className="setting-detail">For a criterion verifiable from specific files alone, use
+      {" "}<code>R1 [files: src/retry.js]: Verify the cap</code>. Use comma-separated paths for multiple files.</p>}
     <div className="dialog-actions">
       <button type="button" className="button small" onClick={() => setOptions(teamRunOptions(policy))}>Use mode defaults</button>
       <button type="button" className="button small" onClick={close}>Cancel</button>

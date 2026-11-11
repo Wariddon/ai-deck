@@ -1,11 +1,11 @@
 import { useId, useState } from "react";
 import { IconChevronDown } from "@tabler/icons-react";
 
-export function ControlPopover({ label, title, icon, className, beforeOpen, lazy = false, children }) {
+export function ControlPopover({ label, title, icon, className, beforeOpen, lazy = false, disabled = false, children }) {
   const id = useId();
   const [open, setOpen] = useState(false);
   return <>
-    <button type="button" className="button small deck-controls-trigger" aria-label={title} title={title} popoverTarget={id}
+    <button type="button" className="button small deck-controls-trigger" disabled={disabled} aria-label={title} title={title} popoverTarget={id}
       onPointerDown={beforeOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") beforeOpen?.(); }}>
       {icon}<span>{label}</span><IconChevronDown size={13} aria-hidden="true" />
     </button>

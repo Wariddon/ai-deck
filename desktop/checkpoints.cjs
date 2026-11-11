@@ -27,8 +27,11 @@ function clearDraft(profile, taskId) {
 
 function restoreCheckpoints(profile, workspaces) {
   const tasks = new Map(Object.values(workspaces).flatMap(({ tasks }) => tasks.map((task) => [task.id, task])));
-  const run = readCheckpoint(path.join(profile, "running-checkpoint.json"));
-  if (run?.id && run.agents && Number.isSafeInteger(run.checkpointSeq)) {
+  const legacy = readCheckpoint(path.join(profile, "running-checkpoint.json"));
+  let names = [];
+  try { names = fs.readdirSync(path.join(profile, "running-checkpoints")).filter((name) => /^[a-f\d-]{36}\.json$/iu.test(name)); } catch {}
+  const runs = [legacy, ...names.map((name) => readCheckpoint(path.join(profile, "running-checkpoints", name)))];
+  for (const run of runs) if (run?.id && run.agents && Number.isSafeInteger(run.checkpointSeq)) {
     for (const task of tasks.values()) {
       const index = task.runHistory?.findIndex((entry) => entry.id === run.id && !entry.finishedAt) ?? -1;
       if (index < 0) continue;
@@ -52,14 +55,19 @@ function restoreCheckpoints(profile, workspaces) {
 }
 
 function writeRunningCheckpoint(profile, run) {
+  if (!taskIdPattern.test(run.id)) throw new Error("The run has no valid checkpoint ID.");
+  const directory = path.join(profile, "running-checkpoints");
+  fs.mkdirSync(directory, { recursive: true });
   const previous = run.checkpointSeq ?? 0;
   run.checkpointSeq = previous + 1;
-  try { atomicJson(path.join(profile, "running-checkpoint.json"), run); }
+  try { atomicJson(path.join(directory, run.id + ".json"), run); }
   catch (error) { run.checkpointSeq = previous; throw error; }
 }
 
-function clearRunningCheckpoint(profile) {
-  fs.rmSync(path.join(profile, "running-checkpoint.json"), { force: true });
+function clearRunningCheckpoint(profile, runId) {
+  if (taskIdPattern.test(runId)) fs.rmSync(path.join(profile, "running-checkpoints", runId + ".json"), { force: true });
+  const legacy = path.join(profile, "running-checkpoint.json");
+  if (!runId || readCheckpoint(legacy)?.id === runId) fs.rmSync(legacy, { force: true });
 }
 
 module.exports = { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint };

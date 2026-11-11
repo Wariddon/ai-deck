@@ -1,9 +1,13 @@
-/node_modules/
+node_modules/
 /dist/
 /outputs/
 /work/
 /desktop/local-defaults.json
 /workspace-state.json
+**/local-defaults.json
+**/workspace-state.json
+**/auth.json
+**/.credentials.json
 /task-images/
 /worktrees/
 .env
@@ -14,6 +18,7 @@
 
 # Local design review captures
 /design-qa.md
+/performance-qa.md
 /comparison-*.png
 /implementation-*.jpg
 /studio-*.jpg

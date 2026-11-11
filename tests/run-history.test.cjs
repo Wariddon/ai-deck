@@ -1,6 +1,31 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { newRun, recordEvent, finishRun, restoreWorkspace } = require("../desktop/run-history.cjs");
+const { newRun, recordEvent, finishRun, restoreWorkspace, timeStage, recordStageEvent } = require("../desktop/run-history.cjs");
+
+test("stage timing separates dispatch, command activity and first reply text", async () => {
+  const run = newRun("team-discussion", "fixture", ["codex", "claude"]);
+  await timeStage(run, "codex", "discussion", () => {
+    const emit = (type, details) => recordStageEvent(run, "codex", { type, ...details });
+    const stage = run.stages[0];
+    emit("provider-call");
+    const sent = stage.dispatchMs;
+    assert.ok(Number.isFinite(sent));
+    emit("command-start", { key: "check" });
+    emit("delta", { text: " " });
+    assert.ok(Number.isFinite(stage.firstActivityMs));
+    assert.equal(stage.firstReplyMs, undefined);
+    emit("delta", { text: "First visible reply" });
+    const first = stage.firstReplyMs;
+    emit("command-result", { key: "check" });
+    emit("message", { text: "Complete reply" });
+    emit("provider-call");
+    assert.ok(sent <= stage.firstActivityMs && stage.firstActivityMs <= first);
+    assert.equal(stage.dispatchMs, sent);
+    assert.equal(stage.firstReplyMs, first);
+    assert.equal(stage.turns, 2);
+  });
+  assert.ok(run.stages[0].durationMs >= run.stages[0].firstReplyMs);
+});
 
 test("a completed blocked review retires an older checkpoint but a limited review remains resumable", () => {
   const runs = ["completed", "limited"].map((status) => {

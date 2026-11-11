@@ -29,7 +29,42 @@ renameSync(path.join(stage, "electron.exe"), path.join(stage, "AI Deck.exe"));
 const target = path.join(stage, "resources", "app");
 const desktop = path.join(root, "desktop");
 cpSync(desktop, target, { recursive: true, filter: (source) => source === desktop ||
-  (path.dirname(source) === desktop && /^(?:package\.json|[^.][^/\\]*\.(?:cjs|mjs|ps1|ico))$/u.test(path.basename(source))) });
+  (path.dirname(source) === desktop && /^(?:package\.json|notification-icon\.png|[^.][^/\\]*\.(?:cjs|mjs|ps1|ico))$/u.test(path.basename(source))) });
+const skill = path.join("skills", "ai-deck-team-review");
+cpSync(path.join(desktop, skill), path.join(target, skill), { recursive: true });
+const typescript = path.join(target, "node_modules", "typescript");
+mkdirSync(path.join(typescript, "lib"), { recursive: true });
+for (const file of ["package.json", "LICENSE.txt", "ThirdPartyNoticeText.txt", "lib/typescript.js"]) {
+  cpSync(path.join(root, "node_modules", "typescript", file), path.join(typescript, file));
+}
+
+// Keep the document reader's Node dependency tree intact for PDF workers and native helpers.
+const copiedDocumentPackages = new Set();
+function copyDocumentPackage(name, from, optional = false) {
+  const source = from.resolve.paths(name)?.map((folder) => path.join(folder, name))
+    .find((folder) => existsSync(path.join(folder, "package.json")));
+  if (!source && optional) return;
+  const relative = source && path.relative(root, source);
+  if (!relative?.startsWith("node_modules" + path.sep)) throw new Error("Missing local document dependency: " + name);
+  if (copiedDocumentPackages.has(source)) return;
+  copiedDocumentPackages.add(source);
+  cpSync(source, path.join(target, relative), { recursive: true, filter: (file) =>
+    path.basename(file) !== "node_modules" && !path.basename(file).startsWith("officeparser.browser.") });
+  const manifest = path.join(source, "package.json");
+  const { dependencies, optionalDependencies } = JSON.parse(readFileSync(manifest, "utf8"));
+  const local = createRequire(manifest);
+  for (const dep of Object.keys({ ...dependencies, ...optionalDependencies })) copyDocumentPackage(dep, local, Boolean(optionalDependencies?.[dep]));
+}
+copyDocumentPackage("officeparser", require);
+const ocrData = path.join(target, "ocr-data");
+mkdirSync(ocrData);
+for (const code of ["tha", "eng"]) {
+  const source = path.dirname(require.resolve("@tesseract.js-data/" + code));
+  const filename = code + ".traineddata.gz";
+  cpSync(path.join(source, "4.0.0_best_int", filename), path.join(ocrData, filename));
+  cpSync(path.join(source, "README.md"), path.join(ocrData, code + "-README.md"));
+}
+
 buildSync({
   entryPoints: [path.join(root, "desktop", "native-hooks.cjs")],
   outfile: path.join(target, "native-hooks.cjs"),
@@ -78,6 +113,7 @@ writeFileSync(path.join(stage, "START HERE.txt"), [
   "Timeline shows the shared conversation. Split opens an activity lane for each agent.",
   "Open Projects > Recents > Pull sessions to browse local Codex and Claude Code conversations. Pin chats, load older messages or search within a chat.",
   "Select messages and choose Handoff to create a draft for either agent. Check the destination repo, branch and commit before creating and sending the draft.",
+  "Choose Fork to Team in a native chat or its Recents menu to bring selected messages to a new AI Deck task. Pick an editable Git project and which agent builds and reviews. The original chat stays intact.",
   "Use Link conversation to continue the original Codex or Claude Code session. Choose the original checkout or an isolated copy, then switch agents in the linked conversation as needed. Keep the source idle when sending.",
   "The combined linked timeline shows both providers and recorded run evidence. Save a next step, or use Review & attach to select and preview Git diffs and command results. Open in Codex or Claude Code resumes that session in a terminal.",
   "Use the linked Shared checklist to assign and draft steps with evidence. If a provider is limited, review a handoff to the other provider beside Send.",
@@ -131,11 +167,12 @@ writeFileSync(path.join(stage, "START HERE.txt"), [
   "Scheduled Plan to Implement runs only the planner. Open its task to approve the handoff.",
   "Claude Plan reads files and can ask questions in chat. Review and apply a completed plan to edit in the same session.",
   "To let Claude run verification commands in Edit mode, enable the Git Bash option in Team settings and approve each command in chat.",
-  "Use Feature map to see which actions AI Deck connects and which open the original provider app.",
+  "Startup checks connections, recent chats and account usage before opening the workspace. Slow checks time out without sending model prompts.",
+  "Click the provider arrows below the composer to choose Codex builds then Claude reviews, the reverse order, or tool-free two-way discussion. The choice is saved per session.",
   "Settings > Appearance adjusts UI scale and text size. Changes are saved automatically for this profile.",
   "Connections can run a short model check when you choose Test model. It consumes a small amount of provider usage.",
   "Keep draft saves the current message on this PC. When a Team provider is unavailable, choose whether to run the available agent by itself.",
-  "Use Run scope to inspect shared notes and enabled tools. Codex native MCP and plugins are opt-in per project for interactive write runs.",
+  "AI Deck supplies the shared context automatically. Advanced shared notes, skills and plugins are managed in Settings; files, links and screenshots share one attachment menu.",
   "Choose review files for each draft. Review evidence records which new source files were included and flags partial input.",
   "Interactive Claude runs accept queued follow-ups, ask before edits and external tools, and can be interrupted from the timeline.",
   "Projects and Recent restore local tasks. AI Deck stores the last 24 runs and keeps older plans until you implement or dismiss them.",
