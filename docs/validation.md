@@ -3,6 +3,7 @@
 ## Automated checks
 
 - Production renderer build and Sites bundle preparation passed.
+- First-use Electron preparation runs once before application startup or parallel test workers, preventing competing runtime downloads in a fresh clone.
 - All 259 automated tests passed on Windows x64 with Node.js 24.
 - Checks cover native chat continuity and permissions, queued follow-ups, run recovery, document attachments and OCR, usage reporting, Git worktree checks and shared review evidence.
 - Concurrency checks cover independent job scopes, the two-job limit, Low RAM and memory waits, duplicate submission rejection, shared native-session and folder leases, cancellation during preparation, and a short Git worktree preparation mutex.

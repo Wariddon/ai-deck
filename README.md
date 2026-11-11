@@ -15,7 +15,7 @@ npm.cmd ci
 npm.cmd start
 ```
 
-`npm.cmd start` builds the renderer and launches the desktop app. The first install downloads Electron and the npm dependencies.
+`npm.cmd ci` installs the npm dependencies. `npm.cmd start` prepares the Electron runtime, builds the renderer and launches the desktop app. The first start or test run may download Electron; later runs reuse that runtime. Tests finish this preparation before starting parallel workers.
 
 Install and sign in to the Codex CLI, Claude Code, or both on your own machine. Open **Connections** in AI Deck to verify sign-in. If a CLI is missing, select its Windows executable there and refresh. One connected CLI is enough for solo work. Team discussion and two-agent workflows require both.
 

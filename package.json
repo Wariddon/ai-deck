@@ -6,10 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/prepare-sites-build.mjs",
-    "prestart": "npm run build",
+    "prestart": "node scripts/ensure-electron.cjs && npm run build",
     "start": "electron desktop",
     "preview": "vite preview",
-    "pretest": "npm run build",
+    "pretest": "node scripts/ensure-electron.cjs && npm run build",
     "test": "node --test tests/*.test.*",
     "package:windows": "npm run build && node scripts/package-windows.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
