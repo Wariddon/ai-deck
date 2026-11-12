@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   IconArchive, IconBell, IconBook, IconBrandGit, IconBrowser, IconCloud, IconCode, IconDeviceDesktop,
   IconDownload, IconExternalLink, IconFolder, IconGitBranch, IconGitPullRequest, IconKey, IconKeyboard,
@@ -10,36 +10,28 @@ import { hookActions } from "../desktop/deck-hooks.mjs";
 import "./settings-center.css";
 
 const groups = [
-  ["Personal", [
-    ["general", "General", IconSettings, "performance memory tray enter send ทั่วไป"],
-    ["notifications", "Notifications", IconBell, "toast alert แจ้งเตือน"],
-    ["import", "Import", IconDownload, "pull settings sync native migration codex claude model effort นำเข้า"],
+  ["App", [
+    ["general", "General", IconSettings, "performance memory tray enter send keyboard shortcuts hotkeys ทั่วไป"],
     ["appearance", "Appearance", IconSun, "scale text font theme dark light ขนาด ตัวอักษร"],
+    ["notifications", "Notifications", IconBell, "toast alert แจ้งเตือน"],
     ["connections", "Accounts & connections", IconPlug, "cli login sign in status executables claude codex"],
-    ["archived", "Archived chats", IconArchive, "restore sessions recents แชต"],
     ["voice", "Voice", IconMicrophone, "mic language replies เสียง ไทย"],
-    ["storage", "Storage", IconFolder, "profile history disk data path"],
-    ["configuration", "Configuration", IconCode, "toml json settings files config"],
-    ["personalization", "Personalization", IconBook, "instructions memory agents.md claude.md knowledge"],
-    ["keyboard", "Keyboard shortcuts", IconKeyboard, "hotkeys keys commands"],
-    ["billing", "Usage & billing", IconWallet, "quota cost limits reset plan การใช้งาน ค่าใช้จ่าย"],
-    ["data", "Data controls", IconShieldLock, "privacy export access retention"],
   ]],
-  ["Integrations", [
-    ["plugins", "Plugins", IconPuzzle, "mcp skills tools connectors"],
-    ["computer", "Computer use", IconMouse, "desktop automation permissions"],
-    ["appshots", "Appshots", IconScreenshot, "window capture screenshot จับภาพ"],
-    ["browser", "Browser", IconBrowser, "web url link preview ลิงก์"],
-  ]],
-  ["Coding", [
+  ["Workspace", [
     ["models", "Models", IconCode, "effort speed fast fallback claude codex โมเดล"],
     ["project", "Project", IconFolder, "team plan read only shared instructions"],
+    ["personalization", "Shared knowledge", IconBook, "instructions memory agents.md claude.md knowledge personalization"],
+    ["plugins", "Skills & plugins", IconPuzzle, "mcp skills tools connectors"],
+    ["screen", "Screen & browser", IconMouse, "desktop computer automation screenshot appshots capture chrome web url link จับภาพ ลิงก์"],
     ["hooks", "Hooks", IconLink, "events scripts commands automation"],
-    ["review", "Code Review", IconGitPullRequest, "diff files tests"],
-    ["git", "Git", IconBrandGit, "repo branch commit staging"],
-    ["worktrees", "Worktrees", IconGitBranch, "copy checkout compare combine"],
+    ["git", "Git & worktrees", IconBrandGit, "repo branch commit staging code review diff files tests copy checkout compare combine"],
+  ]],
+  ["Advanced", [
+    ["advanced", "Advanced settings", IconCode, "configuration toml json settings files config import sync native migration storage profile history disk data path privacy export retention นำเข้า"],
   ]],
 ];
+
+const sectionHome = (section) => ({keyboard:"general",storage:"advanced",configuration:"advanced",import:"advanced",data:"advanced",computer:"screen",appshots:"screen",browser:"screen",review:"git",worktrees:"git"}[section] ?? section);
 
 export function RequiredChecks({ workspace, busy, save }) {
   const [checks, setChecks] = useState(workspace.requiredChecks ?? []);
@@ -96,14 +88,14 @@ export function SettingsCenter({ section, choose, feedback, children }) {
       <nav aria-label="Settings sections">
         {matches.map(([group, entries]) => entries.length > 0 && <div className="deck-settings-group" key={group}>
           <h2>{group}</h2>
-          {entries.map(([key, label, Icon]) => <button key={key} type="button" aria-current={section === key ? "page" : undefined}
+          {entries.map(([key, label, Icon]) => <button key={key} type="button" aria-current={sectionHome(section) === key ? "page" : undefined}
             onClick={() => choose(key)}><Icon size={15} aria-hidden="true" />{label}</button>)}
         </div>)}
         {!count && <p className="setting-detail" role="status">No settings match your search.</p>}
       </nav>
     </aside>
     <div className="deck-settings-content">
-      <h2>{sections.get(section)}</h2>
+      <h2>{sections.get(sectionHome(section))}</h2>
       {feedback}
       {children}
     </div>
@@ -299,6 +291,7 @@ export function ArchivedSettings({ projects, recents, busy, pull, manage }) {
 }
 
 export function SettingsLinks({ section, actions }) {
+  if (section === "codex-cloud") return <NativeCloud actions={actions} />;
   const cards = {
     profile: ["Provider profiles", "Manage your identity and display details in the corresponding signed-in account.",
       [["ChatGPT account", "chatgpt-account"], ["Claude account", "claude-account"]]],
@@ -322,5 +315,33 @@ export function SettingsLinks({ section, actions }) {
     <div className="thread-actions">
       {links.map(([label, key]) => <button className="button small" type="button" key={key} onClick={() => actions.openProvider(key)}>{label}<IconExternalLink size={13} /></button>)}
     </div>
+  </SettingsCard>;
+}
+
+function NativeCloud({ actions }) {
+  const [tasks, setTasks] = useState(null), [detail, setDetail] = useState(null), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const generation = useRef(0);
+  useEffect(() => () => { generation.current++; }, []);
+  async function read(payload) {
+    const current = ++generation.current;
+    setBusy(true); setError("");
+    try {
+      const value = await actions.readCloud(payload);
+      if (current !== generation.current) return;
+      if (value.action === "list") { setTasks(value); setDetail(null); } else setDetail(value);
+    } catch (e) { if (current === generation.current) setError(e.message); }
+    finally { if (current === generation.current) setBusy(false); }
+  }
+  return <SettingsCard title="Codex Cloud" scope="Native CLI" description="Read tasks using the signed-in Codex CLI. Create tasks and manage environments in Codex Cloud.">
+    <div className="thread-actions"><button className="button small" disabled={busy} onClick={() => read({ action: "list" })}>{busy ? "Reading…" : "Refresh tasks"}</button>
+      <button className="button small" onClick={() => actions.openProvider("codex-cloud")}>Open Codex Cloud<IconExternalLink size={13} /></button></div>
+    {error && <p role="alert" className="deck-error">{error}</p>}
+    {tasks && !tasks.tasks.length && <p className="setting-detail">No Cloud tasks were reported by this signed-in CLI account.</p>}
+    {tasks?.tasks.map(task => <div className="deck-run-row" key={task.id}><div><strong>{task.title}</strong><p>{task.status} · {task.id}</p></div>
+      <div className="thread-actions"><button className="button small" disabled={busy} onClick={() => read({ action: "status", id: task.id })}>Status</button>
+        <button className="button small" disabled={busy} onClick={() => read({ action: "diff", id: task.id })}>Diff</button></div></div>)}
+    {tasks?.more && <p className="setting-detail">Showing up to 20 tasks. Open Codex Cloud for the complete list.</p>}
+    {detail && <div className="chat-markdown"><strong>{detail.action} · {detail.id}</strong><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{detail.text}</pre>
+      {detail.truncated && <p className="setting-detail">Preview truncated. Open Codex Cloud for the complete result.</p>}</div>}
   </SettingsCard>;
 }

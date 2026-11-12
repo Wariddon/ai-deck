@@ -6,10 +6,11 @@ import {
 import { AgentMark, Brand } from "./AgentIdentity.jsx";
 import { runModelProfile } from "../desktop/agent-settings.mjs";
 import { autoTeamPlanNeedsBaseCheck, routeMode } from "../desktop/usage-routing.mjs";
-import { maxSessionSelection, nativeJobKey, sessionKey } from "../desktop/session-selection.mjs";
+import { maxSessionSelection, sessionKey } from "../desktop/session-selection.mjs";
 import { sessionTeamMode } from "../desktop/session-team.mjs";
 import { agentRole, separateEdits, steerableDraft } from "../desktop/collaboration.mjs";
 import { SessionButton } from "./SessionTools.jsx";
+import { sessionActivity } from "./session-activity.mjs";
 import { AutoTeamAssignments, TeamAnswerPreview, TeamHandoffs, TeamRunResult } from "./TeamHandoff.jsx";
 import { commandSummary, groupWorkActivity } from "./command-activity.mjs";
 import { OnDemandDetails, WorkSteps } from "./WorkActivity.jsx";
@@ -88,6 +89,14 @@ export function AssignmentEvidence({ mode, teamwork, planner = teamwork?.planner
 
 export const projectName = (repo) => repo.split(/[\\/]/u).at(-1);
 
+function SessionActivity({ entry, jobs }) {
+  const activity = sessionActivity(entry, jobs);
+  if (!activity) return null;
+  if (activity.state === "waiting") return <IconClock size={14} className="thread-job-waiting" role="img" aria-label={activity.label} title={activity.label} />;
+  if (activity.state === "input") return <IconHandStop size={14} className="thread-job-waiting" role="img" aria-label={activity.label} title={activity.label} />;
+  return <span className="thread-job-spinner" role="img" aria-label={activity.label} title={activity.label} />;
+}
+
 export function Sidebar({ repositories, workspace, busy, jobs = [], openRepo, openTask, newTask, nativeRecents, currentNative, pins, pullSessions, openNativeChat, pinSession, manageSession,
   selection, setSelection, reviewDeletion, hidden, backToChat }) {
   const [query, setQuery] = useState("");
@@ -134,21 +143,19 @@ export function Sidebar({ repositories, workspace, busy, jobs = [], openRepo, op
   const selectableRow = (entry, brand) => <label className="thread-side-row thread-native-row thread-select-row" title={entry.title}>
     <input type="checkbox" checked={selection.has(sessionKey(entry))} disabled={busy || selection.size >= maxSessionSelection && !selection.has(sessionKey(entry))}
       aria-label={"Select " + (agentNames[entry.provider] ?? "AI Deck") + ": " + entry.title} onChange={(event) => selectRow(entry, event)} />
-    {brand}<span className="thread-native-title">{entry.title}</span>
+    {brand}<span className="thread-native-title">{entry.title}</span><SessionActivity entry={entry} jobs={jobs} />
   </label>;
   const sessionRow = (session) => {
     if (selection) return <div className="thread-native-entry" key={key(session)}>{selectableRow(session, <Brand agent={session.provider} size={15} />)}</div>;
     const isPinned = pinned.has(key(session));
-    const job = jobs.find((job) => job.key === nativeJobKey(session));
     return <div className="thread-native-entry" key={key(session)}>
       <button className="thread-side-row thread-native-row" type="button" disabled={busy} aria-label={agentNames[session.provider] + ": " + session.title}
         aria-current={currentNative && key(currentNative) === key(session) ? "page" : undefined}
         title={[agentNames[session.provider], session.title, session.project, session.updatedAt ? new Date(session.updatedAt).toLocaleString() : ""].filter(Boolean).join(" · ")}
-        onClick={() => openNativeChat(session)}>
+        onClick={() => openNativeChat(session)} onKeyDown={event => { if (event.key === "F2") { event.preventDefault(); manageSession(session, "rename"); } }}>
         <Brand agent={session.provider} size={15} />
         <span className="thread-native-title">{session.title}</span>
-        {job && (job.state === "waiting" ? <IconClock size={14} className="thread-job-waiting" role="img" aria-label={job.reason || "Waiting"} />
-          : <span className="thread-job-spinner" role="status" aria-label={job.needsInput ? "Waiting for your input" : "Working"} />)}
+        <SessionActivity entry={session} jobs={jobs} />
       </button>
       <button className="icon-button thread-native-pin" type="button" disabled={busy} aria-pressed={isPinned}
         aria-label={(isPinned ? "Unpin " : "Pin ") + session.title} title={isPinned ? "Unpin session" : "Pin session"} onClick={() => pinSession(session)}><IconPin size={13} /></button>
@@ -156,16 +163,16 @@ export function Sidebar({ repositories, workspace, busy, jobs = [], openRepo, op
     </div>;
   };
   const taskRow = (task, repo, project = false) => {
-    const job = jobs.find((item) => item.taskId === task.id);
     const entry = { ...task, repo };
+    const job = sessionActivity(entry, jobs);
     if (selection && !project) return <div className="thread-native-entry" key={repo + ":" + task.id}>{selectableRow(entry, <IconMessage size={14} />)}</div>;
     return <div className="thread-native-entry" key={repo + ":" + task.id}>
       <button className={"thread-side-row thread-native-row" + (project ? " thread-task-row" : "")} type="button" disabled={busy}
         aria-current={!currentNative && workspace?.taskId === task.id ? "page" : undefined} title={[task.title, task.attention?.label].filter(Boolean).join(" · ")}
-        onClick={() => archived ? manageSession(entry) : openTask(repo, task.id)}>
+        onClick={() => archived ? manageSession(entry) : openTask(repo, task.id)}
+        onKeyDown={event => { if (event.key === "F2") { event.preventDefault(); manageSession(entry, "rename"); } }}>
         <IconMessage size={14} /><span className="thread-native-title">{task.title}</span>
-        {job && (job.state === "waiting" ? <IconClock size={14} className="thread-job-waiting" role="img" aria-label={job.reason} />
-          : <span className="thread-job-spinner" role="status" aria-label={job.needsInput ? "Waiting for your input" : "Working"} data-input={job.needsInput || undefined} />)}
+        <SessionActivity entry={entry} jobs={jobs} />
         {!job && task.attention && <IconClock className="thread-task-attention" size={13} role="img" aria-label={task.attention.label} />}
         {task.queued > 0 && <small>{task.queued}</small>}
       </button>
@@ -406,13 +413,14 @@ export function WorkTime({ startedAt, finishedAt, working }) {
   return (working ? "Working for " : "Worked for ") + label;
 }
 
-export function ChatTimestamp({ at, previousAt }) {
+export function ChatTimestamp({ at, previousAt, everyTurn = false }) {
   const date = new Date(at);
   if (!at || !Number.isFinite(date.getTime())) return null;
   const previous = new Date(previousAt);
-  if (date.toDateString() === previous.toDateString() && date - previous < 30 * 60 * 1000) return null;
-  const day = date.toDateString() === new Date().toDateString() ? "Today" : dateOnly.format(date);
-  return <time className="thread-chat-time" dateTime={date.toISOString()}>{day} · {timeOnly.format(date)}</time>;
+  const sameDay = date.toDateString() === previous.toDateString();
+  if (!everyTurn && sameDay && date - previous < 30 * 60 * 1000) return null;
+  const day = everyTurn && sameDay ? "" : date.toDateString() === new Date().toDateString() ? "Today" : dateOnly.format(date);
+  return <time className="thread-chat-time" dateTime={date.toISOString()} title={date.toLocaleString()}>{day && day + " · "}{timeOnly.format(date)}</time>;
 }
 
 function ChatTurn({ turn, previousAt, active, rowProps, teamPreview }) {
@@ -424,7 +432,7 @@ function ChatTurn({ turn, previousAt, active, rowProps, teamPreview }) {
   const timer = <WorkTime startedAt={startedAt} finishedAt={run?.finishedAt} working={active} />;
   return <div className="thread-chat-turn" data-run-id={turn.id} tabIndex={-1}>
     {prompt && <>
-      <ChatTimestamp at={startedAt} previousAt={previousAt} />
+      <ChatTimestamp at={startedAt} previousAt={previousAt} everyTurn />
       <FeedRow row={prompt} {...rowProps} chat />
     </>}
     {showWork && <div className="thread-chat-work" data-working={active || undefined}>

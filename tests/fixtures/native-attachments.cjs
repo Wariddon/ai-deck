@@ -10,7 +10,7 @@ const cwd=path.join(profile,'folder without git'),claudeRoot=process.env.CLAUDE_
 fs.mkdirSync(cwd,{recursive:true});fs.mkdirSync(claudeFolder,{recursive:true});process.env.CODEX_HOME=path.join(profile,'codex');
 const codexId=previous?.ids.codex??randomUUID(),claudeId=previous?.ids.claude??randomUUID(),claudeFile=path.join(claudeFolder,claudeId+'.jsonl');
 const codexFile=path.join(profile,'codex-turns.json');let codexTurns=restoring?JSON.parse(fs.readFileSync(codexFile,'utf8')):[];
-let updatedAt=1000,active=false; let releaseModels; let modelGate; let metadataReads=0; let holdDelivery=false; let returnedPreview; let runnerDelay=350; let failModels=false;
+let codexName=previous?.renamedTitles?.codex??'Codex model QA',claudeName=previous?.renamedTitles?.claude??'Claude model QA'; let updatedAt=1000,active=false; let releaseModels; let modelGate; let metadataReads=0; let holdDelivery=false; let returnedPreview; let runnerDelay=350; let failModels=false;
 const append=(type,text)=>fs.appendFileSync(claudeFile,JSON.stringify({uuid:randomUUID(),sessionId:claudeId,type,cwd,message:{content:[{type:'text',text}]},timestamp:new Date().toISOString()})+'\n');
 if(!restoring){
  append('user','Claude model QA');append('assistant','Original Claude answer.');
@@ -32,7 +32,7 @@ function runner(provider,id,prompt,emit,options,plugins=[]){
  assert.equal(id,provider==='codex'?codexId:claudeId);active=true;
  const files=options.images??[]; prompt=require(path.join(appDir,'task-images.cjs')).attachmentInput(prompt,files);
  result.calls.push({provider,id,prompt,files:files.map(({id,kind})=>({id,kind})),model:options.model,effort:options.effort,speed:options.speed,permissionMode:options.permissionMode});
- const turn={id:randomUUID(),status:'inProgress',items:[{type:'userMessage',id:randomUUID(),content:[{type:'text',text:prompt}]}]};
+ const turn={id:randomUUID(),status:'inProgress',startedAt:Math.floor(Date.now()/1000),items:[{type:'userMessage',id:randomUUID(),content:[{type:'text',text:prompt}]}]};
  if(provider==='codex'){codexTurns.unshift(turn);updatedAt++;}else append('user',prompt);
  const done=delay(runnerDelay).then(async()=>{const screen=plugins.find(p=>p.name==='ai_deck_computer');if(screen){const r=await fetch(screen.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'screenshot',arguments:{}}})}).then(r=>r.json());assert.equal(r.result.content[0].type,'image');(result.screens??=[]).push(provider); }active=false;turn.status='completed';if(provider==='codex'){turn.items.push({type:'agentMessage',id:randomUUID(),text:'Same chat: '+prompt});fs.writeFileSync(codexFile,JSON.stringify(codexTurns));}else append('assistant','Same chat: '+prompt);return{status:'completed',sessionId:id};});
  return{done,close(){},stop:async()=>{},interrupt:async()=>{}};
@@ -41,7 +41,8 @@ engines.CodexEngine=class{
  constructor(_exe,_cwd,plugins,emit){this.emit=emit;this.plugins=plugins;}
  async initialize(){}async shutdown(){}close(){}async interrupt(){}
  async request(method,payload){
-  if(method==='thread/list')return{data:payload.archived?[]:[{id:codexId,name:'Codex model QA',cwd,updatedAt}]};
+  if(method==='thread/list')return{data:payload.archived?[]:[{id:codexId,name:codexName,cwd,updatedAt}]};
+  if(method==='thread/name/set'){assert.equal(payload.threadId,codexId);codexName=payload.name;return{};}
   if(method==='thread/read')return{thread:{id:codexId,updatedAt,status:{type:active?'active':'idle'}}};
   if(method==='thread/turns/list')return{data:codexTurns};
   if(method==='config/read')return{config:{model:'gpt-fixture-a'}};
@@ -64,7 +65,7 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
  const click=label=>js('(()=>{const e=[...document.querySelectorAll("button")].find(e=>!e.disabled&&(e.getAttribute("aria-label")==='+JSON.stringify(label)+'||e.textContent.trim()==='+JSON.stringify(label)+'));if(!e)return false;e.click();return true;})()');
  const select=async(label,value)=>{assert.equal(await js('(()=>{const e=[...document.querySelectorAll("select")].find(e=>e.getAttribute("aria-label")==='+JSON.stringify(label)+');if(!e||e.disabled)return false;e.value='+JSON.stringify(value)+';e.dispatchEvent(new Event("change",{bubbles:true}));return true;})()'),true);await delay(60);};
  const type=text=>js('(()=>{const e=document.querySelector(".deck-native-chat textarea");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(e,'+JSON.stringify(text)+');e.dispatchEvent(new Event("input",{bubbles:true}));})()');
- const open=async provider=>{await click('Recents');await wait(()=>click((provider==='codex'?'Codex':'Claude Code')+': '+(provider==='codex'?'Codex model QA':'Claude model QA')),'open '+provider);await wait(()=>js('/Chat only|original chat is working|Sending to/.test(document.querySelector(".deck-native-chat .thread-hint")?.textContent??"")'),'verified');};
+ const open=async provider=>{await click('Recents');await wait(()=>click((provider==='codex'?'Codex':'Claude Code')+': '+(provider==='codex'?codexName:claudeName)),'open '+provider);await wait(()=>js('/Chat only|original chat is working|Sending to/.test(document.querySelector(".deck-native-chat .thread-hint")?.textContent??"")'),'verified');};
  const picker=async provider=>{assert.equal(await click((provider==='codex'?'Codex':'Claude Code')+' model, effort and speed'),true);await wait(()=>js('!document.querySelector(".deck-native-model-panel select")?.disabled&&document.querySelector(".deck-native-model-panel select")?.options.length>2'),'catalog');};
 
  try{
@@ -92,6 +93,7 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
    await wait(()=>js('document.querySelectorAll(".deck-native-chat .composer-attachments [data-attachment-id]").length===1'),'image tile');
    assert.ok((await js('document.querySelector(".deck-native-chat .composer-attachments").innerText')).includes(provider+'-report.txt'));
    result.stage=provider+' send';await type('Read my attachment '+provider);await click('Send');
+   await wait(()=>js('Boolean([...document.querySelectorAll(".thread-native-entry")].find(e=>e.querySelector("button[aria-label]")?.getAttribute("aria-label")==='+JSON.stringify((provider==='codex'?'Codex: ':'Claude Code: ')+(provider==='codex'?codexName:claudeName))+')?.querySelector(".thread-job-spinner"))'),'active chat ring');
    await wait(()=>js('!document.querySelector(".deck-native-chat textarea").readOnly&&!document.querySelector(".deck-native-chat").innerText.includes("Sending to")'),'reply');
    await wait(()=>js('!document.querySelector(".deck-native-chat .composer-attachments")'),'clear verified files');
    const page=await api('native-session-preview',native);
@@ -121,6 +123,26 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
    result.checks.push(provider+': original chat capture and scoped MCP screenshot, wrong-chat grant rejected');
   }
   assert.deepEqual(result.screens,['codex','claude']);
+  result.renamedTitles={};
+  for(const provider of ['codex','claude']){
+   await open(provider);
+   await wait(()=>js('Boolean(document.querySelector(".deck-native-chat .thread-chat-time[datetime]"))'),'saved question time '+provider);
+   await type('Keep draft when renaming '+provider);
+   await click('Chat actions');
+   await js('[...document.querySelectorAll(".deck-native-actions button")].find(e=>e.textContent.trim()==="Rename").click()');
+   await wait(()=>js('Boolean(document.querySelector(".deck-session-actions form input"))'),'rename form');
+   const name='Renamed '+provider+' QA';
+   await js('(()=>{const e=document.querySelector(".deck-session-actions form input");Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(e,'+JSON.stringify(name)+');e.dispatchEvent(new Event("input",{bubbles:true}));})()');
+   await js('document.querySelector(".deck-session-actions form").requestSubmit()');
+   await wait(()=>js('document.querySelector(".deck-native-chat h1")?.textContent==='+JSON.stringify(name)),'renamed header');
+   assert.equal(await js('document.querySelector(".deck-native-chat textarea").value'),'Keep draft when renaming '+provider);
+   if(provider==='codex')codexName=name;else claudeName=name;
+   result.renamedTitles[provider]=name;
+   const current=await api('pull-native-recents');
+   assert.equal(current.sessions.find(e=>e.provider===provider&&e.id===(provider==='codex'?codexId:claudeId)).title,name);
+   assert.equal(await js('Boolean(document.querySelector(".thread-job-spinner"))'),false);
+   result.checks.push(provider+': rename persists in source metadata with original ID and draft, real timestamps visible, loading cleared');
+  }
   await open('claude');
   const draftRows=await api('choose-task-attachments',{native:{provider:'claude',id:claudeId},existing:[]});
   await js('localStorage.setItem("ai-deck-native-files",JSON.stringify([['+JSON.stringify(JSON.stringify(['claude','',claudeId]))+','+JSON.stringify({images:draftRows,version:9})+']]))');
@@ -130,5 +152,5 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
  }catch(error){result.passed=false;result.error=error.stack;result.ui=await js('document.body.innerText.slice(-4500)').catch(()=> '');}
  finally{save();app.quit();}
 }));
-let code=fs.readFileSync(main,'utf8').replace('if (!window?.isVisible() || window.isMinimized() || quitting)', 'if (quitting)').replace('window?.isVisible() && !window.isMinimized()', 'true').replace('createWindowTools({ target, enabled,', 'createWindowTools({ target, enabled, ui: windowsUi,').replace('read: createUpdateReader({ capture,','read: async () => [], unusedReader: createUpdateReader({ capture,').replace('width: 1240, height: 800','show: false, width: 1240, height: 800').replace('preload: path.join(__dirname, "preload.cjs"), contextIsolation','offscreen: true, backgroundThrottling: false, preload: path.join(__dirname, "preload.cjs"), contextIsolation');
+let code=fs.readFileSync(main,'utf8').replace('if (!window?.isVisible() || window.isMinimized() || quitting)', 'if (quitting)').replaceAll('window?.isVisible() && !window.isMinimized()', 'true').replace('createWindowTools({ target, enabled,', 'createWindowTools({ target, enabled, ui: windowsUi,').replace('read: createUpdateReader({ capture,','read: async () => [], unusedReader: createUpdateReader({ capture,').replace('width: 1240, height: 800','show: false, width: 1240, height: 800').replace('preload: path.join(__dirname, "preload.cjs"), contextIsolation','offscreen: true, backgroundThrottling: false, preload: path.join(__dirname, "preload.cjs"), contextIsolation');
 const boot=new Module(main,module);boot.filename=main;boot.paths=Module._nodeModulePaths(appDir);boot._compile(code,main);

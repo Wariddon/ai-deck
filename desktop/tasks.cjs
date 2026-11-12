@@ -3,7 +3,7 @@ const { unresolvedTeamPlan } = require("./collaboration.mjs");
 const { savedEvidenceCheckpoint } = require("./team-criteria.mjs");
 
 const taskFields = ["worktree", "base", "codexThread", "claudeSession", "usage", "runHistory"];
-const taskTitle = (prompt) => prompt.trim().replace(/\s+/gu, " ").slice(0, 65) || "New task";
+const { suggestedSessionTitle: taskTitle } = require("./session-title.cjs");
 
 function newTask() {
   return { id: randomUUID(), title: "New task", openedAt: new Date().toISOString(), worktree: null, usage: {}, runHistory: [], queue: [] };

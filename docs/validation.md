@@ -1,3 +1,24 @@
+## 0.9.155 chat-focused navigation
+
+- Removed local Scheduled from navigation, its renderer, public IPC commands and startup timer. Legacy schedules restore paused with no next run; their saved history remains. Chat, Usage and Settings remain in the primary rail.
+- Reduced Settings from 23 entries to 13: archives stay in Recents, billing stays in Usage, screen/window/browser tools share one page, Git and worktrees share one page, shortcuts are in General and import/configuration/storage/privacy are grouped in Advanced. Existing internal settings links retain their working destinations and sidebar grouping.
+- Build and all 329 serial tests passed. Isolated Electron QA opened all 13 Settings pages, verified a seeded due legacy schedule stayed paused past the former five-second tick, and checked that schedule IPC is absent. Zero model calls. The composer and direction menu also passed at 1240, 900 and 760 px; Settings passed normal/compact width checks.
+- The same QA passed against the packaged renderer/backend. Installed to `C:\AIDeck` with all 1,290 file hashes verified and an unchanged profile during the copy; the three existing tasks and Low RAM preference were preserved.
+
+## 0.9.154 compact composer direction
+
+- Moved the existing Codex → Claude / Claude → Codex / discussion picker into the composer toolbar beside Permissions. Removed its separate footer row and hide empty hint rows. Workflow availability and saved/queued settings are unchanged.
+- Build passed, along with the six existing direction/layout tests. Isolated Electron visual QA at 1240, 900 and 760 px confirmed the picker stays inside the composer, Send does not overlap it, no horizontal page overflow appears and the menu fits the viewport. Switching to Claude-first persisted and kept the unsent draft, with zero model calls.
+
+## 0.9.153 session names, activity and question times
+
+- Rename is first in each session's compact ellipsis menu; F2 opens it for a focused sidebar row. Original chats also expose Rename in Chat actions. Source-provider names and AI Deck task names keep their existing scopes. New persistent chats use native Codex name metadata or Claude Code's `--name`; resumed and transient turns do not receive an automatic name override. Naming adds no model request.
+- Native job snapshots expose only the currently executing member's provider/session ID. Both that Recents row and its team task show a loading ring. Resource queues and approval/question waits have separate icons. Completed turns clear their active references. These indicators track jobs owned by AI Deck; they do not claim to monitor every external Claude Desktop conversation.
+- Team and original-chat user turns show their recorded question time. Date labels appear at day boundaries and full local dates are available on hover. Missing source timestamps remain unknown rather than receiving invented dates.
+- `npm run build` and 329 serial tests passed. Isolated desktop fixtures rename both source providers, refresh the persisted name, preserve the native ID and draft, check recorded `<time>` values, observe the in-flight ring and verify it clears without another model call. The fixture restores its saved chat and attachments after a full restart. Provider interactions in this fixture are simulated.
+- Repeated the desktop fixture against the packaged 0.9.153 renderer/backend: all six checks and the restart passed with four simulated sends total; renaming caused no extra sends. Installed to `C:\AIDeck`, verified hashes for all 1,290 application files and an unchanged profile during installation. Reopened the installed app and visually verified the compact Rename menu and recorded times in an existing original Codex chat. Three existing tasks and the user's parallel/Low RAM preference were preserved. No original conversation was renamed or sent a test message.
+- Includes the previously uninstalled 0.9.152 native bridge work: on-demand Claude in Chrome, bounded read-only Codex Cloud CLI access and safe local-memory preferences. The live CLI check read an empty Codex Cloud list. A real Sonnet low Chrome check completed in 8.274 s with one AI Deck model send and 30,475 reported tokens (27,683 cached input); `list_connected_browsers` returned no connected browser. This proves native tool access, not successful live browser actions. Ordinary chat does not load these Chrome tools. No private web/account memory is mirrored.
+
 ## 0.9.151 native drafts and window sharing
 
 - Fixed delayed native file imports overwriting the saved text or attachment list after leaving and reopening a chat. Imports now merge the latest record, notify the current editor and preserve newer draft edit versions. Empty revision retention no longer evicts unsent file drafts. Ordinary typing performs no attachment-ledger writes unless it must invalidate a pending receipt once.

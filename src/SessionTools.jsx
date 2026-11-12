@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { IconArchive, IconDots, IconEdit, IconGitBranch, IconRestore, IconTrash } from "@tabler/icons-react";
 import { sessionKey } from "../desktop/session-selection.mjs";
 
@@ -56,12 +56,31 @@ export function BatchSessionDeletion({ entries, result, busy, perform, close }) 
 }
 
 export function SessionButton({ entry, busy, manage }) {
-  return <button className="icon-button thread-session-menu-button" type="button" disabled={busy}
-    aria-label={"Manage session " + entry.title} title="Session actions" onClick={() => manage(entry)}><IconDots size={16} /></button>;
+  const id = useId();
+  const choices = [["rename", "Rename", IconEdit],
+    ...(!entry.provider && !entry.archived ? [["fork", "Fork", IconGitBranch]] : []),
+    entry.archived ? ["restore", "Restore", IconRestore] : ["archive", "Archive", IconArchive],
+    ["delete", "Delete", IconTrash]];
+  return <>
+    <button className="icon-button thread-session-menu-button" type="button" disabled={busy} popoverTarget={id} aria-haspopup="menu"
+      aria-label={"Manage session " + entry.title} title="Rename or manage session"><IconDots size={16} /></button>
+    <div id={id} popover="auto" role="menu" aria-label={"Session actions: " + entry.title} className="deck-controls-panel deck-session-menu"
+      onClick={event => { if (event.target.closest("button") && event.currentTarget.matches(":popover-open")) event.currentTarget.hidePopover(); }}
+      onKeyDown={event => {
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        const buttons = [...event.currentTarget.querySelectorAll("button:not(:disabled)")];
+        const index = buttons.indexOf(document.activeElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+        event.preventDefault(); buttons[next]?.focus();
+      }}>
+      {choices.map(([action, label, Icon]) => <button key={action} role="menuitem" type="button" className="button small" disabled={busy}
+        onClick={() => manage(entry, action)}><Icon size={15} />{label}</button>)}
+    </div>
+  </>;
 }
 
 export function SessionActions({ entry, busy, perform }) {
-  const [action, setAction] = useState("");
+  const [action, setAction] = useState(entry.initialAction ?? "");
   const [title, setTitle] = useState(entry.title.slice(0, 100));
   const [confirmed, setConfirmed] = useState(false);
   const scope = entry.provider === "codex" ? "Codex source chat" : entry.provider === "claude" ? "Claude Code local source chat" : "AI Deck task";
@@ -95,7 +114,7 @@ export function SessionActions({ entry, busy, perform }) {
     }}>
       {details[action] && <p className="setting-detail">{details[action]}</p>}
       {action === "rename" && <label className="field"><strong>Session name</strong>
-        <input autoFocus required maxLength={100} value={title} onChange={(event) => setTitle(event.target.value)} />
+        <input autoFocus required maxLength={100} value={title} onFocus={event => event.target.select()} onChange={(event) => setTitle(event.target.value)} />
       </label>}
       {action === "delete" && <label className="setting-row"><input type="checkbox" checked={confirmed}
         onChange={(event) => setConfirmed(event.target.checked)} /><span>Delete this {scope.toLowerCase()} permanently</span></label>}

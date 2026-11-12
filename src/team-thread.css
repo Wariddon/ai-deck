@@ -140,6 +140,8 @@
 .thread-native-row { min-width: 0; }
 .thread-app .thread-native-pin { width: 24px; height: 24px; flex: 0 0 auto; }
 .thread-app .thread-session-menu-button { width: 24px; height: 24px; flex: 0 0 auto; }
+.deck-session-menu { width: 174px; max-width: calc(100vw - 24px); }
+.deck-session-menu .button { justify-content: flex-start; }
 .thread-native-pin[aria-pressed="true"] { color: var(--blue); }
 .thread-native-row > svg, .thread-native-row > .provider-icon { flex: 0 0 auto; }
 .thread-native-row > svg, .thread-session-provider.codex, .thread-app .thread-recent-more { color: var(--blue); }
@@ -348,6 +350,7 @@
 .thread-chat-feed { gap: 30px; padding-block: 18px 14px; }
 .thread-chat-turn { display: grid; gap: 10px; min-width: 0; }
 .thread-chat-time { justify-self: center; text-align: center; color: var(--muted); font-size: var(--text-sm); }
+.deck-native-turn { display: grid; gap: 8px; min-width: 0; }
 .thread-chat-feed .thread-prompt-body, .linked-chat-row .thread-prompt-body { max-width: min(88%, 640px); }
 .thread-chat-feed .thread-prompt p, .linked-chat-row .thread-prompt p { margin: 0; padding: 9px 13px; border-radius: 15px; }
 .thread-chat-feed .thread-prompt + .thread-chat-work { margin-top: 8px; }
@@ -498,6 +501,7 @@
 .deck-team-form .deck-form-grid { margin-top: 10px; }
 .deck-team-form .field textarea { min-height: 65px; }
 .thread-hint { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 3px 10px; padding: 4px 1px 0; }
+.thread-hint:empty { display: none; }
 .thread-text-button { color: var(--blue); background: transparent; border: 0; padding: 0; text-align: left; font-size: inherit; }
 .thread-text-button:hover { text-decoration: underline; }
 

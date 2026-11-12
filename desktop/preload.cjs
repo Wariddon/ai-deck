@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 const commands = [
+  "native-cloud-read",
   "hide-plan-notice",
   "software-updates", "read-software-updates", "open-software-update",
   "save-deck-hooks", "test-deck-hook", "computer-arm", "computer-revoke", "preview-computer-window",
@@ -22,7 +23,7 @@ const commands = [
   "switch-repo", "import-project-context",
   "clear-usage-hold", "save-team-assignment", "choose-team-paths", "edit-role-preset", "task-panel", "task-panel-change", "task-panel-item", "team-plan-decision", "preview-continuation", "skill-library-read", "skill-library-edit",
   "switch-task", "new-task", "create-side-chat", "queue-message", "queue-preview", "run-next", "steer-queued", "remove-queued",
-  "save-schedule", "toggle-schedule", "remove-schedule", "run-schedule", "cancel-waiting-schedule", "provider-details", "provider-page", "quota-summary",
+  "provider-details", "provider-page", "quota-summary",
   "provider-models", "save-agent-settings", "save-run-permissions",
   "codex-reset-usage",
   "codex-task-action", "choose-task-attachments", "add-chat-quote", "paste-clipboard-files", "preview-task-attachment", "discard-draft-attachment",

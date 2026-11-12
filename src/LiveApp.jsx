@@ -29,7 +29,7 @@ import { ChatQuoteActions } from "./ChatNavigation.jsx";
 import { ChatMarkdown } from "./ChatMarkdown.jsx";
 import { recordedSummaryLeader } from "../desktop/team-result.mjs";
 import { appendLiveDeltas, appendLiveRow, applyRunUpdate, frameDeltas, retainTimelineRows } from "./timeline-rows.mjs";
-import { DeckNav, FeatureMap, ProjectEmpty, Scheduled, WorkbenchPage } from "./DeckPages.jsx";
+import { DeckNav, FeatureMap, ProjectEmpty, WorkbenchPage } from "./DeckPages.jsx";
 import { ReviewEvidence, ReviewFiles, ReviewFreshness, ReviewTarget, RunEvidence, RunScope, WorktreeComparison } from "./RunReadiness.jsx";
 import { CommandMenu, LibrarySkillPreview, LocalSkillLibrary, SharedSkills, SkillPicker, TeamPlan, parseSlash, slashCommands } from "./Collaboration.jsx";
 import { TaskPanel, TaskPanelEntry } from "./TaskPanel.jsx";
@@ -276,7 +276,7 @@ function PerformanceSettings({ enabled, closeToTray, locked, change, changeTray,
       <h2>Device performance</h2>
       <label className="setting-row setting-list">
       <input type="checkbox" checked={enabled} disabled={locked} onChange={(event) => change(event.target.checked)} />
-      <span><strong>Low RAM</strong><span className="setting-detail">Run one agent at a time, including scheduled tasks. Turn it off to let Team run in parallel.</span></span>
+      <span><strong>Low RAM</strong><span className="setting-detail">Run one agent at a time. Turn it off to let Team run in parallel.</span></span>
     </label>
     <div className="thread-actions">
       <p className="setting-detail" role="status">{memory
@@ -289,7 +289,7 @@ function PerformanceSettings({ enabled, closeToTray, locked, change, changeTray,
       <h2>Window & tray</h2>
       <label className="setting-row setting-list">
       <input type="checkbox" checked={closeToTray} disabled={locked} onChange={(event) => changeTray(event.target.checked)} />
-      <span><strong>Close to system tray</strong><span className="setting-detail">The X hides the window beside the clock. With Low RAM on, the idle window releases memory after about 15 seconds. Enabled schedules still run.</span></span>
+      <span><strong>Close to system tray</strong><span className="setting-detail">The X hides the window beside the clock. With Low RAM on, the idle window releases memory after about 15 seconds.</span></span>
       </label>
       <div><button className="button small" type="button" onClick={quit} disabled={locked}>Quit AI Deck</button></div>
     </section>
@@ -312,7 +312,7 @@ function ProjectSettings({ workspace, busy, action }) {
         </section>
         <section className="deck-box">
           <h2>Access & review</h2>
-          <label className="setting-row setting-list"><input type="checkbox" checked={readOnly} disabled={busy} onChange={(event) => setReadOnly(event.target.checked)} /><span><strong>Keep the project read-only</strong><span className="setting-detail">Applies to both agents and all schedules for this project.</span></span></label>
+          <label className="setting-row setting-list"><input type="checkbox" checked={readOnly} disabled={busy} onChange={(event) => setReadOnly(event.target.checked)} /><span><strong>Keep the project read-only</strong><span className="setting-detail">Applies to both agents for this project.</span></span></label>
           <label className="setting-row setting-list"><input type="checkbox" checked={shareNewFiles} disabled={busy} onChange={(event) => setShareNewFiles(event.target.checked)} /><span><strong>Include new source files in Claude reviews</strong><span className="setting-detail">Share up to six eligible untracked source files from this worktree.</span></span></label>
           <label className="setting-row setting-list"><input type="checkbox" checked={claudeCommands} disabled={busy} onChange={(event) => setClaudeCommands(event.target.checked)} />
         <span><strong>Let Claude request shell commands in Edit mode</strong><span className="setting-detail">Approve each Git Bash command in chat. It runs with your Windows account access.</span></span></label>
@@ -1112,7 +1112,7 @@ export function LiveApp() {
 
   windowCheckpoint.current = () => {
     flushDraft.current();
-    if (locked || modal || ["scheduled", "context", "plugins", "settings", "native-chat"].includes(page) ||
+    if (locked || modal || ["context", "plugins", "settings", "native-chat"].includes(page) ||
         page === "workspace" && inspector && tab === "context") return null;
     const currentDrafts = new Map(drafts.current);
     if (taskId && autosave.current?.text !== JSON.stringify(draft)) currentDrafts.set(taskId, draft);
@@ -1657,10 +1657,10 @@ export function LiveApp() {
     });
   }
 
-  function manageSession(entry) {
+  function manageSession(entry, initialAction = "") {
     setError("");
     setNotice("");
-    setSessionActions(entry);
+    setSessionActions({ ...entry, initialAction });
     setModal("session-actions");
   }
 
@@ -1912,6 +1912,7 @@ export function LiveApp() {
   const autoAssign = Boolean(projectWorkspace && !workspace.readOnly && !link && !armedComputer && needsAutomaticAssignments(draft.mode, teamPlan));
   const editAssignmentIssue = autoAssign ? "" : separateEditsIssue(draft.mode, teamPlan);
   const assignmentIssue = hasDraft && !conversation && !manualReview && (!autoIntent || error === editAssignmentIssue) && editAssignmentIssue;
+  const showTeamDirection = projectWorkspace && !link && !armedComputer && !askAgent && !working && ready && !assignmentIssue && supportsTeamDirection(workspace.sessionTeam);
   const reviewDepth = reviewPolicy(draft.reviewPolicy);
   const reviewOptions = teamRunOptions(reviewDepth, draft.teamOptions);
   const summaryLeader = !link && !working && recordedSummaryLeader(latestRun);
@@ -2645,8 +2646,24 @@ export function LiveApp() {
         return next;
       }} />
   </> : <ProjectEmpty message="Open a Git repository to set shared instructions and access for both agents." choose={openRepoHere} busy={locked} />;
-  function settingsContent() {
-    switch (settingsSection) {
+  function settingsContent(section = settingsSection) {
+    switch (section) {
+      case "advanced": return <>
+        <details className="deck-settings-advanced"><summary>Import provider settings</summary>{settingsContent("import")}</details>
+        <details className="deck-settings-advanced"><summary>Provider configuration & terminals</summary>{settingsContent("configuration")}</details>
+        <details className="deck-settings-advanced"><summary>Local data & storage</summary>{settingsContent("storage")}</details>
+        <details className="deck-settings-advanced"><summary>Privacy & data controls</summary>{settingsContent("data")}</details>
+      </>;
+      case "screen": return <SettingsCard title="Screen & browser" description="Attach a screenshot, share a window for this turn, or preview a link. You can also use the attachment button in chat.">
+        <div className="thread-actions">
+          {settingsButton("Capture window", () => { go("workspace"); void openWindowCapture(); }, !workspace || locked)}
+          {settingsButton("Share window", () => openComputerWindow(), !workspace || Boolean(link) || locked || !computerProviders.length)}
+          {settingsButton("Preview a URL", () => { go("workspace"); openLinkAttachment(); }, !workspace || locked)}
+        </div>
+        {!workspace && settingsButton("Open repository", openRepoHere, locked)}
+        <p className="setting-detail">Window access ends when the turn finishes or AI Deck is hidden. Each UI change asks for approval.</p>
+        <details><summary>Claude in Chrome</summary><p className="setting-detail">Ask Claude to inspect Chrome or mention @Chrome in chat. AI Deck uses Claude Code's native browser extension only for that turn. The provider's extension and sign-in are required.</p></details>
+      </SettingsCard>;
       case "general": return <>
         <PerformanceSettings enabled={lowMemory} closeToTray={state.closeToTray === true}
           locked={locked || typeof state.lowMemory !== "boolean"} change={(enabled) => perform("save-low-memory", enabled)}
@@ -2654,6 +2671,7 @@ export function LiveApp() {
         <SettingsCard title="Composer"><SettingSelect label="Send messages with" value={String(preferences.sendOnEnter)} busy={busy}
           options={[["false", "Ctrl+Enter"], ["true", "Enter"]]} change={(value) => settingChange("sendOnEnter", value === "true")}
           description="Shift+Enter inserts a new line. During a compatible run, Ctrl+Enter sends a follow-up to an agent." /></SettingsCard>
+        <details className="deck-settings-advanced"><summary>Keyboard shortcuts</summary>{settingsContent("keyboard")}</details>
         <SettingsCard title="Local decision rules" description="AI Deck applies local rules and records the decision in Run history.">
           {[
             ["localReviewRules", "After team review", "Closes verified reviews or requests the missing evidence."],
@@ -2733,6 +2751,7 @@ export function LiveApp() {
         </SettingsCard>
       </>;
       case "personalization": return <SettingsCard title="Shared context" description="Use project instructions, notes and skills to give both agents the same context. Choose which items to share with each task.">
+        <p className="setting-detail">Codex and Claude Code keep their native local memory. AI Deck respects memory opt-outs and does not copy private account memory between providers. ChatGPT and Claude web memory remain with their original accounts.</p>
         <div className="thread-actions">{settingsButton("Shared project instructions", () => openSettings("project"))}
           {settingsButton("Knowledge", () => go("context"))}{settingsButton("Shared skills", () => openPlugins("skills"))}
           {workspace && settingsButton("Import committed AGENTS.md and CLAUDE.md", async () => {
@@ -2765,6 +2784,7 @@ export function LiveApp() {
           {settingsButton("Codex Appshots guide ↗", () => openProvider("codex-appshots"))}</div>
       </SettingsCard>;
       case "browser": return <SettingsCard title="Chrome and link previews" description="Share an open Chrome window with Codex or Claude Code, or preview public page text from a link.">
+        <p className="setting-detail">Ask Claude to open, inspect or control Chrome in your message, or mention @Chrome. AI Deck connects Claude Code’s native Chrome integration only for that turn. It requires the provider’s browser extension and sign-in. Browser changes ask for approval; hiding AI Deck ends access.</p>
         {!workspace && <p className="setting-detail">Open a repository to attach a page preview to a task.</p>}
         <div className="thread-actions">{settingsButton("Share Chrome", () => openComputerWindow(true), !workspace || Boolean(link) || locked || !computerProviders.length)}
           {settingsButton("Preview a URL for this task", () => { go("workspace"); openLinkAttachment(); }, !workspace || locked)}
@@ -2801,10 +2821,10 @@ export function LiveApp() {
           {workspace && settingsButton("Inspect current run scope", () => inspectRun("scope"), locked)}
           {settingsButton("Review permissions", () => openSettings("project"))}</div>
       </SettingsCard>;
-      case "git": return <SettingsCard title="Repository" description={projectWorkspace ? workspace.repo : "Choose a repository to inspect Git changes and branches."}>
+      case "git": return <><SettingsCard title="Repository" description={projectWorkspace ? workspace.repo : "Choose a repository to inspect Git changes and branches."}>
         <div className="thread-actions">{settingsButton("Open repository", openRepoHere, locked)}
           {settingsButton("Open Git & Review", () => go("changes"))}</div>
-      </SettingsCard>;
+      </SettingsCard>{settingsContent("worktrees")}</>;
       case "worktrees": return <SettingsCard title="Task worktrees" description="Open a task checkout, or compare, combine and update copies in Git & Review.">
         {workspace?.worktree && <div className="deck-settings-source">
           <strong>{workspace.claudeWorktree ? "Codex worktree" : "Task checkout"}</strong><p className="setting-detail">{workspace.worktree}</p>
@@ -2817,7 +2837,7 @@ export function LiveApp() {
         {!workspace?.worktree && <p className="setting-detail">Task checkouts appear here after work starts.</p>}
         <div className="thread-actions">{settingsButton("Manage worktrees", () => go("changes"))}</div>
       </SettingsCard>;
-      default: return <SettingsLinks section={settingsSection} actions={{ openProvider }} />;
+      default: return <SettingsLinks section={settingsSection} actions={{ openProvider, readCloud: payload => api["native-cloud-read"](payload) }} />;
     }
   }
   return (
@@ -2835,7 +2855,6 @@ export function LiveApp() {
         </div>
         <div className="thread-actions">
           {working && !workspacePage && <button className="button small" onClick={() => go("workspace")}>Run in progress</button>}
-          {state.backgroundRun && <button className="button small" onClick={() => go("scheduled")}>Scheduled run active</button>}
           <button className="button small deck-low-memory" type="button" aria-label="Low RAM" aria-pressed={lowMemory}
             title="Run one agent at a time" disabled={locked || typeof state.lowMemory !== "boolean"}
             onClick={() => perform("save-low-memory", !lowMemory)}><IconCpu size={15} />Low RAM {lowMemory ? "on" : "off"}</button>
@@ -2895,9 +2914,6 @@ export function LiveApp() {
           {pageFeedback}
           {projectWorkspace ? changesPanel() : <ProjectEmpty message="Open a repository to inspect worktree changes and reviews." choose={openRepoHere} busy={locked} />}
         </WorkbenchPage>}
-        {page === "scheduled" && <Scheduled schedules={state.schedules ?? []} projects={projectRepositories} workspace={projectWorkspace} lowMemory={lowMemory}
-          background={state.backgroundRun} busy={busy} interactive={working} error={error}
-          action={perform} openTask={(repo, id) => open("switch-task", { repo, id })} openProvider={openProvider} openRepo={openRepoHere} />}
         {page === "features" && <FeatureMap go={go} openProvider={openProvider} error={error} />}
         {nativeChatPage && !layout.focused && <NativeChat key={sessionKey(nativeConversation.session)} preview={nativeConversation}
           job={state.jobs?.find((job) => job.key === nativeJobKey(nativeConversation.session))}
@@ -2910,6 +2926,7 @@ export function LiveApp() {
           transfer={openNativeTransfer}
           openProject={() => checkLinkedSource(nativeConversation.session)}
           restore={() => manageSession(nativeConversation.session)}
+          rename={() => manageSession(nativeConversation.session, "rename")}
           sendOnEnter={preferences.sendOnEnter} />}
         {workspacePage && <section className="thread-main" hidden={Boolean(layout.focused)}>
           <header className="thread-taskbar">
@@ -3255,6 +3272,10 @@ export function LiveApp() {
                     ? "This workflow has its own restrictions. Choose a permission for future writer turns." : ""}
                   choose={(mode) => perform("save-run-permissions", { taskId, mode, sessionTeam: sessionMode })}
                   learn={() => perform("provider-page", "codex-approvals")} />}
+                {showTeamDirection && <div id="thread-hint" className="deck-direction-control">
+                  <TeamDirectionPicker value={teamDirection(workspace.sessionTeam, draft.mode)} order={roster[0]?.provider}
+                    disabled={locked} choose={chooseTeamDirection} />
+                </div>}
                 <VoiceChat key={taskId} api={api} taskId={taskId} locked={locked} run={latestRun} runId={voiceRunId} preferences={preferences}
                   onTranscript={(text) => {
                     setDraft((current) => ({ ...current, prompt: [current.prompt.trimEnd(), text].filter(Boolean).join("\n").slice(0, 18000) }));
@@ -3317,10 +3338,7 @@ export function LiveApp() {
               </div>}
             </div>}
             <div className="thread-hint">
-              {projectWorkspace && !link && !armedComputer && !askAgent && !working && ready && !assignmentIssue && supportsTeamDirection(workspace.sessionTeam)
-                ? <div id="thread-hint" className="deck-direction-control"><TeamDirectionPicker value={teamDirection(workspace.sessionTeam, draft.mode)} order={roster[0]?.provider}
-                  disabled={locked} choose={chooseTeamDirection} /></div>
-                : <span id="thread-hint" role={assignmentIssue && error === assignmentIssue ? "alert" : undefined}>{!workspace ? "Choose a Git repository to start." : state.backgroundRun ? "A scheduled run is using the runner."
+              {!showTeamDirection && <span id="thread-hint" role={assignmentIssue && error === assignmentIssue ? "alert" : undefined}>{!workspace ? "Choose a Git repository to start." : state.backgroundRun ? "A scheduled run is using the runner."
                 : working ? !queueFollowup ? "Send the next message after this turn."
                   : askAgent ? "Queue for " + names[askAgent] + " · Starts after the current run"
                   : queueTeamFollowup ? "Enter queues · Starts after the current team run"

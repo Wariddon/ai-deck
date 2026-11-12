@@ -103,3 +103,6 @@
   .deck-settings-group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; }
   .deck-settings-group button { width: auto; }
 }
+.deck-settings-advanced { border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.deck-settings-advanced > summary { cursor: pointer; font-weight: 600; }
+.deck-settings-advanced[open] > summary { margin-bottom: 10px; }

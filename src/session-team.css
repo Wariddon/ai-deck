@@ -92,7 +92,8 @@
 .usage-switcher .button[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); }
 .usage-section { display: grid; align-content: start; gap: 8px; min-width: 0; }
 .deck-account-grid { align-items: start; align-content: start; }
-.deck-direction-control .deck-controls-trigger { padding: 1px 3px; min-height: 24px; border-color: transparent; background: transparent; color: var(--muted); font-size: var(--text-xs); }
+.deck-direction-control { min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.deck-direction-control .deck-controls-trigger { padding: 3px 6px; min-height: 28px; color: var(--ink); font-size: var(--text-sm); }
 .deck-direction-control .deck-controls-trigger:hover { color: var(--ink); background: var(--raised); }
 .deck-direction-label { display: inline-flex; align-items: center; gap: 5px; }
 .deck-team-direction { display: grid; gap: 5px; width: min(325px, calc(100vw - 32px)); }

@@ -16,6 +16,8 @@ const { chatQuote } = require("./chat-quote.mjs");
 const { freshReviewPrompt, mergeReviewFindings, sharedBriefPrompt } = require("./team-review.mjs");
 const { inspectManagedWorktree } = require("./managed-worktree.cjs");
 const { createProjectTools, projectToolName } = require("./project-tools.cjs");
+const { nativeChromeRequested, claudeMemoryPreferences } = require("./native-capabilities.cjs");
+const { readNativeCloud, nativeCloudRequest } = require("./native-cloud.cjs");
 const { newRun, recordEvent, recordSteer, finishRun, clearPendingReview, restoreWorkspace, retainRuns, evidenceText, timeStage, recordStageEvent } = require("./run-history.cjs");
 const { newTask, taskTitle, ensureTasks, selectedTask: storedTask, taskSummary, runView, workspaceView: storedWorkspaceView, canDrain, hidePlanNotice } = require("./tasks.cjs");
 const { replanContext, replanLinks } = require("./replan-links.mjs");
@@ -107,7 +109,6 @@ let voiceMic;
 let voiceJob;
 let connections = {};
 let packagedCodex;
-let scheduler;
 let scheduling = false;
 let maintenance = false;
 let intentJob;
@@ -210,7 +211,7 @@ function dispatchTaskRun(payload, options, start) {
   const frozen = structuredClone(payload);
   const stamp = setupHash(queueSetup(workspace, task, frozen));
   const locks = taskLocks(task);
-  if (payload.computerToken) locks.push("computer");
+  if (payload.computerToken || nativeChromeRequested(payload.prompt)) locks.push("computer");
   const priorRunId = task.runHistory.at(-1)?.id;
   return runPool.submit({ key: "task:" + task.id, workspace, task, locks }, async () => {
     if (stamp !== setupHash(queueSetup(workspace, task, frozen))) throw new Error("The waiting job's setup changed. Review and send the saved draft again.");
@@ -257,7 +258,7 @@ function loadState() {
   data.nativePins ??= [];
   data.nativeChatPermissions ??= {};
   data.nativeChatModels ??= {};
-  data.schedules = (data.schedules ?? []).map((schedule) => restoreSchedule(schedule));
+  data.schedules = (data.schedules ?? []).map((schedule) => ({ ...restoreSchedule(schedule), enabled: false, nextAt: null }));
   data.appearance = normalizeAppearance(data.appearance);
   data.preferences = normalizeDeckPreferences(data.preferences);
   data.panelWidths = normalizePanelWidths(data.panelWidths);
@@ -975,7 +976,7 @@ async function withProjectTools(job, workspace, cwd, agent, plugins, toolFree = 
   job.projectToolServices ??= new Map();
   let service = job.projectToolServices.get(cwd);
   if (!service) {
-    service = createProjectTools({ cwd, git, gitExe: findExecutable("git"), lowMemory: storage.lowMemory,
+    service = createProjectTools({ cwd, git, gitExe: findExecutable("git"), codexExe: connections.codex?.path, lowMemory: storage.lowMemory,
       runtimeRoot: app.isPackaged ? path.join(path.dirname(app.getPath("exe")), "tools") : path.join(app.getPath("userData"), "tool-runtimes"),
       signal: job.projectToolController.signal, allowInstall: !job.scheduled,
       report: (text) => emit(null, { type: "project-tool", text }),
@@ -990,7 +991,7 @@ async function withProjectTools(job, workspace, cwd, agent, plugins, toolFree = 
   job.projectToolLeases ??= new Map();
   const includeGitHub = /github|pull\s*request|\bpr\b|\bissue\b|\bci\b|workflow|พูลรีเควสต์|อิชชู/iu.test(job.run.prompt);
   const key = cwd + "\n" + agent;
-  if (!job.projectToolLeases.has(key)) job.projectToolLeases.set(key, await service.lease(agent, includeGitHub));
+  if (!job.projectToolLeases.has(key)) job.projectToolLeases.set(key, await service.lease(agent, includeGitHub, nativeCloudRequest(job.run.prompt)));
   return [...plugins.filter(plugin => plugin.name !== projectToolName), job.projectToolLeases.get(key)];
 }
 
@@ -1026,6 +1027,13 @@ async function prepareCodexHookDirectory(repo, cwd) {
       return;
     }
   }
+}
+
+function trackNativeSession(job, agent, provider, id) {
+  job.activeNativeSessions ??= {};
+  if (id) job.activeNativeSessions[agent] = { provider, id };
+  else delete job.activeNativeSessions[agent];
+  runPool.changed();
 }
 
 async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", agent = "codex", summaryEvents) {
@@ -1099,6 +1107,11 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
     if (!id || ((link || rosterMember) && resume.id && (resume.fork ? id === resume.id : id !== resume.id))) {
       throw new Error("Codex returned an unexpected session ID.");
     }
+    trackNativeSession(job, agent, "codex", id);
+    if (!resume.id && !transient && !job.computer && !link) {
+      await engine.request("thread/name/set", { threadId: id, name: taskTitle(task.title === "New task" ? job.run.prompt : task.title) })
+        .catch(() => { /* Naming must not retry or duplicate an accepted provider turn. */ });
+    }
     if (link) link.refs.codex = id;
     else if (!job.computer && !isolatedMember && !transient) {
       task[threadField] = id;
@@ -1126,6 +1139,7 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
     if (limit) return { status: "limited", error: error.message, limit };
     throw error;
   } finally {
+    trackNativeSession(job, agent, "codex", null);
     await engine.shutdown();
     job.codex = null;
   }
@@ -1639,13 +1653,15 @@ async function runRosterMember(job, workspace, cwd, member, prompt, send) {
     const wrapUp = job.run.wrapUpId === id;
     const freshReview = position === "review" && job.run.sessionTeam.freshReview !== false;
     const resume = wrapUp || freshReview ? undefined : sessionTeamChatId(job.task, cwd, member);
-    const native = await prepareClaudeRunHooks(workspace, settings, (text) => send(id, { type: "activity", text }));
+    const native = await prepareClaudeRunHooks(workspace, settings, (text) => send(id, { type: "activity", text }), cwd);
     try {
       if (job.stopping) return { status: "interrupted" };
       const plugins = await withProjectTools(job, workspace, cwd, id, wrapUp || workspace.readOnly ? [] : workspace.plugins, wrapUp);
       if (plugins.some(plugin => plugin.name === projectToolName)) prompt = projectToolPrompt(job, cwd, id, prompt);
       job.claude = runClaude(connections.claude.path, cwd, prompt, plugins, resume,
         (event) => send(id, event), { ...settings, role, interactive: true, images: job.images,
+          sessionName: job.task.title, onSessionId: session => trackNativeSession(job, id, "claude", session),
+          ...(!wrapUp && nativeChromeOptions(job, job.run.prompt)),
           model: settings.model || "default", persistSession: !wrapUp && !freshReview,
           allowCommands: role === "write" && (job.run.permissionMode === "full" || workspace.claudeCommands === true),
           permissionMode: role === "write" ? job.run.permissionMode : undefined, ...native?.options });
@@ -1656,6 +1672,7 @@ async function runRosterMember(job, workspace, cwd, member, prompt, send) {
       }
       return result;
     } finally {
+      trackNativeSession(job, id, "claude", null);
       job.claude = null;
       await native?.release?.();
     }
@@ -1793,7 +1810,7 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
   for (const id of ids.slice(1)) run.agents[id].status = "queued";
   const previous = { title: task.title, runHistory: task.runHistory, queue: task.queue, queuePaused: task.queuePaused,
     savedDraft: task.savedDraft, recoveryDraft: task.recoveryDraft, submittedDrafts: task.submittedDrafts };
-  if (task.title === "New task") task.title = taskTitle(text);
+  if (task.title === "New task" && task.titleSource !== "user") task.title = taskTitle(text);
   task.runHistory = retainRuns(task.runHistory, run);
   if (queuedId) {
     task.queue = task.queue.slice(1);
@@ -2324,7 +2341,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
   }
   if (!queuedId && !teamReview && matchesSavedDraft(task, submittedDraft)) delete task.savedDraft;
   if (!queuedId && !scheduled && !continuation && !teamReview) consumeAutosavedDraft(task, payload);
-  if (!task.runHistory.length && task.title === "New task") task.title = taskTitle(text);
+  if (!task.runHistory.length && task.title === "New task" && task.titleSource !== "user") task.title = taskTitle(text);
   task.runHistory = retainRuns(task.runHistory, run, link?.steps?.map(({ runId }) => runId));
   if (queuedId) {
     task.queue = task.queue.slice(1);
@@ -2859,7 +2876,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
                 : "\n\nImplement the task in this worktree. Use file tools only. Report what changed and any checks that need to be run separately.";
               const settings = run.agents.claude.settings;
               const native = !scheduled && !quietConversation && !intentReview && !run.resumedEvidence &&
-                await prepareClaudeRunHooks(workspace, settings, (text) => send(agent, { type: "activity", text }));
+                await prepareClaudeRunHooks(workspace, settings, (text) => send(agent, { type: "activity", text }), checkout);
               try {
                 if (job.stopping) return { status: "interrupted" };
                 if (job.computer?.closed) throw new Error("Window access ended before the agent started.");
@@ -2877,14 +2894,17 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
                   { id: computer || transient || scopeChanged ? undefined
                     : continuation?.kind === "apply-plan" ? task.claudePlanSession : task[sessionField] };
                 if (packetOnly) agentPrompt += "\n\nDecide this criterion from the supplied check and earlier decisions. If that evidence is insufficient, report what is missing.";
+                const browser = !scheduled && !packetOnly && nativeChromeOptions(job, run.prompt);
                 job.claude = runClaude(connections.claude.path, checkout, agentPrompt, plugins,
                   resume.id, (event) => send(agent, event), { ...settings,
-                    model: settings.model || (link && resume.id ? undefined : "default"), role: quietConversation || packetOnly ? "test" : role, allowCommands,
+                    sessionName: task.title, onSessionId: session => trackNativeSession(job, agent, "claude", session),
+                    model: settings.model || (link && resume.id ? undefined : "default"), role: packetOnly || quietConversation && !browser?.nativeChrome ? "test" : role, allowCommands,
+                    ...browser,
                     persistSession: !transient, permissionMode: run.permissionMode,
                     ...(writeScopes && { writePaths: writeScopes.claude }),
                     computer: Boolean(computer),
                     approvedWorkspaceEdits: automatic && role === "write" && Boolean(appliedPlan),
-                    interactive: !scheduled && (!quietConversation || images.some(({ kind }) => kind === "image")) && !packetOnly,
+                    interactive: !scheduled && (!quietConversation || browser?.nativeChrome || images.some(({ kind }) => kind === "image")) && !packetOnly,
                     images, forkSession: resume.fork, ...native?.options });
                 result = await job.claude.done;
                 if (result.sessionId && ["completed", "interrupted"].includes(result.status)) {
@@ -2898,6 +2918,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
                   }
                 }
               } finally {
+                trackNativeSession(job, agent, "claude", null);
                 job.claude = null;
                 await native?.release?.();
               }
@@ -3877,7 +3898,7 @@ function localHookSources(repo = selected()?.repo) {
   });
 }
 
-async function prepareClaudeRunHooks(workspace, settings, activity) {
+async function prepareClaudeRunHooks(workspace, settings, activity, cwd = workspace.repo) {
   const fsAsync = fs.promises;
   const runtime = { worker: path.join(__dirname, "claude-hook-policy.cjs"), specs: [],
     git: findExecutable("git"), pwsh: findExecutable("pwsh") };
@@ -3894,7 +3915,7 @@ async function prepareClaudeRunHooks(workspace, settings, activity) {
     if (compiled.skipped) activity("Claude project hooks waiting for review. Open Settings → Hooks to review for Send.");
     if (!compiled.settings) { await release(); return null; }
     if (compiled.wrapped) await fsAsync.writeFile(runtime.specFile, JSON.stringify(runtime.specs), { flag: "wx", mode: 0o600 });
-    await fsAsync.writeFile(hookSettings, JSON.stringify({ ...claudeSettings(settings), ...compiled.settings }), { flag: "wx", mode: 0o600 });
+    await fsAsync.writeFile(hookSettings, JSON.stringify({ ...claudeMemoryPreferences(cwd), ...claudeSettings(settings), ...compiled.settings }), { flag: "wx", mode: 0o600 });
     return { options: { hookSettings, hookRuntime: compiled.wrapped }, release };
   } catch (error) {
     await release();
@@ -4129,7 +4150,7 @@ async function applyDeckTaskChange(payload) {
   if (action === "delete") confirmSessionDelete(payload, task.id);
   const previous = { tasks: workspace.tasks, currentTask: workspace.currentTask };
   let next = { ...task };
-  if (action === "rename") next.title = sessionTitle(payload.title);
+  if (action === "rename") { next.title = sessionTitle(payload.title); next.titleSource = "user"; }
   else if (action === "archive" && !task.archivedAt) next.archivedAt = new Date().toISOString();
   else if (action === "restore" && task.archivedAt) delete next.archivedAt;
   else if (action === "delete") next = null;
@@ -4749,7 +4770,7 @@ async function sendNativeChat(payload) {
   const key = nativeJobKey(entry);
   const locks = [key];
   const target = payload.computerToken ? checkedNativeComputerGrant(payload.computerToken, entry, cwd, mode) : null;
-  if (target) locks.push("computer");
+  if (target || entry.provider === "claude" && nativeChromeRequested(payload.prompt)) locks.push("computer");
   if (mode !== "chat") locks.push("folder:" + canonicalJobFolder(cwd));
   const job = { sessionKey: nativeSessionKey(entry), requestId: payload.requestId, prompt: payload.prompt,
     waiting: true, controls: new Map(), nativeLog: [], approvals: [], nativeModelSnapshot: { cwd, settings, modelStamp },
@@ -4795,6 +4816,7 @@ async function sendNativeChatInternal(payload) {
     job.nativeLog.push(event);
     if (event.type === "approval" || event.type === "question") job.controls.set(event.key, event.type);
     if (event.type === "approval-cancelled") job.controls.delete(event.key);
+    if (["approval", "question", "approval-cancelled", "control-resolved"].includes(event.type)) runPool.changed();
     emit(null, { type: "native-chat-event", provider: agent, sessionId: entry.id, requestId: job.requestId, event });
   };
   nativeChatJobs.set(key, job);
@@ -4839,8 +4861,10 @@ async function sendNativeChatInternal(payload) {
       if (agent === "codex") outcome = await codexTurn(job, { repo: before.cwd, plugins: [], chatOnly: policy.readOnly }, before.cwd, prompt,
         policy.readOnly, policy.readOnly ? "review" : "write", agent);
       else {
+        const browser = nativeChromeOptions(job, userPrompt);
         job.claude = runClaude(connections.claude.path, before.cwd, prompt, job.computer ? [job.computer.plugin] : [], entry.id, job.nativeEvents,
-          { ...settings, ...policy.claude, images, ...(job.computer && { computer: true, nativeComputer: true, persistSession: true,
+          { ...settings, ...policy.claude, ...browser, ...(browser.nativeChrome && { role: policy.readOnly ? "review" : "write", interactive: true }), images,
+            ...(job.computer && { computer: true, nativeComputer: true, persistSession: true,
             role: policy.readOnly ? "review" : "write", systemPrompt: [policy.claude.systemPrompt, nativeComputerInstructions].filter(Boolean).join("\n") }) });
         outcome = await job.claude.done;
       }
@@ -6211,7 +6235,14 @@ function checkedNativeComputerGrant(token, entry, cwd, permission) {
   return grant;
 }
 
+function nativeChromeOptions(job, prompt) {
+  if (job.scheduled || job.computer || !nativeChromeRequested(prompt)) return {};
+  job.nativeChromeGranted ??= true;
+  return { nativeChrome: true, nativeChromeActive: () => Boolean(job.nativeChromeGranted && !job.stopping && runPool.has(job) && window?.isVisible() && !window.isMinimized() && !quitting) };
+}
+
 function revokeComputer(job) {
+  if (job) { job.nativeChromeGranted = false; job.claude?.revokeNativeChrome?.(); }
   const computer = job?.computer;
   if (!computer || computer.closed) return;
   computer.closed = true;
@@ -6823,36 +6854,7 @@ app.whenReady().then(() => {
   });
   wire("preview-task-attachment", previewTaskAttachment);
   wire("discard-draft-attachment", discardDraftAttachment);
-  wire("save-schedule", (payload) => {
-    requireIdle();
-    const index = payload.id ? scheduleIndex(payload.id) : storage.schedules.length;
-    if (!payload.id && index >= 24) throw new Error("This profile can hold up to 24 schedules.");
-    replaceSchedule(index, scheduleInput(payload, Boolean(handoffWorkspace(payload.repo)), storage.schedules[index]));
-    return viewState();
-  });
-  wire("toggle-schedule", (id) => {
-    requireIdle();
-    const index = scheduleIndex(id);
-    const previous = storage.schedules[index];
-    const enabled = !previous.enabled;
-    replaceSchedule(index, { ...previous, enabled, nextAt: enabled ? nextOccurrence(previous) : null });
-    return viewState();
-  });
-  wire("remove-schedule", (id) => { requireIdle(); replaceSchedule(scheduleIndex(id)); return viewState(); });
-  wire("run-schedule", (id) => runSchedule(id, true));
-  wire("cancel-waiting-schedule", (id) => {
-    requireIdle();
-    const index = scheduleIndex(id);
-    const schedule = storage.schedules[index];
-    const entry = waitingRun(schedule);
-    if (!entry) throw new Error("There is no waiting run to cancel.");
-    replaceSchedule(index, { ...schedule,
-      nextAt: schedule.enabled && schedule.nextAt <= Date.now() ? nextOccurrence(schedule) : schedule.nextAt,
-      runs: schedule.runs.map((run) => run === entry ? { ...entry, status: "cancelled", detail: "Waiting occurrence cancelled.",
-        finishedAt: new Date().toISOString() } : run),
-    });
-    return viewState();
-  });
+  wire("native-cloud-read", (payload) => readNativeCloud(connections.codex?.path, payload, { cwd: os.tmpdir() }));
   wire("provider-page", (key) => {
     const pages = {
       "codex-cloud": "https://chatgpt.com/codex",
@@ -7131,7 +7133,6 @@ app.whenReady().then(() => {
     storage.closeToTray = false;
     console.warn(error.message);
   }
-  scheduler = setInterval(() => void scheduleTick(), 5000);
   return createWindow();
 }).catch((error) => {
   dialog.showErrorBox("AI Deck could not start", error.message);
@@ -7157,7 +7158,6 @@ app.on("before-quit", () => {
   cancelVoice();
   quotaRead?.abort();
   watchRead?.abort();
-  clearInterval(scheduler);
   cancelTraySleep();
   setTray(false);
   for (const job of runPool.all()) {

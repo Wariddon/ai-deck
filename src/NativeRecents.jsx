@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { IconArrowUp, IconDots, IconGitBranch, IconRefresh, IconPlayerStop, IconShieldCheck } from "@tabler/icons-react";
-import { agentNames, Brand, projectName, PermissionPicker, QuestionCard, ImageChips } from "./TeamThread.jsx";
+import { agentNames, Brand, projectName, PermissionPicker, QuestionCard, ImageChips, ChatTimestamp } from "./TeamThread.jsx";
 import { nativePermissionModes } from "../desktop/native-chat-policy.mjs";
 import { nativeChatEvent } from "./native-chat-events.mjs";
 import { commandSummary } from "./command-activity.mjs";
@@ -57,7 +57,7 @@ const handoffModes = {
 };
 
 export function NativeChat({ preview, job, busy, ready, error, initialDraft, keepDraft, older, sendChat, refresh,
-  transfer, openProject, restore, back, sendOnEnter, api, choosePermission, chooseModels }) {
+  transfer, openProject, restore, rename, back, sendOnEnter, api, choosePermission, chooseModels }) {
   const { session, chat, messages, hasOlder, skipped, sourceTaskId, delivered } = preview;
   const name = agentNames[session.provider];
   const [draft, setDraft] = useState(initialDraft);
@@ -205,6 +205,7 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
         <button className="icon-button" type="button" aria-label="Refresh messages" title="Refresh messages"
           disabled={busy} onClick={refresh}><IconRefresh size={16} /></button>
         <ControlPopover className="deck-native-actions" title="Chat actions" label="Chat actions" icon={<IconDots size={15} />}>
+          {!readOnly && <button className="button small" type="button" disabled={busy || Boolean(pending)} onClick={rename}>Rename</button>}
           <button className="button small" type="button" disabled={!messages} onClick={() => setSearching(true)}>Search in chat</button>
           {!readOnly && <>
             <button className="button small" type="button" disabled={busy || !messages} onClick={() => transfer("fork")}>Fork to Team</button>
@@ -231,9 +232,10 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
         onClick={() => { follow.current = false; void older(term); }}>{term ? "Search older messages" : "Load older messages"}</button>}
       {skipped && <p className="setting-detail">Some very large transcript records were skipped.</p>}
       {visible?.length === 0 && <p className="setting-detail">{term ? "No matches in loaded messages." : "No readable messages in this chat."}</p>}
-      {visible?.map(({ id, role, text, images }) => role === "user"
-        ? <article className="thread-prompt" key={id} aria-label="You"><div className="thread-prompt-body"><p>{text}</p>
-          <ImageChips images={images} preview={attachments.preview} /></div></article>
+      {visible?.map(({ id, role, text, images, at }, index) => role === "user"
+        ? <div className="deck-native-turn" key={id}><ChatTimestamp at={at} previousAt={visible[index - 1]?.at} everyTurn />
+          <article className="thread-prompt" aria-label="You"><div className="thread-prompt-body"><p>{text}</p>
+          <ImageChips images={images} preview={attachments.preview} /></div></article></div>
         : <article className="deck-native-reply" key={id}>
           <div className="thread-session-provider"><Brand agent={session.provider} size={16} /><strong>{name}</strong></div>
           <ChatMarkdown text={text} />

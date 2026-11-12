@@ -104,6 +104,7 @@ class RunPool {
     return [...this.entries.values()].map(({ key, task, workspace, state, reason, title, job }) => ({
       key, taskId: task?.id, repo: workspace?.repo, title: title ?? task?.title ?? 'Original chat',
       state, reason, runId: job.run?.id, summaryOnly: job.summaryOnly, scheduled: Boolean(job.scheduled), needsInput: Boolean(job.approvals?.length || job.controls?.size),
+      nativeSessions: Object.values(job.activeNativeSessions ?? {}),
     }));
   }
 }

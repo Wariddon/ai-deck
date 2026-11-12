@@ -10,6 +10,8 @@ const { scopeIncludes } = require("./team-paths.mjs");
 const { codexPermissions } = require("./run-permissions.mjs");
 const { computerName } = require("./computer-use.cjs");
 const { attachmentInput } = require("./task-images.cjs");
+const { nativeChromeTools, nativeChromeDecision, claudeMemoryPreferences, chromePrefix } = require("./native-capabilities.cjs");
+const { suggestedSessionTitle } = require("./session-title.cjs");
 
 const processExitGraceMs = 3500;
 
@@ -426,8 +428,9 @@ function claudeProjectPlugins(plugins, role, computer) {
     .filter(plugin => plugin.tools.length);
 }
 
-function claudeSettings({ speed, outputStyle, language, maxEffort }) {
+function claudeSettings({ speed, outputStyle, language, maxEffort, nativeMemory }) {
   return {
+    ...nativeMemory,
     ...(speed ? { fastMode: speed === "fast" } : {}),
     ...(outputStyle ? { outputStyle } : {}),
     ...(language ? { language } : {}),
@@ -444,7 +447,7 @@ function claudeArguments(plugins, resume, options = {}) {
   const tools = selected.flatMap(({ name, tools }) => tools.map((tool) => `mcp__${name}__${tool}`));
   return [
     "-p", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
-    "--setting-sources", "", "--no-chrome",
+    "--setting-sources", "", options.nativeChrome && interactive && role !== "test" ? "--chrome" : "--no-chrome",
     ...(options.hookSettings ? ["--include-hook-events"] : []),
     ...(options.accountUsage || options.computer && options.persistSession !== true || options.persistSession === false ? ["--no-session-persistence"] : []),
     ...(options.accountUsage ? [] : ["--disable-slash-commands"]),
@@ -456,6 +459,7 @@ function claudeArguments(plugins, resume, options = {}) {
     ...(model ? ["--model", model] : []),
     ...(effort ? ["--effort", effort] : []),
     ...(fallbackModel ? ["--fallback-model", fallbackModel] : []),
+    ...(options.sessionName && !resume && options.persistSession !== false ? ["--name", suggestedSessionTitle(options.sessionName, 100)] : []),
     ...(options.hookSettings ? ["--settings", options.hookSettings] : Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : []),
     ...(interactive ? ["--input-format", "stream-json", "--replay-user-messages", "--permission-prompts", "host"] : []),
     ...(!interactive && options.images?.some(({ kind }) => kind !== "text") ? ["--input-format", "stream-json"] : []),
@@ -584,7 +588,12 @@ function claudeTextLoop() {
 }
 
 function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
+  options = { ...options, nativeMemory: claudeMemoryPreferences(cwd) };
   const { interactive = false, role = "review" } = options;
+  const nativeChrome = Boolean(options.nativeChrome && interactive && role !== "test");
+  let chromeRevoked = false;
+  const chromeActive = () => !chromeRevoked && !stopped && (options.nativeChromeActive?.() ?? true);
+  if (nativeChrome) prompt += "\n\nAI Deck enabled the native Claude in Chrome integration for this explicit browser request. Use its browser tools directly; check list_connected_browsers first. A connected MCP server alone does not prove a browser is connected. If no browser is available, explain that once and stop browser attempts. Never install an extension or change browser security settings automatically. Browser changes require AI Deck approval even with full file access. Your task role and file scope remain unchanged.";
   const permissionMode = claudePermissionMode(options);
   const nativeToolReview = permissionMode === "auto" || permissionMode === "bypassPermissions";
   const fullAccess = permissionMode === "bypassPermissions";
@@ -601,6 +610,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     ...(options.hookRuntime && { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } }),
   });
   let sessionId = resume;
+  let observedSessionId;
   let stopped = false;
   let result;
   let limitEvent;
@@ -693,6 +703,23 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     } else if (message.type === "control_request") {
       const request = message.request ?? {};
       const id = message.request_id;
+      const fromHook = request.subtype === "hook_callback" && request.callback_id === "deck-tools";
+      const chromeTool = fromHook ? request.input?.tool_name : request.tool_name;
+      if (nativeChrome && (fromHook || request.subtype === "can_use_tool") && chromeTool?.startsWith(chromePrefix)) {
+        const input = fromHook ? request.input.tool_input : request.input;
+        const decision = allowed.has(chromeTool) ? nativeChromeDecision(chromeTool, input, chromeActive()) : "deny";
+        if (decision === "ask") {
+          if (!approvals.has(id)) {
+            approvals.set(id, { ...request, fromHook, tool_name: chromeTool, input });
+            emit({ type: "approval", key: id, title: "Claude in Chrome · " + chromeTool.slice(chromePrefix.length),
+              text: JSON.stringify(input ?? {}, null, 2), note: "Native browser action in your signed-in profile. Approve this action once." });
+          }
+          return;
+        }
+        return respond(id, fromHook ? hookDecision(decision, decision === "deny" ? "Native Chrome access ended or this action is outside its scope." : undefined)
+          : decision === "allow" ? { behavior: "allow", updatedInput: input, toolUseID: request.tool_use_id }
+            : { behavior: "deny", message: "Native Chrome access ended or this action is outside its scope." });
+      }
       if (request.subtype === "hook_callback" && request.callback_id === "deck-tools") {
         const tool = request.input?.tool_name;
         if (!stopped && tool === "Bash" && allowed.has(tool)) {
@@ -753,6 +780,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
   function decide(key, accept) {
     const request = approvals.get(key);
     if (!request) return false;
+    if (request.tool_name?.startsWith(chromePrefix) && !chromeActive()) accept = false;
     approvals.delete(key);
     const bashId = accept && request.tool_name === "Bash" && request.tool_use_id;
     if (bashId) {
@@ -791,7 +819,10 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
   child.stderr.setEncoding("utf8").on("data", (part) => { stderr = (stderr + part).slice(-3500); });
   lineReader(child, (message) => {
     if (loopError) return;
-    if (message.session_id) sessionId = message.session_id;
+    if (message.session_id) {
+      sessionId = message.session_id;
+      if (sessionId !== observedSessionId) { observedSessionId = sessionId; options.onSessionId?.(sessionId); }
+    }
     if (options.hookSettings && message.type === "system" && ["hook_started", "hook_response"].includes(message.subtype)) {
       const finished = message.subtype === "hook_response";
       const status = !finished ? "running" : message.outcome === "success" ? "completed" : message.outcome === "cancelled" ? "stopped" : "failed";
@@ -919,8 +950,15 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
   });
   child.stdin.on("error", () => {});
   if (interactive) {
-    void control({ subtype: "initialize", hooks: { PreToolUse: [{ matcher: ".*", hookCallbackIds: ["deck-tools"] }] } }).then(() => {
+    void control({ subtype: "initialize", hooks: { PreToolUse: [{ matcher: ".*", hookCallbackIds: ["deck-tools"] }] } }).then(async () => {
       initialized = true;
+      if (nativeChrome && !stopped) {
+        if (!chromeActive()) throw new Error("Native Chrome access ended before the turn started. Keep AI Deck visible and send again.");
+        const tools = nativeChromeTools(await control({ subtype: "mcp_status" }));
+        if (!tools.length) throw new Error("Claude in Chrome is unavailable. Enable the native Chrome integration in Claude Code first.");
+        for (const tool of tools) allowed.add(tool);
+        emit({ type: "activity", text: "Claude in Chrome · native tools ready; checking browser connection on request" });
+      }
       if (stopped) child.stdin.end();
       else sendInput(claudeInput(prompt, options.images), randomUUID());
     }).catch((error) => { stderr = error.message; child.kill(); });
@@ -950,8 +988,29 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
       });
     });
   });
+  async function stop() {
+    if (stopped || child.exitCode != null || child.signalCode != null) return;
+    stopped = true;
+    emit({ type: "steer-ready", ready: false });
+    if (!interactive || !initialized) { closeChild(); return; }
+    for (const key of approvals.keys()) decide(key, false);
+    for (const key of questions.keys()) answer(key, null);
+    clearTimeout(finishTimer);
+    finishTimer = setTimeout(closeChild, processExitGraceMs);
+    try { await control({ subtype: "interrupt" }); child.stdin.end(); } catch { closeChild(); }
+  }
   return {
-    done, canSteer, decide, answer,
+    done, canSteer, decide, answer, stop,
+    revokeNativeChrome() {
+      chromeRevoked = true;
+      for (const [key, request] of approvals) if (request.tool_name?.startsWith(chromePrefix)) {
+        decide(key, false);
+        emit({ type: "approval-cancelled", key });
+      }
+      // The provider owns the browser transport, so terminate this native turn
+      // to revoke in-flight batches as well as future tool requests.
+      if (nativeChrome) void stop();
+    },
     close() {
       stopped = true;
       closeChild();
@@ -967,17 +1026,6 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
         acknowledgements.set(id, { resolve, reject, timer });
         sendInput(content, id, true);
       });
-    },
-    async stop() {
-      if (stopped || child.exitCode != null || child.signalCode != null) return;
-      stopped = true;
-      emit({ type: "steer-ready", ready: false });
-      if (!interactive || !initialized) { closeChild(); return; }
-      for (const key of approvals.keys()) decide(key, false);
-      for (const key of questions.keys()) answer(key, null);
-      clearTimeout(finishTimer);
-      finishTimer = setTimeout(closeChild, processExitGraceMs);
-      try { await control({ subtype: "interrupt" }); child.stdin.end(); } catch { closeChild(); }
     },
   };
 }

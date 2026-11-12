@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,15 +185,5 @@ const archiveName = `AI Deck ${version} Windows x64.zip`;
 const archive = path.join(scratch, archiveName);
 const archiver = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
 execFileSync(archiver, ["-a", "-cf", archiveName, "AI Deck"], { cwd: scratch, windowsHide: true, stdio: "inherit" });
-const outputs = path.resolve(root, "../../outputs");
-mkdirSync(outputs, { recursive: true });
-const deliverable = path.join(outputs, path.basename(archive));
-try {
-  renameSync(archive, deliverable);
-} catch (error) {
-  if (error.code !== "EXDEV") throw error;
-  cpSync(archive, deliverable);
-  unlinkSync(archive);
-}
-finish();
+const deliverable = finish(archive);
 console.log(JSON.stringify({ executable: path.join(stage, "AI Deck.exe"), archive: deliverable }));
