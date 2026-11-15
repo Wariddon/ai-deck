@@ -58,6 +58,8 @@ export function BatchSessionDeletion({ entries, result, busy, perform, close }) 
 export function SessionButton({ entry, busy, manage }) {
   const id = useId();
   const choices = [["rename", "Rename", IconEdit],
+    ...(entry.provider && !entry.archived ? [["fork-team", "Fork to Team", IconGitBranch],
+      ["fork-codex", "Fork to Codex", IconGitBranch], ["fork-claude", "Fork to Claude", IconGitBranch]] : []),
     ...(!entry.provider && !entry.archived ? [["fork", "Fork", IconGitBranch]] : []),
     entry.archived ? ["restore", "Restore", IconRestore] : ["archive", "Archive", IconArchive],
     ["delete", "Delete", IconTrash]];

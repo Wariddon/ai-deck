@@ -1,4 +1,5 @@
-import { agentOutput, discussionContinuation, discussionMode, isPeerGreeting, startsDiscussionTopic, teamReviewer } from "./collaboration.mjs";
+import { agentOutput, discussionContinuation, discussionMode, isPeerGreeting, planPair, startsDiscussionTopic, teamReviewer } from "./collaboration.mjs";
+import { workContractMarkdown } from "./work-contract.mjs";
 import { criterionResults, emptyReviewNote, verifiedCheck } from "./team-criteria.mjs";
 import { resolvedCheckNote, reviewChecks } from "./decision-shadow.mjs";
 
@@ -166,6 +167,8 @@ export function receiptUsage(run, agent, summary = false) {
 
 export function visibleTeamAnswer(run) {
   if (run.discussion) return null;
+  if (run.teamPlan?.text && planPair(run.mode)) return { agent: run.teamPlan.from ?? planPair(run.mode)[0],
+    text: [run.teamPlan.text, workContractMarkdown(run.teamPlan)].filter(Boolean).join("\n\n") };
   const final = run.collaboration?.finalReply;
   if (final?.text) return { agent: final.agent, leader: teamAgentName(final.agent, run.agents[final.agent]), text: final.text };
   if (run.collaboration?.recordedAnswer) return { text: run.collaboration.recordedAnswer, recorded: true };

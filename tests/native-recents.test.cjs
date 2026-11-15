@@ -97,6 +97,29 @@ test("team forks accept either role order and quote selected history from either
   }
 });
 
+test("quick forks keep bounded chronological history and select a persistent recipient without submitting a prompt", () => {
+  const { recentForkMessages, quickForkDraft } = require("../desktop/recent-handoff.cjs");
+  const { defaultDraftMode } = require("../desktop/collaboration.mjs");
+  const messages = Array.from({ length: 9 }, (_, index) => ({ role: index % 2 ? "user" : "assistant", text: "message " + index }));
+  const before = JSON.stringify(messages);
+  assert.deepEqual(recentForkMessages(messages).map(message => message.text), ["message 5", "message 4", "message 3", "message 2", "message 1", "message 0"]);
+  assert.equal(JSON.stringify(messages), before);
+  const bounded = recentForkMessages([{ role: "assistant", text: "x".repeat(6000) }, ...messages]);
+  assert.equal(bounded.length, 1);
+  assert.deepEqual(recentForkMessages([{ role: "assistant", text: "clipped", clipped: true }, { role: "system", text: "do not import" }, {}]), []);
+  for (const recipient of ["team", "codex", "claude"]) {
+    const draft = quickForkDraft(recipient, true);
+    assert.equal(draft.prompt, "");
+    assert.equal(draft.mode, { team: "build-review", codex: "codex", claude: "claude-write" }[recipient]);
+    assert.equal(draft.askAgent, undefined);
+    assert.equal(defaultDraftMode({ forkRecipient: recipient, runHistory: [] }), draft.mode);
+    const chat = quickForkDraft(recipient, false);
+    assert.equal(chat.mode, "team-discussion");
+    assert.equal(chat.askAgent, recipient === "team" ? undefined : recipient);
+  }
+  assert.throws(() => quickForkDraft("unknown", true), /Choose Team/);
+});
+
 test("a team fork keeps selected messages attributed to each source and rejects duplicates or single-agent mixing", () => {
   const claude = { provider: "claude", title: "Claude chat" };
   const codex = { provider: "codex", title: "Codex chat" };

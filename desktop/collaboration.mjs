@@ -1,4 +1,5 @@
 import { separateWriteScopes } from "./team-paths.mjs";
+import { readWorkContract } from "./work-contract.mjs";
 
 const plans = {
   "claude-plan-codex": ["claude", "codex"],
@@ -126,6 +127,8 @@ export function defaultDraftMode(workspace) {
     return workspace.sessionTeam.interaction === "discuss" ? discussionMode : "session-team";
   }
   if (workspace?.teamAssignment?.mode) return workspace.teamAssignment.mode;
+  if (workspace?.forkRecipient === "codex") return "codex";
+  if (workspace?.forkRecipient === "claude") return "claude-write";
   const recent = !workspace?.teamAssignment?.inherit &&
     workspace?.runHistory?.findLast((run) => run.mode !== "session-team" && !run.assignmentOnce && !run.continuedFrom &&
       !run.collaboration?.resumedFrom && !run.greeting && !run.discussion && run.mode !== discussionMode);
@@ -211,5 +214,14 @@ export function classifyTeamPlan(result) {
   if (!header) return { state: "unclassified", text: output };
   const text = output.slice(header[0].length).trim();
   const state = { READY: "ready", NEEDS_INPUT: "needs-input", BLOCKED: "blocked" }[header[1]];
+  if (state === "ready" && text.startsWith("{")) {
+    try {
+      const body = JSON.parse(text);
+      if (typeof body.summary !== "string" || !body.summary.trim() || body.summary.length > 4000) throw new Error("Give a concise plan summary.");
+      return { state, text: body.summary.trim(), ...readWorkContract(body) };
+    } catch (error) {
+      return { state: "unclassified", text: error instanceof SyntaxError ? "The plan's work contract is incomplete. Ask for a concise plan." : error.message };
+    }
+  }
   return { state: text ? state : "unclassified", text };
 }

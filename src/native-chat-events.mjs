@@ -9,8 +9,9 @@ export function nativeChatEvent(state, event) {
       ? { ...row, decision: event.decision ?? (event.type === "finished" ? "Turn ended" : "Cancelled") } : row) };
   if (event.type === "activity") {
     const steps = state.steps ?? [];
-    const item = { key: event.key ?? "step:" + steps.length, text: String(event.text ?? "Working").slice(0, 12000) };
-    return { ...state, steps: [...steps.filter(({ key }) => key !== item.key), item].slice(-80) };
+    const stepSequence = (state.stepSequence ?? steps.length) + 1;
+    const item = { key: event.key ?? "step:" + stepSequence, text: String(event.text ?? "Working").slice(0, 12000) };
+    return { ...state, stepSequence, steps: [...steps.filter(({ key }) => key !== item.key), item].slice(-80) };
   }
   if (event.type === "stopping") return { ...state, stopping: true };
   return state;

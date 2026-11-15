@@ -54,6 +54,28 @@ test("Auto Team displays the verified hold instead of the writer assignment prop
   assert.equal(project([reply], [{ ...run, autoTeam: { ...run.autoTeam, planId: "approved" } }], false)[0], reply);
 });
 
+test("paired and Session Team plans render saved contracts without raw protocol or duplicate final replies", () => {
+  for (const [mode, planner] of [["codex-plan-claude", "codex"], ["claude-plan-codex", "claude"]]) {
+    const project = createTimelineProjector();
+    const run = { id: "paired", mode, agents: { [planner]: { position: "plan" } } };
+    const raw = { id: "paired:raw", agent: planner, kind: "message", text: 'AI_DECK_PLAN: READY\n{"summary":' };
+    assert.equal(project([raw], [run], false)[0].text, "Checking the team plan…");
+    const plan = { from: planner, text: "Implement API", inputs: ["Input API"], outputs: ["Saved artifact"], readyWhen: ["Verify artifact"] };
+    for (const split of [false, true]) {
+      const row = project([raw], [{ ...run, finishedAt: "saved", teamPlan: plan }], split)[0];
+      assert.equal(row.text, plan.text);
+      assert.equal(row.planDecision, plan);
+    }
+    assert.match(raw.text, /AI_DECK_PLAN/u);
+  }
+  const project = createTimelineProjector();
+  const plan = { text: "Check the interface", readyWhen: ["Input ready"] };
+  const run = { id: "session", sessionTeam: {}, agents: { planner: { provider: "codex", position: "plan", answer: "Readable plan" } }, teamReview: { plans: { planner: plan } } };
+  const raw = { id: "session:raw", agent: "planner", kind: "message", text: 'AI_DECK_PLAN: READY\n{"summary":"Check the interface"}' };
+  const formatted = { id: "session:answer", agent: "planner", kind: "message", text: "Readable plan" };
+  assert.deepEqual(project([raw, formatted], [run], true), [formatted]);
+});
+
 test("active run updates retain earlier runs and reject messages for a different task or finished turn", () => {
   const earlier = { id: "old", finishedAt: "2026-11-10" };
   const active = { id: "live" };

@@ -360,7 +360,7 @@ function FeedRow({ row, run, busy, decide, answer, preview, summaryAction, profi
   const reply = row.kind === "message" && <>
     {unverifiedBase && <p className="setting-detail">Verify the checkout before applying this plan.</p>}
     <ChatMarkdown className="thread-message" replyRef={replyRef} quote={agent} text={row.text} />
-    {!unverifiedBase && plan?.assignments && <AutoTeamAssignments assignments={plan.assignments} />}
+    {!unverifiedBase && plan && <AutoTeamAssignments assignments={plan.assignments} contract={plan} />}
   </>;
   const badge = row.discussionConclusion ? "Team conclusion" : row.planDecision !== undefined ? "Team decision" : null;
   if (chat && row.kind === "message") return <article className="thread-chat-reply" aria-label={agent}>

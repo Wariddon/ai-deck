@@ -64,10 +64,10 @@ export function useNativeAttachments({ api, session, busy, onEdited, onDelivered
     catch (reason) { if (mounted.current) setError(String(reason.message ?? reason)); }
     finally { if (mounted.current) setAdding(false); }
   }
-  async function preview(image) {
+  const preview = useCallback(async (image) => {
     setError(""); try { const value = await api["preview-task-attachment"](image.id); if (mounted.current) setPanel({ kind: "preview", name: image.name, ...value }); }
-    catch (reason) { setError(String(reason.message ?? reason)); }
-  }
+    catch (reason) { if (mounted.current) setError(String(reason.message ?? reason)); }
+  }, [api]);
   async function refreshWindows() {
     setLoadingWindows(true); setError("");
     try { setWindows(await api["capture-windows"]({ native })); } catch (reason) { setError(String(reason.message ?? reason)); }

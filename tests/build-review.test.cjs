@@ -361,12 +361,12 @@ test("comparison totals include manual summaries once and distinguish missing us
 test("the bundled review skill gives each stage only the guidance for its role", () => {
   const normal = teamRunOptions("normal");
   const names = (options, role, stage) => teamReviewGuidance(options, role, stage).map(({ name }) => name);
-  assert.deepEqual(names(normal, "write"), ["verification-before-completion"]);
+  assert.deepEqual(names(normal, "write"), ["verification-before-completion", "writing-plans"]);
   assert.deepEqual(names(normal, "review", "answer evidence request"), ["receiving-code-review"]);
   assert.deepEqual(names(normal, "write", "repair"), ["receiving-code-review"]);
   assert.deepEqual(names(normal, "summary"), ["verification-before-completion"]);
   const debug = teamRunOptions("normal", { traceBug: true });
-  assert.deepEqual(names(debug, "write"), ["verification-before-completion", "systematic-debugging"]);
+  assert.deepEqual(names(debug, "write"), ["verification-before-completion", "writing-plans", "systematic-debugging"]);
   assert.deepEqual(names(debug, "review", "review"), ["verification-before-completion"]);
   assert.deepEqual(names(teamRunOptions("normal", { traceBug: true, teamReviewSkill: false }), "write"), []);
   assert.deepEqual(names(undefined, "review"), []);

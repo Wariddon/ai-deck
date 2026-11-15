@@ -12,6 +12,7 @@ import { PanelDivider } from "./PanelDivider.jsx";
 import { ControlPopover } from "./ControlPopover.jsx";
 import { UpdateBell } from "./UpdateBell.jsx";
 import { NativeDraftLedger } from "../desktop/native-chat-delivery.mjs";
+import { NativeTextDrafts } from "./native-text-drafts.mjs";
 import { CodeGraph } from "./CodeGraph.jsx";
 import { TeamRunCompare } from "./TeamRunCompare.jsx";
 import { DeckLoading } from "./DeckLoading.jsx";
@@ -149,14 +150,15 @@ function Connections({ state, now, busy, checking, refresh, choose, docs, copy, 
               <div className="live-connection-title"><Brand agent={agent} size={22} /><strong>{name}</strong><span className="source-pill">{connectionLabel(connection, now)}</span></div>
               {connection?.version && <p className="setting-detail">{connection.version}{connection.authMethod ? " · " + connection.authMethod : ""}</p>}
               {connection?.status === "upgrade" && <p className="setting-detail">Use Claude Code 2.1.259 or later for interactive controls.</p>}
+              {connection?.status === "signIn" && connection.authError && <p className="setting-detail" role="status">{connection.authError}</p>}
               {connection?.status === "signIn" && <pre className="file-preview">{connection.command}</pre>}
               {limit && <p className="setting-detail">{limitText(limit)}</p>}
               {connection?.test && <p className="setting-detail" role="status">{connection.test.ok ? "Model check passed" : "Model check failed"} · {dateFormat.format(connection.test.at)} · {connection.test.detail}</p>}
               <div className="live-buttons">
                 <button className="button small" disabled={busy} onClick={() => choose(agent)}>Choose CLI .exe</button>
                 <button className="button small" onClick={() => docs(agent)}>Official setup</button>
-                {connection?.status === "signIn" && <>
-                  <button className="button small primary" disabled={busy} onClick={() => signIn(agent)}>Open sign-in terminal</button>
+                {["signIn", "ready"].includes(connection?.status) && <>
+                  <button className={"button small" + (connection.status === "signIn" ? " primary" : "")} disabled={busy} onClick={() => signIn(agent)}>{connection.status === "ready" ? "Sign in again" : "Open sign-in terminal"}</button>
                   <button className="button small" disabled={busy} onClick={() => copy(agent)}>Copy sign-in command</button>
                 </>}
                 {limit && <button className="button small" disabled={busy} onClick={() => retry(agent)}>Clear AI Deck hold</button>}
@@ -748,7 +750,7 @@ function History({ runs, initialRun, busy, usePrompt, draftHandoff, reviewPlan, 
           dismissed: "Dismissed", running: "Implementation running", failed: "Implementation failed", interrupted: "Implementation stopped",
           limited: "Implementation paused at usage limit", blocked: "Team needs your decision" })[run.teamPlan.applyStatus] ?? planStatus[run.teamPlan.state]}</strong>
         <ChatMarkdown className="file-preview deck-continuation" text={run.teamPlan.text || "No plan text saved."} />
-        <AutoTeamAssignments assignments={run.teamPlan.assignments} />
+        <AutoTeamAssignments assignments={run.teamPlan.assignments} contract={run.teamPlan} />
         {decision && <p className="setting-detail">{{ dismiss: "Dismiss this saved plan?",
           complete: "Confirm that you reviewed the work and it satisfies the plan.",
           reopen: "Reopen this plan for another review?" }[decision]}</p>}
@@ -918,13 +920,13 @@ export function LiveApp() {
   const [nativePreview, setNativePreview] = useState(null);
   const [nativeConversation, setNativeConversation] = useState(null);
   const nativeChatRequest = useRef(null);
+  const nativeTextDrafts = useRef(null);
+  nativeTextDrafts.current ??= new NativeTextDrafts(localStorage);
+  const [nativeDraftError, setNativeDraftError] = useState(() => nativeTextDrafts.current.error);
   const nativeDrafts = useRef(null);
   const nativeDraftLedger = useRef(null);
   nativeDraftLedger.current ??= new NativeDraftLedger();
-  if (!nativeDrafts.current) {
-    try { nativeDrafts.current = new Map(JSON.parse(localStorage.getItem("ai-deck-native-drafts") ?? "[]").filter(([key, value]) => typeof key === "string" && typeof value === "string").slice(-16)); }
-    catch { nativeDrafts.current = new Map(); }
-  }
+  nativeDrafts.current ??= nativeTextDrafts.current.drafts;
   const [sessionActions, setSessionActions] = useState(null);
   const [sessionSelection, setSessionSelection] = useState(null);
   const [batchDelete, setBatchDelete] = useState(null);
@@ -1111,6 +1113,7 @@ export function LiveApp() {
   };
 
   windowCheckpoint.current = () => {
+    nativeTextDrafts.current.flush();
     flushDraft.current();
     if (locked || modal || ["context", "plugins", "settings", "native-chat"].includes(page) ||
         page === "workspace" && inspector && tab === "context") return null;
@@ -1145,7 +1148,8 @@ export function LiveApp() {
     setLinkedWatchRequest(0);
     const memoryDraft = drafts.current.get(next?.taskId);
     const saved = next?.recoveryDraft?.draft;
-    const stored = { ...emptyDraft, mode: defaultDraftMode(next), ...(saved ?? next?.savedDraft) };
+    const stored = { ...emptyDraft, mode: defaultDraftMode(next),
+      ...(next?.chatOnly && ["codex", "claude"].includes(next.forkRecipient) && { askAgent: next.forkRecipient }), ...(saved ?? next?.savedDraft) };
     const migrated = !memoryDraft && legacyEmptyDraftMode(next);
     const value = memoryDraft ?? (migrated ? { ...stored, mode: migrated } : stored);
     autosave.current = { taskId: next?.taskId, text: JSON.stringify(stored), id: next?.recoveryDraft?.id };
@@ -1166,6 +1170,20 @@ export function LiveApp() {
     window.addEventListener("pagehide", flush);
     document.addEventListener("visibilitychange", whenHidden);
     return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", whenHidden);
+    };
+  }, []);
+
+  useEffect(() => {
+    const store = nativeTextDrafts.current;
+    store.onError = setNativeDraftError;
+    const flush = () => store.flush();
+    const whenHidden = () => { if (document.hidden) flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", whenHidden);
+    return () => {
+      flush(); store.onError = null;
       window.removeEventListener("pagehide", flush);
       document.removeEventListener("visibilitychange", whenHidden);
     };
@@ -1536,6 +1554,10 @@ export function LiveApp() {
   }
 
   function openNativeTransfer(kind) {
+    if (["fork", "fork-codex", "fork-claude"].includes(kind)) {
+      void quickFork(nativeConversation.session, kind === "fork" ? "team" : kind.slice(5));
+      return;
+    }
     sessionRequest.current = Symbol();
     setNativePreview({ ...nativeConversation, kind });
     setError("");
@@ -1577,6 +1599,7 @@ export function LiveApp() {
   }
 
   async function sendNativeChat(prompt, revision, options) {
+    nativeTextDrafts.current.flush();
     const request = nativeChatRequest.current;
     const { provider, id } = nativeConversation.session;
     const key = sessionKey({ provider, id });
@@ -1627,10 +1650,7 @@ export function LiveApp() {
   function keepNativeDraft(session, draft) {
     const key = sessionKey(session);
     nativeDraftLedger.current.edited(key);
-    nativeDrafts.current.delete(key);
-    if (draft) nativeDrafts.current.set(key, draft);
-    if (nativeDrafts.current.size > 16) nativeDrafts.current.delete(nativeDrafts.current.keys().next().value);
-    try { localStorage.setItem("ai-deck-native-drafts", JSON.stringify([...nativeDrafts.current])); } catch {}
+    nativeTextDrafts.current.set(key, draft);
   }
 
   async function pinSession(session) {
@@ -1647,7 +1667,10 @@ export function LiveApp() {
     finally { creatingHandoff.current = false; }
     if (!next) return;
     close();
-    setNotice(next.workspace?.nativeHandoff?.sources ? "Team chat ready. Type your first message." : "Draft ready. Review the quoted messages and send when ready.");
+    setNotice(payload.quick ? next.workspace?.chatOnly
+      ? "Chat ready. No project could be verified; open a project when you need file tools."
+      : "Chat ready. Type your message and choose Permissions below."
+      : next.workspace?.nativeHandoff?.sources ? "Team chat ready. Type your first message." : "Draft ready. Review the quoted messages and send when ready.");
     requestAnimationFrame(() => {
       const input = draftInput.current;
       if (!input) return;
@@ -1657,7 +1680,17 @@ export function LiveApp() {
     });
   }
 
+  function quickFork(session, recipient) {
+    setError("");
+    setNotice("");
+    return createHandoff({ provider: session.provider, id: session.id, quick: true, recipient });
+  }
+
   function manageSession(entry, initialAction = "") {
+    if (entry.provider && ["fork-team", "fork-codex", "fork-claude"].includes(initialAction)) {
+      void quickFork(entry, initialAction.slice(5));
+      return;
+    }
     setError("");
     setNotice("");
     setSessionActions({ ...entry, initialAction });
@@ -1682,7 +1715,7 @@ export function LiveApp() {
     setNativeRecents((current) => ({ ...current, sessions: current.sessions.filter((entry) => !removed.has(sessionKey(entry))) }));
     for (const entry of next.results) {
       if (entry.deleted && !entry.provider) drafts.current.delete(entry.id);
-      if (entry.deleted && entry.provider) nativeDrafts.current.delete(sessionKey(entry));
+      if (entry.deleted && entry.provider) nativeTextDrafts.current.delete(sessionKey(entry));
     }
     if (nativeConversation && removed.has(sessionKey(nativeConversation.session))) {
       setNativeConversation(null);
@@ -1712,7 +1745,7 @@ export function LiveApp() {
     setNativeRecents((current) => ({ ...current, sessions: [...current.sessions.filter((entry) => !same(entry)),
       ...(result.session ? [result.session] : [])].sort((left, right) => right.updatedAt - left.updatedAt) }));
     setState((current) => ({ ...current, nativePins: result.pins }));
-    if (action === "delete") nativeDrafts.current.delete(sessionKey(sessionActions));
+    if (action === "delete") nativeTextDrafts.current.delete(sessionKey(sessionActions));
     close();
     if (nativeConversation && same(nativeConversation.session)) {
       if (action === "restore" && result.session) await loadNativeChat(result.session);
@@ -1879,6 +1912,8 @@ export function LiveApp() {
   const resolveIntent = autoIntent || manualReview || intentControls && draft.messageIntent === "chat";
   const intentAgent = resolveIntent && messageIntentAgents(draft.mode, state.connections, now)[0];
   const { available, limited, disconnected, requested } = routeMode(askAgent || intentAgent || draft.mode, state.connections, now, leadOnly);
+  const runOptionModelAgents = askAgent ? [askAgent] : link || chatOnly ? ["codex", "claude"]
+    : routeMode(draft.mode, state.connections).requested;
   const draftActionLabel = conversation === "discussion" ? available.length === 1 && limited.length
     ? "Answer with " + names[available[0]] : "Team discussion"
     : leadOnly ? "Lead answers" : manualReview ? "Read-only review" : draft.followupCriterion ? "Review " + draft.followupCriterion : null;
@@ -2184,7 +2219,8 @@ export function LiveApp() {
             current.assignmentOnce !== draft.assignmentOnce) return current;
         const after = current.assignmentOnce ? { mode: defaultDraftMode(workspace), teamwork: undefined, assignmentOnce: undefined } : {};
         return { ...current, ...after, prompt: "", reviewOf: null, reviewSince: undefined, followupRunId: undefined, reviewFiles: undefined,
-          reviewTarget: undefined, followupCriterion: undefined, images: undefined, skillIds: undefined, linkedStepId: undefined, messageIntent: undefined, askAgent: undefined,
+          reviewTarget: undefined, followupCriterion: undefined, images: undefined, skillIds: undefined, linkedStepId: undefined, messageIntent: undefined,
+          askAgent: workspace.chatOnly && ["codex", "claude"].includes(workspace.forkRecipient) ? workspace.forkRecipient : undefined,
           ...(current.teamOptions?.codeGraph && { teamOptions: { ...current.teamOptions, codeGraph: undefined } }) };
       });
       return next;
@@ -2562,6 +2598,7 @@ export function LiveApp() {
   }
   const openProvider = (key) => perform("provider-page", key);
   function go(next) {
+    nativeTextDrafts.current.flush();
     setError("");
     setNotice("");
     setCommandPalette("dismissed");
@@ -2919,7 +2956,7 @@ export function LiveApp() {
           job={state.jobs?.find((job) => job.key === nativeJobKey(nativeConversation.session))}
           api={api} choosePermission={chooseNativePermission} chooseModels={chooseNativeModels}
           busy={busy} ready={routeMode(nativeConversation.session.provider, state.connections, now).available.length > 0}
-          error={!modal ? error : ""} initialDraft={nativeDrafts.current.get(sessionKey(nativeConversation.session)) ?? ""}
+          error={!modal ? nativeDraftError || error : ""} initialDraft={nativeDrafts.current.get(sessionKey(nativeConversation.session)) ?? ""}
           keepDraft={(text) => keepNativeDraft(nativeConversation.session, text)}
           older={(query) => olderNativeMessages(query, true)} sendChat={sendNativeChat}
           refresh={() => loadNativeChat(nativeConversation.session, nativeConversation.sourceTaskId, true)} back={() => go("workspace")}
@@ -3029,7 +3066,8 @@ export function LiveApp() {
               <section className="thread-feed" aria-labelledby="workspace-team-start">
                 <div className="workspace-team-start">
                   <div className="deck-start-icon"><IconUsers size={22} /></div>
-                  <h2 id="workspace-team-start">{chatOnly ? "Chat with Codex and Claude Code" : "Start this session"}</h2>
+                  <h2 id="workspace-team-start">{chatOnly ? workspace.forkRecipient && workspace.forkRecipient !== "team"
+                    ? "Chat with " + names[workspace.forkRecipient] : "Chat with Codex and Claude Code" : "Start this session"}</h2>
                   <p>{chatOnly ? "Type your first message below." : "Write a task below, or open Session Team to choose members and roles."}</p>
                 </div>
               </section>
@@ -3223,7 +3261,7 @@ export function LiveApp() {
                 {!sessionMode && (link || chatOnly || !conversation) && <ControlPopover className="deck-run-controls-panel" title="Run options"
                   icon={<IconAdjustmentsHorizontal size={15} aria-hidden="true" />}
                   label={draftActionLabel ?? (link ? linkedModeNames[draft.mode] : modeLabel(draft.mode, lowMemory))}>
-                  {(link || chatOnly || intentControls || buildThenReview(draft.mode)) && <div className="thread-compose-setup" aria-label="Run options">
+                  {(link || chatOnly || intentControls || buildThenReview(draft.mode) || runOptionModelAgents.length > 0) && <div className="thread-compose-setup" aria-label="Run options">
                     {link ? <select aria-label="Agent mode" value={draft.mode} onChange={(event) => setDraft(changeWorkflow(draft, event.target.value))}>
                       {Object.entries(linkedModeNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                     </select> : null}
@@ -3247,7 +3285,7 @@ export function LiveApp() {
                     </select>}
                     {!link && workspace && buildThenReview(draft.mode) && <button className="button small" type="button"
                       onClick={() => { setError(""); setModal("team-run-options"); }}>Context &amp; limits · {reviewOptions.turnLimit}</button>}
-                    {(link || chatOnly) && ["codex", "claude"].map(modelButton)}
+                    {runOptionModelAgents.map(modelButton)}
                   </div>}
                   {!chatOnly && <>
                   <div className="deck-control-options">
@@ -3644,7 +3682,7 @@ export function LiveApp() {
             {continuationPreview.kind !== "usage-handoff" && <pre className="file-preview deck-continuation">
               {continuationPreview.plan || "Open the timeline to read the plan."}
             </pre>}
-            <AutoTeamAssignments assignments={continuationPreview.assignments} />
+            <AutoTeamAssignments assignments={continuationPreview.assignments} contract={continuationPreview.contract} />
             {continuationPreview.requiredChecks?.length > 0 && <details open>
               <summary>Required checks on the final checkout</summary>
               {continuationPreview.requiredChecks.map(({ name, command }) => <div key={name}>

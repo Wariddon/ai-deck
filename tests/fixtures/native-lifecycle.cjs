@@ -93,6 +93,7 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
    releaseImport();importGate=null;
    await wait(()=>js('new Map(JSON.parse(localStorage.getItem("ai-deck-native-files"))).get('+JSON.stringify(key)+')?.images.some(r=>r.name==='+JSON.stringify(path.basename(first))+')'),'late import');
    assert.equal(await js('document.querySelector(".deck-native-chat textarea").value'),'New draft '+provider);
+   await wait(()=>js('new Map(JSON.parse(localStorage.getItem("ai-deck-native-drafts"))).get('+JSON.stringify(key)+')==='+JSON.stringify('New draft '+provider)),'batched text saved after late import');
    assert.equal(await js('new Map(JSON.parse(localStorage.getItem("ai-deck-native-drafts"))).get('+JSON.stringify(key)+')'),'New draft '+provider,'A detached import must not overwrite the newer saved text');
    const files=await js('new Map(JSON.parse(localStorage.getItem("ai-deck-native-files"))).get('+JSON.stringify(key)+').images');
    assert.deepEqual(files.map(r=>r.name).sort(),[path.basename(first),path.basename(second)].sort(),'Both imports must merge into the latest file draft');

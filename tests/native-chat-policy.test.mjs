@@ -58,3 +58,12 @@ test("native activity replaces updates, bounds memory, and resolves controls at 
   assert.equal(state.windowEnded, true);
   assert.equal(state.windowTitle, "Shared QA window");
 });
+
+test("unkeyed activity retains the most recent eighty steps after its history fills", () => {
+  let state = {};
+  for (let index = 0; index < 120; index++) state = nativeChatEvent(state, { type: "activity", text: "Step " + index });
+  assert.deepEqual(state.steps.map(({ text }) => text), Array.from({ length: 80 }, (_, index) => "Step " + (index + 40)));
+  assert.equal(new Set(state.steps.map(({ key }) => key)).size, 80);
+  const restored = JSON.parse(JSON.stringify(state));
+  assert.equal(nativeChatEvent(restored, { type: "activity", text: "After restore" }).steps[0].text, "Step 41");
+});

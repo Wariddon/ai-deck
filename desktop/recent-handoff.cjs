@@ -9,6 +9,25 @@ const samePath = (left, right) => typeof left === "string" && typeof right === "
 const branchRefPrefix = /^refs\/(?:heads|remotes)\//u;
 const commitId = /^[a-f\d]{40}(?:[a-f\d]{24})?$/iu;
 
+function recentForkMessages(messages = []) {
+  const recent = [];
+  let remaining = 6000;
+  for (const message of messages) {
+    if (!message || !["user", "assistant"].includes(message.role) || typeof message.text !== "string" ||
+        !message.text.trim() || message.clipped || message.text.length > remaining) continue;
+    recent.push({ role: message.role, text: message.text });
+    remaining -= message.text.length;
+    if (recent.length === 6) break;
+  }
+  return recent.reverse();
+}
+
+function quickForkDraft(recipient, project) {
+  if (!["team", "codex", "claude"].includes(recipient)) throw new Error("Choose Team, Codex or Claude for the new chat.");
+  return { mode: project ? recipient === "team" ? "build-review" : recipient === "codex" ? "codex" : "claude-write" : discussionMode,
+    prompt: "", ...(!project && recipient !== "team" && { askAgent: recipient }) };
+}
+
 async function gitLocation(git, cwd) {
   if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw new Error("The session has no local folder.");
   const [root, common] = await Promise.all([
@@ -94,4 +113,4 @@ function nativeHandoffContext(task) {
   return handoff?.chatOnly || handoff?.attachOnFirstRun && !task.runHistory.length ? handoffContext(handoff.sources) : "";
 }
 
-module.exports = { gitLocation, handoffTarget, listHandoffRefs, sameHandoffTarget, handoffPrompt, nativeHandoffContext, samePath, teamHandoffModes };
+module.exports = { gitLocation, handoffTarget, listHandoffRefs, sameHandoffTarget, handoffPrompt, nativeHandoffContext, samePath, teamHandoffModes, recentForkMessages, quickForkDraft };

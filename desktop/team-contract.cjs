@@ -1,4 +1,5 @@
 const { validScope, scopeIncludes, overlappingScope } = require("./team-paths.mjs");
+const { readWorkContract } = require("./work-contract.mjs");
 
 function readAssignment(value, writes) {
   if (!value || typeof value.task !== "string" || !value.task.trim() || value.task.length > 1800) {
@@ -12,7 +13,7 @@ function readAssignment(value, writes) {
       value.acceptance.some((item) => typeof item !== "string" || !item.trim() || item.length > 400)) {
     throw new Error("Give each agent at least one concrete acceptance criterion.");
   }
-  return { task: value.task.trim(), paths: [...new Set(paths)], acceptance: value.acceptance.map((item) => item.trim()) };
+  return { task: value.task.trim(), paths: [...new Set(paths)], acceptance: value.acceptance.map((item) => item.trim()), ...readWorkContract(value) };
 }
 
 function validateAssignments(value, writers) {

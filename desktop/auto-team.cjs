@@ -1,4 +1,5 @@
 const { validateAssignments, formatRequiredChecks } = require("./team-contract.cjs");
+const { workContractPrompt } = require("./work-contract.mjs");
 
 const agents = ["codex", "claude"];
 const peer = (agent) => agent === "codex" ? "claude" : "codex";
@@ -78,7 +79,8 @@ async function planAutoTeam({ state, allowSplit, checkoutHead, checkoutRefs = []
       dependencies,
       "Start with exactly one line: AI_DECK_AUTO: CODEX (Codex writes), AI_DECK_AUTO: CLAUDE (Claude writes), " +
         "AI_DECK_AUTO: SPLIT (both write), AI_DECK_AUTO: NEEDS_INPUT, or AI_DECK_AUTO: BLOCKED. Output only the marker and value on that line.",
-      'For CODEX, CLAUDE or SPLIT, follow the marker with one JSON object and no code fence. Shape: {"requiredBase":"full commit hash","summary":"steps and risks","assignments":{"codex":{"task":"its job","paths":["src/a.js"],"acceptance":["observable outcome"]},"claude":{"task":"its job","paths":[],"acceptance":["observable outcome"]}}}.',
+      'For CODEX, CLAUDE or SPLIT, follow the marker with one JSON object and no code fence. Shape: {"requiredBase":"full commit hash","summary":"steps and risks","assignments":{"codex":{"task":"its job","paths":["src/a.js"],"acceptance":["observable outcome"],"inputs":["current interface and task evidence"],"outputs":["changed interface and check evidence"],"readyWhen":["the interface is compatible and the relevant check is observed"]},"claude":{"task":"its job","paths":[],"acceptance":["observable outcome"],"inputs":["builder diff and observed checks"],"outputs":["findings tied to acceptance criteria"],"readyWhen":["missing evidence and open findings are explicit"]}}}.',
+      "Include inputs, outputs and readyWhen for each assignment: up to six concise strings per field, at most 300 characters each. Name concrete interfaces, artifacts and evidence; these are requirements, not claims that checks already passed. SPLIT inputs must be available at the common base, not depend on the other writer's unmerged edits. Put integration dependencies in the summary instead.",
       checkoutHead && "Use a writer decision only when the work can start on the verified HEAD. Set requiredBase to the full commit hash above. If another checkout is necessary, use NEEDS_INPUT and name the required checkout and why it is needed.",
       "Give each writer exact repository-relative files or directories with a trailing slash. A reviewer has an empty paths array. SPLIT writers must be independent. For NEEDS_INPUT or BLOCKED, give the question or blocker in plain text.",
       "For SPLIT, each assignment's acceptance criteria must be verifiable in its own worktree. Put cross-worktree criteria in the summary for final integration.",
@@ -100,7 +102,7 @@ async function executeAutoTeam({ state, plan, lowMemory, stopped, turn, progress
     if (stopped()) return stopResult("interrupted", agent);
     if (state.results[id]) return null;
     progress(agent, phase);
-    const assignment = plan.assignments?.[options.lane ?? plan.builder];
+    const assignment = options.lane ? plan.assignments?.[options.lane] : !split ? plan.assignments?.[plan.builder] : undefined;
     const ownAssignment = plan.assignments?.[agent];
     const laneNote = split && options.lane && "This is " + labels[options.lane] +
       "’s isolated worktree. The other writer’s changes are absent here by design. Check only this assignment. Save cross-worktree requirements for the combined checkout.";
@@ -114,6 +116,10 @@ async function executeAutoTeam({ state, plan, lowMemory, stopped, turn, progress
         "\nPaths under review: " + assignment.paths.join(", "),
       options.role === "write" && assignment && "Approved write paths: " + assignment.paths.join(", "),
       criteria?.length ? "Acceptance criteria to verify:\n" + criteria.map((item) => "- " + item).join("\n") : "",
+      workContractPrompt(assignment, options.role === "review" ? "Work contract under review" : "Your approved work contract"),
+      options.role === "review" && !split && ownAssignment !== assignment && workContractPrompt(ownAssignment, "Your reviewer work contract"),
+      !options.lane && split && Object.entries(plan.assignments ?? {}).map(([owner, entry]) =>
+        workContractPrompt(entry, labels[owner] + " work contract for integration")).filter(Boolean).join("\n\n"),
     ].filter(Boolean).join("\n\n");
     const scoped = { ...options, instructions, ...(options.role === "write" && assignment && { scope: assignment.paths }) };
     if (options.handoff) {

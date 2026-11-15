@@ -17,15 +17,22 @@ const kinds = { build: "Build handoff", repair: "Repair handoff", "peer report":
   "review findings": "Findings to fix", "previous turn summary": "Previous round", "evidence request": "Evidence requested", "evidence reply": "Evidence received" };
 const count = new Intl.NumberFormat();
 
-export function AutoTeamAssignments({ assignments }) {
-  if (!assignments) return null;
+function WorkContract({ contract }) {
+  return [ ["inputs", "Inputs"], ["outputs", "Outputs"], ["readyWhen", "Handoff conditions"] ].map(([key, label]) =>
+    Array.isArray(contract?.[key]) && contract[key].length > 0 && <div className="setting-detail" key={key}><strong>{label}</strong>
+      <ul>{contract[key].map((item, index) => <li key={index}><ChatMarkdown text={item} /></li>)}</ul></div>);
+}
+
+export function AutoTeamAssignments({ assignments, contract }) {
+  if (!assignments) return <WorkContract contract={contract} />;
   return <div className="deck-tool-grid live-context-list">
-    {Object.entries(assignments).map(([agent, { task, paths, acceptance }]) => <section className="deck-box" key={agent}>
+    {Object.entries(assignments).map(([agent, assignment]) => { const { task, paths, acceptance } = assignment; return <section className="deck-box" key={agent}>
       <strong>{agents[agent]} · {paths.length ? "Implement" : "Review after implementation"}</strong>
       <ChatMarkdown className="setting-detail" text={task} />
       {paths.length > 0 && <pre className="file-preview">{paths.join("\n")}</pre>}
       <ul>{acceptance.map((item, index) => <li key={index}><ChatMarkdown text={item} /></li>)}</ul>
-    </section>)}
+      <WorkContract contract={assignment} />
+    </section>; })}
   </div>;
 }
 

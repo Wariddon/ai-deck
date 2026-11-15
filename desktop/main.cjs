@@ -34,6 +34,7 @@ const { sessionTeamMode, teamProviders, nativeTeamProvider, sessionTeamHasWriter
 const { teamProvidersClient } = require("./team-providers.cjs");
 const { planAutoTeam, executeAutoTeam, reviewResult, reviewFormat } = require("./auto-team.cjs");
 const { validateRequiredChecks, sharedCheckSource, formatRequiredChecks, scopeIncludes } = require("./team-contract.cjs");
+const { readWorkContract, workContractPrompt, workContractMarkdown, workPlanInstructions } = require("./work-contract.mjs");
 const { validScope, separateWriteScopes, overlappingScope, laneScopeResult } = require("./team-paths.mjs");
 const { listCodexSessions, readCodexSession, listClaudeSessions, readClaudeSession, findClaudeSession, nativeChatDelivery } = require("./native-recents.cjs");
 const { createRecentLoader } = require("./recent-loader.cjs");
@@ -52,20 +53,21 @@ const { runNotice, shouldNotify, notificationTarget, runToast } = require("./not
 const { applySettingsSelection, claudeDeckRows, claudeSettingsLayers, importableSettings, inspectSource, readClaudeSettings } = require("./settings-import.mjs");
 const { linkedModes, linkedAgent, linkedResume, linkedContext, sameLinkedTarget, digest,
   commandSummary, linkedEvidence, linkedReceipts, nativeResumeCommand } = require("./linked-sessions.cjs");
-const { gitLocation, handoffTarget, listHandoffRefs, sameHandoffTarget, handoffPrompt, nativeHandoffContext, samePath, teamHandoffModes } = require("./recent-handoff.cjs");
+const { gitLocation, handoffTarget, listHandoffRefs, sameHandoffTarget, handoffPrompt, nativeHandoffContext, samePath, teamHandoffModes, recentForkMessages, quickForkDraft } = require("./recent-handoff.cjs");
 const { splitFilePatch, composeLinkedPatch, maxPatchChars, undoGuards, verifyUndoGuards, inversePreview } = require("./linked-transfer.cjs");
 const { testCommand, statusEntries, testReports, reviewTestChecks, sameCheckout } = require("./delivery.cjs");
 const { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint } = require("./checkpoints.cjs");
 const { batchDeltas, streamSummaryPreview } = require("./stream-deltas.cjs");
-const { agentOutput, agentRole, autoTeam, buildThenReview, changeWorkflow, defaultTeamMode, effectiveTeamwork, handoffTeamwork, isTeamGreeting, normalizeTeamwork, planPair, selectedContext, separateEdits, separateEditsIssue,
+const { agentOutput, agentRole, autoTeam, buildThenReview, changeWorkflow, classifyTeamPlan, defaultTeamMode, effectiveTeamwork, handoffTeamwork, isTeamGreeting, normalizeTeamwork, planPair, selectedContext, separateEdits, separateEditsIssue,
   discussionMode, needsAutomaticAssignments, needsMessageIntent, startsDiscussionTopic, supportsDirectQuestion, supportsMessageIntent, steerableDraft, steerMode, teamConversation, teamInstructions, teamReviewer, unresolvedTeamPlan, planResultCanBeConfirmed } = require("./collaboration.mjs");
 const { isActionFollowup, messageIntentPrompt, readMessageIntent } = require("./message-intent.mjs");
 const { codexPermissions, permissionModes, sessionTeamPermissionModes, supportsRunPermissions } = require("./run-permissions.mjs");
 const { nativePermissionMode, changeNativePermission, nativeTurnPolicy, nativeWorkInstructions } = require("./native-chat-policy.mjs");
 const { nativeModelSettings, nativeModelStamp, changeNativeModels } = require("./native-chat-models.mjs");
+const { authenticationConnection } = require("./provider-auth.cjs");
 const { comparisonMetrics, discussionPrompt, economySummary, previousAskContext, previousDiscussion, previousMessageExchange, recordedSummaryLeader, teamAgentName, teamLeaderPrompt, verifiedTeamSummary } = require("./team-result.mjs");
 const { criteriaReplyFormat, newReviewChecks, recordCriteria, reviewCriteria, savedCriterionChecks, savedEvidenceCheckpoint, testCommandText, verifiedCheck, withCriterionEvidence } = require("./team-criteria.mjs");
-const { teamReviewGuidance } = require("./team-review-skill.cjs");
+const { teamReviewGuidance, teamReviewFingerprint, recordReviewSkill } = require("./team-review-skill.cjs");
 const { routeMode, messageIntentAgents, autoTeamPlanBaseMatches, autoTeamPlanNeedsBaseCheck, continuationFor, providerUsesApi } = require("./usage-routing.mjs");
 const { reviewPolicies, reviewPolicy, teamRunOptions, teamContextNotes, smartTextPath, smartReviewCandidate,
   usableDecisions, sentTurns, teamStagePrompt, priorTeamResult } = require("./team-handoff.mjs");
@@ -511,6 +513,17 @@ function connectionView() {
     ...connections[agent], usageLimit: storage.usageLimits[agent] ?? null, quota: storage.quotaReports[agent] ?? [],
     accountQuota: accountQuotas.get(agent) ?? null,
   }]));
+}
+
+function recordAuthentication(agent, result) {
+  const previous = connections[agent];
+  const next = authenticationConnection(previous, result);
+  if (next === previous) return;
+  connections[agent] = next;
+  modelCatalogReads.get(agent)?.controller.abort();
+  modelCatalogReads.delete(agent);
+  modelCatalogs.delete(agent);
+  emit(null, { type: "connections", connections: connectionView() });
 }
 
 function viewState() { return runPool.outside(displayState); }
@@ -1197,6 +1210,7 @@ async function requestTeamAnswer(job, workspace, leader, usage) {
       if (!job.summaryOnly) report(leader, task, run, { type: "limit", limit: result.limit });
       emit(null, { type: "connections", connections: connectionView() });
     }
+    recordAuthentication(leader, result);
     const text = (result.answer ?? [...replies.values()].at(-1))?.trim();
     if (!job.stopping && result.status === "completed" && text) return { agent: leader, text: text.slice(0, 2200), profile, usage: usageRecord.agents[leader] };
     if (result.limit) throw new Error("The team lead reached its usage limit. The recorded replies are still available.");
@@ -1209,13 +1223,6 @@ async function requestTeamAnswer(job, workspace, leader, usage) {
 
 function reviewSkillPrompt(guidance) {
   return guidance.length ? "AI Deck Team Review skill for this stage:\n" + guidance.map(({ text }) => text).join("\n") : "";
-}
-
-function recordReviewSkill(run, agent, stage, guidance) {
-  if (!guidance.length) return;
-  const applied = run.collaboration.skillUsage ??= [];
-  if (applied.some((entry) => entry.agent === agent && entry.stage === stage)) return;
-  applied.push({ agent, stage, skills: ["ai-deck-team-review", ...guidance.map(({ name }) => name)] });
 }
 
 async function finishTeamAnswer(job, workspace, leader) {
@@ -1448,6 +1455,9 @@ function validateDraft(payload, workspace, { task = selectedTask(workspace), aut
   if (buildThenReview(draft.mode)) {
     draft.reviewPolicy = reviewPolicy(payload.reviewPolicy);
     if (payload.teamOptions !== undefined) draft.teamOptions = teamRunOptions(draft.reviewPolicy, payload.teamOptions);
+  } else if ((draft.mode === sessionTeamMode || autoTeam(draft.mode) || planPair(draft.mode)) && payload.teamOptions !== undefined) {
+    const { teamReviewSkill, traceBug } = teamRunOptions("normal", payload.teamOptions);
+    draft.teamOptions = { teamReviewSkill, traceBug };
   }
   if (payload.linkedStepId !== undefined) {
     const step = task.linkedSession?.steps?.find(({ id }) => id === payload.linkedStepId);
@@ -1823,7 +1833,7 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
   cleanConsumedDraft(task);
   const job = { task, run, setup, stopping: false, approvals: [], panelCommands: new Map(), testSnapshots: [], testInFlight: new Set(),
     checkouts: {}, images, deltas: batchDeltas((agent, event) => emit(agent, { ...event, taskId: task.id, repo: workspace.repo, runId: run.id })),
-    rosterController: new AbortController(), geminiKey };
+    rosterController: new AbortController(), geminiKey, guidanceByAgent: {} };
   setCurrentJob(job);
   const send = (id, event) => report(id, task, run, event);
   emit(null, { type: "run-start", runId: run.id, prompt: text, images: run.images, agents: ids, startedAt: run.startedAt, workspace: workspaceView(workspace) });
@@ -1884,8 +1894,11 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
             (inputs.handoffs.length < upstream.length ? " · " + (upstream.length - inputs.handoffs.length) + " withheld" : "") });
           else if (inputs.handoffs.length) send(id, { type: "handoff", key: randomUUID(), text: inputs.handoffs.at(-1).name + " → " + member.name });
           if (withheld) send(id, { type: "handoff", key: randomUUID(), text: "Upstream report withheld for " + member.name + " · Data sharing" });
+          const guidance = teamReviewGuidance({ ...teamRunOptions("normal", draft.teamOptions), sharedWork: members.length > 1 },
+            position === "summarize" ? "summary" : position, undefined, inputs.diff);
+          if (guidance.length) job.guidanceByAgent[id] = { stage: summary ? "summary" : position, guidance };
           const prompt = [sessionMemberPrompt({ member, members, topology, withheld, summary: outcomes, ...inputs }),
-            position === "review" && freshReviewPrompt()].filter(Boolean).join("\n\n");
+            position === "review" && freshReviewPrompt(), reviewSkillPrompt(guidance)].filter(Boolean).join("\n\n");
           const canReceiveSteer = native && !summary;
           if (canReceiveSteer) job.steerMember = member;
           const result = await timeStage(run, id, summary ? "summary" : member.position, () =>
@@ -1896,13 +1909,24 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
             emit(null, { type: "session-team-steer", runId: run.id, target: null });
             if (job.steerPromise) await job.steerPromise.catch(() => {});
           });
+          if (native) recordAuthentication(provider, result);
           if (native) await runDeckHooks(job, hooks, provider, "after", cwd, (_provider, event) => send(id, event));
           if (result.limit) {
             storage.usageLimits[provider] = result.limit;
             send(id, { type: "limit", limit: result.limit });
             emit(null, { type: "connections", connections: connectionView() });
           }
-          if (result.answer) send(id, { type: "answer", text: result.answer });
+          let memberPlan;
+          const rawOutput = result.answer ?? agentOutput(run.agents[id]);
+          if (native && position === "plan" && result.status === "completed" && /^AI_DECK_PLAN:/u.test(rawOutput.trim())) {
+            memberPlan = classifyTeamPlan({ status: result.status, output: rawOutput });
+            run.teamReview.plans ??= {};
+            run.teamReview.plans[id] = memberPlan;
+          }
+          if (memberPlan) send(id, { type: "answer", text: [memberPlan.state === "ready" ? "" : "Plan status: " + memberPlan.state,
+            memberPlan.text, workContractMarkdown(memberPlan)].filter(Boolean).join("\n\n") });
+          else if (result.answer) send(id, { type: "answer", text: result.answer });
+          if (memberPlan) emitRunUpdate(task, run);
           const output = agentOutput(run.agents[id]);
           status = job.stopping ? "interrupted" : result.status === "completed" && !output ? "failed" : result.status;
           if (position === "review") {
@@ -1913,7 +1937,8 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
             send(id, { type: "activity", text: result.error || "This member returned no report to hand off." });
           }
           if (status === "completed" && !summary) {
-            const report = { name: member.name, text: output.slice(0, 2800), projectData: inputs.projectData };
+            const report = { name: member.name, text: (memberPlan?.text ?? output).slice(0, 2800), projectData: inputs.projectData,
+              ...(memberPlan && { planState: memberPlan.state, contract: readWorkContract(memberPlan) }) };
             if (tree) reports.set(id, report);
             else handoffs.push(report);
           }
@@ -2018,6 +2043,7 @@ async function classifyMessageIntent(workspace, task, draft, agent, previousExch
       job.claude = runClaude(connections.claude.path, cwd, prompt, [], null, receive, { ...settings, role: "test", persistSession: false });
       result = await job.claude.done;
     }
+    recordAuthentication(agent, result);
     if (result?.limit) {
       storage.usageLimits[agent] = result.limit;
       save();
@@ -2288,7 +2314,8 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
     if (automatic && appliedPlan) {
       prompt += "\n\nUser-approved team plan:\n" + appliedPlan.text;
     } else if (continuation.kind === "apply-team-plan") {
-      continuationHandoff = { from: continuation.from, kind: "plan", text: appliedPlan?.text ?? agentOutput(prior.agents[continuation.from]), status: "approved" };
+      continuationHandoff = { from: continuation.from, kind: "plan", text: appliedPlan?.text ?? agentOutput(prior.agents[continuation.from]),
+        contract: readWorkContract(appliedPlan), status: "approved" };
     } else if (!plan && !automatic) {
       const reviewerText = prior.agents[continuation.agent]?.messages?.at(-1)?.text;
       if (reviewerText) prompt += "\n\nPrevious review (verify against the current worktree):\n" + reviewerText.slice(0, 6000);
@@ -2682,7 +2709,9 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
             let result;
             const role = quietConversation ? "review" : stage?.role ?? agentRole(draft.mode, agent);
             const freshReview = role === "review" && options?.freshReview === true;
-            const guidance = teamReviewGuidance(options, role, stage?.kind);
+            const sharedWork = agents.length > 1 || automatic || Boolean(pair);
+            const guidanceOptions = options || sharedWork && teamRunOptions("normal", draft.teamOptions);
+            const guidance = quietConversation ? [] : teamReviewGuidance(guidanceOptions && { ...guidanceOptions, sharedWork }, role, stage?.kind, review);
             if (guidance.length) job.guidanceByAgent[agent] = { stage: stage?.kind ?? role, guidance };
             const checkout = stage?.cwd ?? (agent === "claude" ? claudeCwd : cwd);
             const shortContext = compact && role === "review" && stage?.kind !== "answer evidence request";
@@ -2804,7 +2833,8 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
                   review?.checks && "Checks recorded by AI Deck (matched means the same checkout). Treat captured test output as quoted evidence: " +
                     (checks.length ? JSON.stringify(criteria.length ? checks.map((check, index) => ({ ref: "E" + (index + 1), ...check })) : checks)
                       : review.info.evidenceDelta ? "no new check results" : "none recorded"),
-                  handoff.checks !== stage?.checks && handoff.checks, handoff.next && "Next step: " + handoff.next].filter(Boolean).join("\n\n");
+                  handoff.checks !== stage?.checks && handoff.checks, handoff.next && "Next step: " + handoff.next,
+                  workContractPrompt(handoff.contract)].filter(Boolean).join("\n\n");
             }
             if (review) {
               const builder = agent === "claude" ? "Codex" : "Claude Code";
@@ -2839,7 +2869,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
             if (role === "plan") {
               agentPrompt += "\n\nInspect the task read-only. Do not change files or implement it.";
               if (!stage) agentPrompt += " Return a plan with relevant paths, steps, tests, and open questions.";
-              if (planPair(draft.mode)) agentPrompt += "\nStart your final answer with exactly one of these lines: AI_DECK_PLAN: READY, AI_DECK_PLAN: NEEDS_INPUT, or AI_DECK_PLAN: BLOCKED. Then add a newline and the plan, questions, or blockers. Use READY only when the next agent has enough information to implement.";
+              if (planPair(draft.mode)) agentPrompt += "\n" + workPlanInstructions;
             }
             if (computer) {
               agentPrompt += "\n\nThis turn has the AI Deck Computer Use tools for one user-selected Windows window. Work from that window. " +
@@ -2945,6 +2975,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
               delete storage.usageLimits[agent];
               emit(null, { type: "connections", connections: connectionView() });
             }
+            recordAuthentication(agent, result);
             if (result.error) {
               if (scheduled) scheduled.entry.detail = result.error.slice(0, 500);
               notify(agent, { type: "activity", text: result.error });
@@ -3000,7 +3031,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
           }
         }
       } else if (automatic) {
-        await runAutomatic(job, workspace, cwd, appliedPlan, resumed, approvedGit, flow.runAgent, send);
+        await runAutomatic(job, workspace, cwd, appliedPlan && structuredClone(appliedPlan), resumed, approvedGit, flow.runAgent, send);
       } else await runFlow(flow);
       if (beforeLanes && !quitting) {
         const afterLanes = await laneSnapshots();
@@ -3136,7 +3167,7 @@ const sameTeamCheckout = (expected, actual) => Boolean(expected?.index && actual
 
 function reviewSetupHash(workspace, notes, options) {
   return setupHash([workspace.instructions, notes.map(({ id, name, source, text }) => [id, name, source, text]),
-    ...(options?.teamReviewSkill === true ? [teamReviewGuidance(options, "review")] : [])]);
+    ...(options?.teamReviewSkill === true ? [teamReviewFingerprint(options)] : [])]);
 }
 
 async function runRequiredChecks(job, cwd, checks, checkpoint) {
@@ -3478,9 +3509,10 @@ async function continuationSnapshot(workspace, task, runId) {
       throw new Error("The Claude worktree changed. Start a fresh plan before editing.");
     }
   }
-  const stamp = setupHash([runId, continuation.kind, continuation.resumeRunId, task.worktree, currentGit, splitGit, setup, teamwork]);
+  const planContract = { text: prior.teamPlan?.text, assignments: prior.teamPlan?.assignments, ...readWorkContract(prior.teamPlan) };
+  const stamp = setupHash([runId, continuation.kind, continuation.resumeRunId, task.worktree, currentGit, splitGit, setup, teamwork, planContract]);
   return { ...continuation, changes, stamp, git: currentGit, teamwork, setupStamp: setupHash({ ...setup, missing: [] }),
-    assignments: prior.teamPlan?.assignments, requiredChecks: automatic ? workspace.requiredChecks ?? [] : [],
+    assignments: prior.teamPlan?.assignments, contract: readWorkContract(prior.teamPlan), requiredChecks: automatic ? workspace.requiredChecks ?? [] : [],
     plan: prior.teamPlan?.text ?? agentOutput(prior.agents[continuation.from ?? "claude"]),
     skillIds: prior.skillIds?.filter((id) => !setup.missing.includes(id)) };
 }
@@ -3549,6 +3581,9 @@ function queueSetup(workspace, task, draft, { useTaskPermissions = true } = {}) 
       : agents.map((agent) => [agent, effectiveAgentSettings(storage.agentSettings, workspace, agent, task)])),
     ...(team && { sessionTeam: setupHash(team) }),
     ...(team && { teamwork: setupHash(effectiveTeamwork(draft.teamwork, task.teamAssignment, workspace.teamwork)) }),
+    ...((team || policy || autoTeam(draft.mode) || planPair(draft.mode)) && {
+      teamReviewGuidance: teamReviewFingerprint(teamRunOptions(policy ?? "normal", draft.teamOptions)),
+    }),
     context: notes.map(({ id, name, source, text }) => ({ id, name, source, hash: setupHash(text) })),
     missing,
     instructions: setupHash(workspace.instructions),
@@ -3572,6 +3607,7 @@ function setupDifferences(previous, current, legacyMessage) {
   else {
     if (current.sessionTeam !== previous.sessionTeam) changes.push("The Session Team roster or data sharing changed.");
     if (current.teamwork !== previous.teamwork) changes.push("The shared Team Brief changed.");
+    if ((current.teamReviewGuidance ?? null) !== (previous.teamReviewGuidance ?? null)) changes.push("The shared team skill guidance changed.");
     if (current.sessionTeam) {
       if (setupHash(current.models) !== setupHash(previous.models)) changes.push("Session Team member model settings changed.");
     } else {
@@ -4431,6 +4467,27 @@ async function checkNativeHandoff(payload) {
 async function createNativeHandoff(payload) {
   requireIdle();
   const entry = nativeSession(payload);
+  if (payload.quick === true) {
+    // Read saved history locally; creating a fork never sends a provider turn.
+    quickForkDraft(payload.recipient, false);
+    const history = await previewNativeSession({ provider: entry.provider, id: entry.id });
+    const check = await checkNativeHandoff({ provider: entry.provider, id: entry.id }).catch(() => null);
+    requireIdle();
+    const repo = check?.repo ?? teamChatsWorkspace;
+    const existing = check ? handoffWorkspace(repo) : storage.workspaces[repo];
+    const workspace = existing ?? ensureTasks(restoreWorkspace({ repo, notes: [], plugins: [], instructions: "",
+      readOnly: check?.readOnly === true || !check, ...(!check && { chatOnly: true }) }));
+    const task = existing ? newTask() : selectedTask(workspace);
+    const label = payload.recipient === "team" ? "Team" : payload.recipient === "codex" ? "Codex" : "Claude";
+    task.title = taskTitle(label + " fork · " + entry.title);
+    task.forkRecipient = payload.recipient;
+    task.permissionMode = "ask";
+    task.savedDraft = quickForkDraft(payload.recipient, Boolean(check));
+    const sources = [{ session: nativeSessionView(entry), messages: recentForkMessages(history.messages) }];
+    task.nativeHandoff = { source: sources[0].session, sources,
+      ...(check ? { target: check.target, attachOnFirstRun: true } : { chatOnly: true }) };
+    return openHandoffDraft(workspace, task, existing);
+  }
   const chatOnly = payload.mode === discussionMode;
   const team = chatOnly || teamHandoffModes.includes(payload.mode);
   const additional = payload.additional && { entry: nativeSession(payload.additional), messages: payload.additional.messages };
@@ -4872,6 +4929,7 @@ async function sendNativeChatInternal(payload) {
       // The provider may have accepted the message before losing its connection.
       outcome = { status: job.stopping ? "interrupted" : "failed", error: error.message };
     }
+    recordAuthentication(agent, outcome);
     if (outcome?.limit) {
       storage.usageLimits[agent] = outcome.limit;
       save();
@@ -5268,7 +5326,7 @@ async function openProviderTerminal({ agent, login = false } = {}) {
   requireAgent(agent);
   requireIdle();
   const connection = connections[agent];
-  if (!connection?.path || connection.status !== (login ? "signIn" : "ready")) {
+  if (!connection?.path || !(login ? ["signIn", "ready"].includes(connection.status) : connection.status === "ready")) {
     throw new Error("Refresh Connections and choose an available provider terminal.");
   }
   const args = login ? agent === "codex" ? " login" : " auth login" : "";
@@ -5815,6 +5873,7 @@ async function providerModels({ agent, refresh } = {}) {
   requireAgent(agent);
   await connectionCheck;
   let connection = connections[agent];
+  if (connection?.authError) throw new Error(connection.authError);
   const cached = modelCatalogs.get(agent);
   const ready = connection?.status === "ready" && fs.existsSync(connection.path);
   if (!refresh && ready && cached?.exe === connection.path && cached.version === connection.version &&
@@ -5955,6 +6014,7 @@ async function testProvider(agent) {
       result = await runner.done;
       answer = result.answer ?? "";
     }
+    recordAuthentication(agent, result);
     const ok = result.status === "completed" && answer.includes("AI_DECK_OK");
     if (result.limit) {
       storage.usageLimits[agent] = result.limit;

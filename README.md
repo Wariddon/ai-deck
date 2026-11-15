@@ -7,13 +7,26 @@
 <p align="center">Codex + Claude Code, working together in one desktop workspace.</p>
 
 <p align="center">
-  <strong>Windows x64 · Desktop 0.9.155</strong><br />
+  <strong>Windows x64 · Desktop 0.9.162</strong><br />
   <a href="#quick-start-on-windows">Quick start</a> ·
   <a href="#working-with-a-team">Team workflows</a> ·
   <a href="docs/validation.md">Validation &amp; limitations</a>
 </p>
 
 AI Deck connects your signed-in Codex CLI and Claude Code so you can continue existing chats, assign team roles, pass evidence between agents and read the combined answer in one place. You can run either provider alone; both providers are needed for a Codex–Claude team. You do not need to keep their desktop apps open.
+
+Project teams automatically receive bounded shared guidance for planning and handoffs. Code reviews add behavioral-test guidance; changed error paths also add failure-visibility checks. The bundled `ai-deck-team-review` adapts [Superpowers Writing Plans](https://github.com/obra/superpowers/blob/main/skills/writing-plans/SKILL.md) and [Anthropic PR Review Toolkit](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/pr-review-toolkit) for the assigned members. It does not launch additional reviewers or add provider turns, works in either Codex/Claude role order and Session Team, and keeps the original permissions and turn limits.
+
+Project plans carry the inputs each assignment needs, the outputs it must deliver and the conditions the next member must verify. AI Deck automatically saves and forwards these with the existing plan and evidence, including after a paused review or app restart. Requirements remain separate from observed checks; a completed reply does not establish that a handoff condition passed. Ordinary team handoffs use the same guidance in their existing reports, with no additional setup buttons.
+
+## Latest update · 0.9.162
+
+- Typing in long original chats reuses the loaded history; command output loads when its details are opened.
+- Shared plans preserve inputs, outputs and handoff conditions through existing Codex/Claude turns. Session Team shows the saved plan as soon as its planner hands it over.
+- Per-chat drafts and model choices stay separate through navigation and restart. One-click forks open Team, Codex or Claude drafts directly.
+- Expired provider sign-in is reported without automatically resending the message. Activity history keeps the latest 80 steps.
+
+Validated with 350 automated tests and controlled desktop scenarios. Simulated provider runs verify app behavior, not live model quality; see [validation and release scope](docs/validation.md) for details.
 
 ## What you can do
 
@@ -54,7 +67,7 @@ Open a Git repository from **Projects** for project file work, or pull **Recents
 3. Send your request normally. The next member receives the permitted brief, relevant evidence and upstream report.
 4. Read the combined answer in the chat; expand work steps and individual reports when needed.
 
-The compact direction picker inside the composer switches between **Codex → Claude**, **Claude → Codex** and bounded two-way discussion. **Fork to Team** starts a separate team chat from an existing conversation, without changing the source chat; its Chat only mode needs no project or Git. Optional Gemini and local Ollama members are configured in **Accounts & connections**, with separate data-sharing controls.
+The compact direction picker inside the composer switches between **Codex → Claude**, **Claude → Codex** and bounded two-way discussion. **Fork to Team**, **Fork to Codex** and **Fork to Claude** open a new chat immediately from Recents or Chat actions, without a setup form or a model call. Up to six recent saved messages are included as quoted context. AI Deck prefers the verified source project, otherwise the current verified project, and keeps **Permissions** below the composer for your choice. The source chat and draft stay unchanged. If no project is available, you can still chat without Git; file tools need a project. Optional Gemini and local Ollama members are configured in **Accounts & connections**, with separate data-sharing controls.
 
 New persistent provider chats get a short name from the task without an extra model request. Rename a session through its **…** menu or **F2**. Resumed chats keep their names and IDs. Running chats show an activity ring; waiting for a resource or an approval has its own status.
 

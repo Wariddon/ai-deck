@@ -1,4 +1,4 @@
-import { agentOutput } from "../desktop/collaboration.mjs";
+import { agentOutput, planPair } from "../desktop/collaboration.mjs";
 
 export function displayedTeamRun(run, runs) {
   const original = run.collaboration?.resumedFrom && runs.find(({ id }) => id === run.collaboration.resumedFrom);
@@ -62,26 +62,39 @@ export function withTeamResults(rows, runs) {
 }
 
 function withAutoTeamDecisions(rows, runs) {
-  const plans = new Map(runs.filter((run) => run.autoTeam && !run.autoTeam.planId).map((run) => [run.id, run]));
+  const plans = new Map(runs.filter((run) => run.autoTeam && !run.autoTeam.planId || planPair(run.mode) ||
+    run.sessionTeam && Object.values(run.agents).some(record => record.position === "plan" && ["codex", "claude"].includes(record.provider))).map((run) => [run.id, run]));
   if (!plans.size) return rows;
   const decisions = new Map();
   const latest = new Map();
+  const formatted = new Set();
   for (const row of rows) {
     if (row.kind !== "message") continue;
     const run = plans.get(row.id.split(":", 1)[0]);
     if (!run) continue;
-    const reviewer = run.teamPlan?.from ?? (run.autoTeam.planner === "claude" ? "codex" : "claude");
-    if (row.agent !== reviewer || !/^(?:```[^\r\n]*\r?\n[ \t]*)?AI_DECK_AUTO(?=[:\s]|$)/u.test(row.text?.trimStart() ?? "")) continue;
-    decisions.set(row.id, run);
-    latest.set(run.id, row.id);
+    const sessionPlan = run.sessionTeam && run.agents[row.agent]?.position === "plan" &&
+      ["codex", "claude"].includes(run.agents[row.agent]?.provider);
+    const reviewer = run.teamPlan?.from ?? planPair(run.mode)?.[0] ?? (run.autoTeam?.planner === "claude" ? "codex" : "claude");
+    if (!sessionPlan && row.agent !== reviewer) continue;
+    const protocol = run.autoTeam ? "AUTO" : "PLAN";
+    const marker = /^(?:```[^\r\n]*\r?\n[ \t]*)?AI_DECK_(AUTO|PLAN)(?=[:\s]|$)/u.exec(row.text?.trimStart() ?? "");
+    const key = run.id + ":" + row.agent;
+    const plan = sessionPlan ? run.teamReview?.plans?.[row.agent] : run.teamPlan;
+    if (marker?.[1] !== protocol) {
+      if (sessionPlan && plan && row.text === run.agents[row.agent].answer) formatted.add(key);
+      continue;
+    }
+    decisions.set(row.id, { run, key, plan, sessionPlan });
+    latest.set(key, row.id);
   }
   if (!decisions.size) return rows;
   return rows.flatMap((row) => {
-    const run = decisions.get(row.id);
-    if (!run) return [row];
-    if (latest.get(run.id) !== row.id) return [];
-    return [{ ...row, text: run.teamPlan?.text || (run.finishedAt ? "No team decision was saved." : "Checking the team plan…"),
-      planDecision: run.teamPlan ?? null }];
+    const decision = decisions.get(row.id);
+    if (!decision) return [row];
+    const { run, key, plan, sessionPlan } = decision;
+    if (latest.get(key) !== row.id || sessionPlan && formatted.has(key)) return [];
+    return [{ ...row, text: plan?.text || (run.finishedAt ? "No team decision was saved." : "Checking the team plan…"),
+      planDecision: plan ?? null }];
   });
 }
 
