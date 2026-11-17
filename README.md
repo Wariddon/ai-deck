@@ -115,6 +115,8 @@ npm.cmd start
 
 `npm.cmd ci` installs the npm dependencies. `npm.cmd start` prepares the Electron runtime, builds the renderer and launches the desktop app. The first start or test run may download Electron; later runs reuse that runtime. Tests finish this preparation first, then run serially to keep desktop and document probes within predictable resource limits.
 
+GitHub Actions checks every push and pull request on Windows with Node 24. One unit suite and three deterministic desktop shards cover every discovered test exactly once; each shard runs serially. The jobs prepare Electron, build the app and retain JUnit/log summaries for seven days. No provider credentials or live model requests are used in CI. To repeat a suite locally after building, run `node scripts/ci-tests.mjs unit` or `desktop-1`, `desktop-2`, `desktop-3`; omit the suite to run all tests serially.
+
 Install and sign in to the Codex CLI, Claude Code, or both on your own machine. Open **Connections** in AI Deck to verify sign-in. If a CLI is missing, select its Windows executable there and refresh. One connected CLI is enough for solo work. Team discussion and two-agent workflows require both.
 
 Open a Git repository from **Projects** for project file work, or pull **Recents** to continue an existing provider chat. Account sign-in, workspace settings, drafts and chat history stay in your own local profile; cloning this repository does not include another user's account or conversations.

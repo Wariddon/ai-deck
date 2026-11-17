@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "pretest": "node scripts/ensure-electron.cjs && npm run build",
     "test": "node --test --test-concurrency=1 tests/*.test.*",
+    "test:ci": "node scripts/ci-tests.mjs",
     "package:windows": "npm run build && node scripts/package-windows.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },

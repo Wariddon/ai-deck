@@ -1,5 +1,6 @@
 node_modules/
 /dist/
+/.qa-ci/
 /outputs/
 /work/
 /desktop/local-defaults.json
