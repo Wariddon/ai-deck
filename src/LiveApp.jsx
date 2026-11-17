@@ -30,6 +30,7 @@ import { ChatQuoteActions } from "./ChatNavigation.jsx";
 import { ChatMarkdown } from "./ChatMarkdown.jsx";
 import { recordedSummaryLeader } from "../desktop/team-result.mjs";
 import { appendLiveDeltas, appendLiveRow, applyRunUpdate, frameDeltas, retainTimelineRows } from "./timeline-rows.mjs";
+import { applySavedModelSettings } from "./saved-model-settings.mjs";
 import { DeckNav, FeatureMap, ProjectEmpty, WorkbenchPage } from "./DeckPages.jsx";
 import { ReviewEvidence, ReviewFiles, ReviewFreshness, ReviewTarget, RunEvidence, RunScope, WorktreeComparison } from "./RunReadiness.jsx";
 import { CommandMenu, LibrarySkillPreview, LocalSkillLibrary, SharedSkills, SkillPicker, TeamPlan, parseSlash, slashCommands } from "./Collaboration.jsx";
@@ -1556,7 +1557,8 @@ export function LiveApp() {
     try {
       const next = await api[command](payload);
       if (workspaceRequest.current !== scope) return null;
-      if (next?.connections) setState(next);
+      if (command === "save-agent-settings" && next?.connections) setState((current) => applySavedModelSettings(current, next, payload));
+      else if (next?.connections) setState(next);
       else if (command === "save-appearance" && next?.appearance) setState((current) => ({ ...current, appearance: next.appearance }));
       return next;
     } catch (reason) {

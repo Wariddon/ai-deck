@@ -7,7 +7,7 @@
 <p align="center">Codex + Claude Code, working together in one desktop workspace.</p>
 
 <p align="center">
-  <strong>Windows x64 · Desktop 0.9.177</strong><br />
+  <strong>Windows x64 · Desktop 0.9.178</strong><br />
   <a href="#quick-start-on-windows">Quick start</a> ·
   <a href="#working-with-a-team">Team workflows</a> ·
   <a href="docs/validation.md">Validation &amp; limitations</a>
@@ -19,7 +19,10 @@ Project teams automatically receive bounded shared guidance for planning and han
 
 Project plans carry the inputs each assignment needs, the outputs it must deliver and the conditions the next member must verify. AI Deck automatically saves and forwards these with the existing plan and evidence, including after a paused review or app restart. Requirements remain separate from observed checks; a completed reply does not establish that a handoff condition passed. Ordinary team handoffs use the same guidance in their existing reports, with no additional setup buttons.
 
-## Latest update · 0.9.177
+## Latest update · 0.9.178
+
+- A delayed Model/Effort/Speed save applies only the selected provider and scope. It preserves newer job completion, replies and drafts rather than restoring an earlier workspace snapshot and a stuck loading ring.
+- Parallel native chats retain separate model choices and newer drafts through rapid switching, queued work and duplicate-submit attempts. Restart restores the saved choices and drafts without replaying requests. See [validation](docs/validation.md).
 
 - Equivalent Model/Effort/Speed settings keep the same member-check bucket regardless of saved field order. Switching to different values still starts a separate bucket.
 - Member scores retain their bounded check snapshots when long command activity scrolls out of the compact history. A matched failure cannot disappear behind later command output, and test filenames containing `build` remain test results.

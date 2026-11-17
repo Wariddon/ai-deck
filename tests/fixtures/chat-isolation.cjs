@@ -11,6 +11,7 @@ const pathRecovery = process.env.AI_DECK_QA_PATH_RECOVERY === "1";
 const paginationProbe = process.env.AI_DECK_QA_PAGINATION === "1";
 const phase2Probe = process.env.AI_DECK_QA_PHASE2 === "1";
 const concurrencyProbe = process.env.AI_DECK_QA_CONCURRENCY === '1';
+const concurrencyRaces = process.env.AI_DECK_QA_CONCURRENCY_RACES === '1';
 const cwd = path.join(root, "chat-folder"), codexFile = path.join(root, "codex.json"), idsFile = path.join(root, "ids.json");
 const claudeRoot = process.env.CLAUDE_CONFIG_DIR = path.join(root, "claude"), claudeFolder = path.join(claudeRoot, "projects", "fixture");
 process.env.CODEX_HOME = path.join(root, "codex");
@@ -86,7 +87,7 @@ function runner(provider, id, prompt, options, emit) {
   const turn = { id: randomUUID(), status: "inProgress", items: [{ type: "userMessage", id: randomUUID(), content: [{ type: "text", text: prompt }] }] };
   if (provider === "codex") (turns[id] ??= []).unshift(turn); else if (id === ids.a) appendClaude("user", prompt);
   const gate = turnGates.get(provider); turnGates.delete(provider);
-  if (gate) { gate.entered = true; gate.id = id; activeGates.set(provider + id, gate); if (gate.approval) emit?.({ type: 'approval', key: 'same-approval', title: provider + ' scoped approval', text: 'Read this QA folder only.' }); }
+  if (gate) { gate.entered = true; gate.id = id; gate.emit = emit; activeGates.set(provider + id, gate); if (gate.approval) emit?.({ type: 'approval', key: 'same-approval', title: provider + ' scoped approval', text: 'Read this QA folder only.' }); }
   return (gate ? gate.promise : delay(140)).then(() => {
     active.delete(provider + id); turn.status = "completed";
     if (provider === "codex") { turn.items.push({ type: "agentMessage", id: randomUUID(), text: "Reply: " + prompt }); fs.writeFileSync(codexFile, JSON.stringify(turns)); }
@@ -147,7 +148,7 @@ ipcMain.handle = (key, fn) => handle(key, async (...args) => {
   return result;
 });
 const wait = async (fn, label) => { const until = Date.now() + 15000; while (Date.now() < until) { if (await fn()) return; await delay(40); } throw Error("Timeout " + label); };
-let seeded = restore || performanceProbe || pathRecovery || paginationProbe || concurrencyProbe, started = false;
+let seeded = restore || performanceProbe || pathRecovery || paginationProbe || concurrencyProbe || concurrencyRaces, started = false;
 app.once("browser-window-created", (_, win) => win.webContents.on("did-finish-load", async () => {
   const js = code => win.webContents.executeJavaScript(code, true);
   const api = (key, payload) => js(`window.aiDeck[${JSON.stringify(key)}](${JSON.stringify(payload) ?? ""})`);
@@ -182,6 +183,10 @@ app.once("browser-window-created", (_, win) => win.webContents.on("did-finish-lo
   if (started) return; started = true;
   try {
     await wait(() => js("Boolean(document.querySelector('header.thread-top'))&&!document.querySelector('.deck-startup')"), "startup");
+    if (concurrencyRaces) {
+      await require('./concurrency-races.cjs')({ restore, root, profile, cwd, report, js, api, click, type, open, picker, saveOptions, assertOptions, options, draft, wait, hold: holdPhase2, holdTurn, ids });
+      report.passed = true; save(); app.quit(); return;
+    }
     if (concurrencyProbe) {
       await require('./concurrency-scenarios.cjs')({ report, js, api, click, type, open, draft, wait, holdTurn, ids });
       report.passed = true; save(); app.quit(); return;
