@@ -22,8 +22,6 @@ jobs:
       matrix:
         suite: [unit, desktop-1, desktop-2, desktop-3]
     env:
-      CODEX_HOME: ${{ runner.temp }}/ai-deck-ci/codex
-      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/ai-deck-ci/claude
       AI_DECK_QA_LIVE: '0'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -40,6 +38,9 @@ jobs:
           node scripts/ensure-electron.cjs
           npm run build
       - name: Run serial tests
+        env:
+          CODEX_HOME: ${{ runner.temp }}/ai-deck-ci/codex
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/ai-deck-ci/claude
         run: node scripts/ci-tests.mjs ${{ matrix.suite }}
       - name: Upload test reports
         if: always()
