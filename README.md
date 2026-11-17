@@ -7,7 +7,7 @@
 <p align="center">Codex + Claude Code, working together in one desktop workspace.</p>
 
 <p align="center">
-  <strong>Windows x64 · Desktop 0.9.162</strong><br />
+  <strong>Windows x64 · Desktop 0.9.177</strong><br />
   <a href="#quick-start-on-windows">Quick start</a> ·
   <a href="#working-with-a-team">Team workflows</a> ·
   <a href="docs/validation.md">Validation &amp; limitations</a>
@@ -19,14 +19,70 @@ Project teams automatically receive bounded shared guidance for planning and han
 
 Project plans carry the inputs each assignment needs, the outputs it must deliver and the conditions the next member must verify. AI Deck automatically saves and forwards these with the existing plan and evidence, including after a paused review or app restart. Requirements remain separate from observed checks; a completed reply does not establish that a handoff condition passed. Ordinary team handoffs use the same guidance in their existing reports, with no additional setup buttons.
 
-## Latest update · 0.9.162
+## Latest update · 0.9.177
+
+- Equivalent Model/Effort/Speed settings keep the same member-check bucket regardless of saved field order. Switching to different values still starts a separate bucket.
+- Member scores retain their bounded check snapshots when long command activity scrolls out of the compact history. A matched failure cannot disappear behind later command output, and test filenames containing `build` remain test results.
+- Concurrent member runs preserve their selected controls, drafts and original builder chat IDs, including after restart. Verification uses controlled provider transports; Claude inference remains skipped. See [validation](docs/validation.md).
+
+- Team members receive short verification guides automatically in ordinary project turns. The guides use local observed check counts for that project/member/role/model/settings bucket and preserve your chosen team, Model, Effort, Speed and permissions.
+- Only current attributed native check outcomes contribute samples; model prose, reviewer agreement, quota failures and interrupted runs do not establish ability. Counts show their sample size and remain unrated when evidence or the model identity is unknown.
+- Queued and waiting work freezes its guide snapshot. Original builder conversations continue, existing history/guidance sharing opt-outs apply, and no training jobs, new model calls or primary controls are added. See [member learning](docs/member-learning.md) for scope and limits.
+
+- General's Quit action saves all pending chat drafts first. A failed write keeps the app open with an explanation so unsent text can be recovered.
+- Portable packages never embed the builder's CLI-path environment overrides. Their starter guide matches the thirteen current Settings categories and ordinary chat flows.
+- Packaging verifies the README/version/source modules and writes a relative-path SHA-256 release manifest. It reports the finished archive's digest; modified, missing, linked or known profile files fail verification. See [release verification](docs/release-verification.md) for the checks and proof limits.
+
+- Explicit browser requests no longer confuse source-code words such as `edge cases` with Microsoft Edge. Creating a tab through the native tab-list tool requires approval, as do native clicks, dragging and browser changes.
+- Closing window access settles pending actions; expired control observations cannot apply later. Voice helpers clean up their owned process trees, and switching chats/projects or minimizing cancels the old voice operation without forwarding its transcript.
+- Cloud reads have a caller deadline and cancellation even for an unresponsive reader. Malformed or repeated task rows cannot crash or duplicate the list. See [screen, browser, voice and Cloud](docs/screen-browser-voice-cloud.md) for actual interface support and validation limits.
+
+- Concurrent code lookups now receive their own worker response, including when projects share folder and symbol names. Cancelling one lookup leaves its peer available; source reads stay bounded even for skipped binary/invalid files.
+- Serena profiles and project metadata are isolated by the physical checkout. The app prepares its missing `uv/uvx` dependency and exposes the runtime's executable folder only to its child process. Unavailable semantic tools fall back to clearly labeled JS/TS graphs or bounded literal searches for other source languages.
+- Saved context carries its source revision/hash and flags changed or missing origins without automatically sharing new text. Team Decisions require the matching repository; report-only reviewers receive no built-in repository tool lease. See [memory, context and code tools](docs/context-and-code.md) for scope and limits.
+
+- Comparing team worktrees now binds staging, branch, HEAD and physical Git identity, so staging-only changes invalidate an earlier comparison. Replay checks the source identity again before accepting its candidate and rejects foreign or identical source/destination checkouts.
+- Updating a task to a newer base verifies its managed Git owner and unchanged source before publishing a separate task. Failed integration keeps the original worktrees and removes the temporary candidate.
+- Undo Apply records where the applied text was observed. It preserves unrelated edits when those positions remain identifiable and stops when the block moved or was replaced. See [integration and Git conflicts](docs/integration-git.md) for the supported boundaries.
+
+- Saved plans can reference exact build, API and UI check commands through normal chat. Artifact hashes captured at command completion bind measured JSON values to their observed checks; changed or missing receipts cannot inherit an earlier pass.
+- Handoff evidence distinguishes verified values, recorded evidence, incomplete proof, stale snapshots and failed checks. Explicit missing evidence pauses automatic follow-ups and integration while chat stays available.
+- Local target/environment assertions and bounded screenshot hashes use the existing plan and evidence views. See [observable acceptance](docs/observable-acceptance.md) for examples and proof boundaries; no additional controls or provider turns are added.
+
+- Review corrections return to the unique recorded owner of the affected files, including an earlier writer or an actual tree ancestor. Ambiguous ownership and findings from another branch stay available for a new plan.
+- Dependent work waits for ready plans and current, passing reviews, including reviews above an intermediate report. Independent branches can continue; changed team requirements pause the remaining automatic handoffs and queued follow-ups.
+- Structured findings survive long report previews and travel through the existing sharing controls. The one-repair budget, native builder chat, permissions and serial writes remain in place, with no new controls or extra planning turns.
+
+- New messages cannot jump ahead of an older eligible waiting job. A waiter blocked by its working folder still allows independent work to proceed.
+- Closing the run pool cancels pending preparation, rejects later submissions and clears waiting timers. Stop continues to target the selected job.
+- Forced provider and code-tool cleanup terminates the owned process tree on Windows and awaits project-tool closure before releasing its slot. Late tool initialization cannot reopen access after Stop; remote tool cancellation stays scoped to its own client.
+
+- Startup releases the workspace when a metadata reader ignores cancellation. A stalled connection, history or quota check cannot keep the loading screen pending indefinitely; a failed provider preserves its last known chats.
+- Normal startup reads independent account quotas together, while Low RAM keeps them sequential. Startup still performs no model turns and yields metadata work to foreground actions.
+- Long original chats format nearby replies first and keep offscreen text available for search. Scrolling back retains revealed code blocks and their wrap state; typing continues to reuse loaded history.
+
+- Rapid chat switches keep the latest selected task and draft, even when earlier results arrive afterward. Returning to the current task also cancels a pending selection of another task.
+- Delayed selection, permission and session-management results preserve the page you chose most recently. Overlapping foreground operations keep their busy state until all have settled.
+- One-click forks can prepare a draft while another independent chat is running, preserving the source and leaving execution permissions and destination checks in place.
+
+- Plans can attach observable JSON values to handoff conditions, using exact values or numeric bounds. Current files and matching executed checks must support those values; a reviewer's PASS cannot replace missing or failed measurements.
+- Required checks bind their command definitions and results to the exact final checkout. Combining worktrees verifies their Git repository and source HEAD, and invalidates a candidate that changes during review.
+- Handoff contracts share one final Git observation after their artifact reads, reducing repeated Git work without background polling or extra model turns. Existing evidence details show expected and observed values.
+
+- Native sends have an atomic local checkpoint before the CLI runs. Reopening checks the original transcript, retains uncertain sends and rejects duplicate request or draft identities without replaying a model turn.
+- Batched native text drafts have a main-process checkpoint and persistent edit identities. Forced termination preserves saved drafts and newer identical follow-ups; interrupted partial replies remain available in the chat.
+- Persistent team builder IDs are saved when first reported, and partial team progress is checkpointed during execution. Restart keeps recorded results and queued follow-ups paused.
+
+- Session Team can send one scoped review correction back to the original builder and run a fresh recheck, within the saved turn budget. Unverified snapshots and out-of-scope findings retain their review notes instead of starting a repair.
+- Plans can connect handoff conditions to relative files and observed test commands. The existing review details show file hashes, test outcomes and the matching code snapshot; condition text is never executed.
 
 - Typing in long original chats reuses the loaded history; command output loads when its details are opened.
 - Shared plans preserve inputs, outputs and handoff conditions through existing Codex/Claude turns. Session Team shows the saved plan as soon as its planner hands it over.
 - Per-chat drafts and model choices stay separate through navigation and restart. One-click forks open Team, Codex or Claude drafts directly.
 - Expired provider sign-in is reported without automatically resending the message. Activity history keeps the latest 80 steps.
+- Verified CLI paths are saved in the local profile so replacing a portable build can omit machine-local defaults. Refreshing a chat keeps loaded older messages and their pagination position.
 
-Validated with 350 automated tests and controlled desktop scenarios. Simulated provider runs verify app behavior, not live model quality; see [validation and release scope](docs/validation.md) for details.
+Validation includes focused concurrency and process-lifecycle checks, controlled desktop scenarios and earlier bounded live-provider checks; see [validation and release scope](docs/validation.md) for current results and proof boundaries. The preceding 0.9.168 baseline passed all 397 tests.
 
 ## What you can do
 
@@ -54,7 +110,7 @@ npm.cmd ci
 npm.cmd start
 ```
 
-`npm.cmd ci` installs the npm dependencies. `npm.cmd start` prepares the Electron runtime, builds the renderer and launches the desktop app. The first start or test run may download Electron; later runs reuse that runtime. Tests finish this preparation before starting parallel workers.
+`npm.cmd ci` installs the npm dependencies. `npm.cmd start` prepares the Electron runtime, builds the renderer and launches the desktop app. The first start or test run may download Electron; later runs reuse that runtime. Tests finish this preparation first, then run serially to keep desktop and document probes within predictable resource limits.
 
 Install and sign in to the Codex CLI, Claude Code, or both on your own machine. Open **Connections** in AI Deck to verify sign-in. If a CLI is missing, select its Windows executable there and refresh. One connected CLI is enough for solo work. Team discussion and two-agent workflows require both.
 
@@ -118,7 +174,7 @@ npm.cmd test
 npm.cmd run package:windows
 ```
 
-Packaging prints the paths to the staged executable and the portable ZIP. Unzip the entire archive and run `AI Deck.exe`. Recipients configure their own CLIs. Leave `AI_DECK_CODEX_EXE` and `AI_DECK_CLAUDE_EXE` unset when building for others. Those optional overrides embed absolute executable paths for machine-local builds.
+Packaging prints the staged executable, portable ZIP, version, file count and archive SHA-256. Unzip the entire archive and run `AI Deck.exe`. Recipients configure their own CLIs; packaging does not embed `AI_DECK_CODEX_EXE` or `AI_DECK_CLAUDE_EXE` overrides. The application payload includes `release-manifest.json` with relative paths and file hashes, without profile or account data.
 
 Voice transcription is optional. To enable it from source or bundle it into the ZIP, set `AI_DECK_VOICE_DIR` to a folder with the Windows Whisper binaries and license in `whisper/` and `ggml-base-q5_1.bin` in `models/`.
 

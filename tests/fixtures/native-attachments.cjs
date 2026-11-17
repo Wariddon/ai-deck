@@ -104,7 +104,7 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
    assert.match(result.calls.at(-1).prompt,/Local attachment/);
    const state=JSON.parse(fs.readFileSync(path.join(profile,'workspace-state.json'),'utf8'));
    assert.equal(state.nativeAttachmentMessages.filter(r=>r.sessionKey===provider+':'+native.id).length,1);
-   await assert.rejects(api('native-chat-send',{...native,prompt:'Read my attachment '+provider,requestId:sent.attachmentRequestId,revision:page.chat.revision,permissionMode:'chat',images:rows}),/previously sent attachment/);
+   await assert.rejects(api('native-chat-send',{...native,prompt:'Read my attachment '+provider,requestId:sent.attachmentRequestId,revision:page.chat.revision,permissionMode:'chat',images:rows}),/previously (?:sent attachment|submitted message)/);
    const again=await api('native-session-preview',native);assert.equal(again.messages.find(m=>m.id===sent.id).images.length,2);
    result.checks.push(provider+': same original ID, image and text payload, saved receipt, rendered file chip, cleared sent draft, duplicate request rejected');
   }

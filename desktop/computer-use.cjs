@@ -2,6 +2,7 @@ const { execFile } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const { createServer } = require("node:http");
 const path = require("node:path");
+const { abortableRead } = require("./abortable-read.cjs");
 
 const computerName = "ai_deck_computer";
 const controlId = { type: "integer", minimum: 1, maximum: 36, description: "Control ID from the latest inspect result." };
@@ -64,17 +65,25 @@ function windowsUi(request, signal) {
 
 const textResult = (text) => ({ content: [{ type: "text", text }] });
 
-function createWindowTools({ target, readWindow, approve, report, enabled, ui = windowsUi }) {
+function createWindowTools({ target, readWindow, approve, report, enabled, ui = windowsUi, now = Date.now }) {
   const toolDefinitions = target.chrome ? chromeDefinitions : definitions;
   const abort = new AbortController();
   let controls = [];
   let inspectedView;
+  let inspectedAt = 0;
   let working = false;
   let attempts = 0;
   const ensureActive = () => {
     if (abort.signal.aborted || !enabled()) throw new Error("Window access has ended.");
   };
   const query = (action, extra) => ui({ action, handle: target.handle, identity: target.identity, ...extra }, abort.signal);
+  const decision = (action) => abortableRead(() => approve(action), abort.signal);
+  const freshControls = () => {
+    if (!controls.length || now() - inspectedAt > 30000) {
+      controls = [];
+      throw new Error("Inspect the window again; its control observation has expired.");
+    }
+  };
   const viewOf = (result) => {
     if (!target.chrome) return undefined;
     if (!result.view) throw new Error("Chrome could not identify the active tab. Wait for it to load and inspect it again.");
@@ -97,7 +106,9 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
         controls = [];
         const inspected = await query("inspect");
         inspectedView = viewOf(inspected);
+        if (!Array.isArray(inspected.controls) || inspected.controls.length > 36) throw new Error("Windows returned invalid controls.");
         controls = inspected.controls;
+        inspectedAt = now();
         ensureActive();
         report("Inspected controls in " + title);
         return textResult(JSON.stringify({ window: title, controls: controls.map(({ key, ...control }, index) => ({ id: index + 1, ...control })) }));
@@ -119,7 +130,7 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
         const view = viewOf(await query("identify"));
         ensureActive();
         const summary = "Open " + url.href;
-        if (!await approve({ summary, window: title })) return { ...textResult("The user did not approve this action."), isError: true };
+        if (!await decision({ summary, window: title })) return { ...textResult("The user did not approve this action."), isError: true };
         ensureActive();
         await readWindow(false);
         ensureActive();
@@ -129,6 +140,7 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
         return textResult("Chrome received the navigation. Inspect the new page before taking another action.");
       }
       const control = Number.isSafeInteger(args.controlId) && controls[args.controlId - 1];
+      if (control) freshControls();
       const set = name === "set_text";
       if (name === "scroll" || name === "press_key") {
         const scrolling = name === "scroll";
@@ -138,8 +150,8 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
         if (!control || !(scrolling ? control.scroll : control.keyInput) || !allowed.includes(value)) throw new Error("Inspect and choose a control that supports this navigation.");
         const summary = (scrolling ? "Scroll " + value : "Press " + value) + " in “" + control.label + "”";
         const view = inspectedView;
-        if (!await approve({ summary, window: title })) return { ...textResult("The user did not approve this action."), isError: true };
-        ensureActive(); await readWindow(false); ensureActive(); controls = [];
+        if (!await decision({ summary, window: title })) return { ...textResult("The user did not approve this action."), isError: true };
+        ensureActive(); await readWindow(false); ensureActive(); freshControls(); controls = [];
         await query(scrolling ? "scroll" : "press_key", { key: control.key, view, ...(scrolling ? { direction: value } : { keyName: value }) });
         report(summary + " · completed in " + title);
         return textResult("Navigation completed. Inspect or capture the window again before the next action.");
@@ -150,18 +162,19 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
       }
       const action = set ? "Replace text in" : "Invoke";
       const summary = action + " “" + control.label + "”";
-      const decision = await approve({ summary, label: control.label, text: set ? args.text : undefined, window: title });
-      if (!decision) return { ...textResult("The user did not approve this action."), isError: true };
+      const accepted = await decision({ summary, label: control.label, text: set ? args.text : undefined, window: title });
+      if (!accepted) return { ...textResult("The user did not approve this action."), isError: true };
       ensureActive();
       await readWindow(false);
       ensureActive();
+      freshControls();
       controls = [];
       await query(set ? "set" : "invoke", { key: control.key, view: inspectedView, ...(set && { text: args.text }) });
       report(summary + " · completed in " + title);
       return textResult(summary + " succeeded. Inspect the window again before the next action.");
     } finally { working = false; }
   }
-  return { call, definitions: toolDefinitions, close: () => abort.abort() };
+  return { call, definitions: toolDefinitions, close: () => abort.abort(new Error("Window access has ended.")) };
 }
 
 async function startComputerServer(tools) {

@@ -96,3 +96,54 @@ test('Git preparation serializes a shared common directory while unrelated repos
   release(); await Promise.all([first, second]);
   assert.deepEqual(order, ['first', 'other', 'second']); assert.equal(mutex.tails.size, 0);
 });
+
+test('new submissions cannot take a slot from an older eligible waiter', async (t) => {
+  const pool = new RunPool({ limit: () => 1 }); t.after(() => pool.close());
+  const order = [];
+  const start = key => pool.submit({ key }, async () => { order.push(key); pool.adopt({}); });
+  await start('active'); await start('older');
+  pool.release(pool.entries.get('active'));
+  assert.equal((await start('newer')).waiting, true);
+  await until(() => order.includes('older'));
+  assert.deepEqual(order, ['active', 'older']);
+  pool.release(pool.entries.get('older'));
+  await until(() => order.includes('newer'));
+});
+
+test('a folder-blocked waiter does not prevent unrelated work from using the other slot', async (t) => {
+  const pool = new RunPool(); t.after(() => pool.close());
+  await pool.submit({ key: 'writer', locks: ['folder:C:/repo'] }, async () => pool.adopt({}));
+  await pool.submit({ key: 'same-folder', locks: ['folder:C:/repo/sub'] }, async () => pool.adopt({}));
+  await pool.submit({ key: 'independent', locks: ['folder:C:/other'] }, async () => pool.adopt({}));
+  assert.equal(pool.entries.get('independent').state, 'running');
+  assert.equal(pool.entries.get('same-folder').state, 'waiting');
+});
+
+test('closing during preparation fences late adoption and never revives queued work', async () => {
+  const pool = new RunPool(); const gate = Promise.withResolvers();
+  const preparing = pool.submit({ key: 'preparing' }, async () => { await gate.promise; pool.adopt({}); });
+  await pool.submit({ key: 'waiting' }, () => assert.fail('closed queue started'));
+  pool.close(); gate.resolve();
+  await assert.rejects(preparing, /no longer scheduled/);
+  assert.equal(pool.size, 0); assert.equal(pool.timer, null);
+  assert.throws(() => pool.submit({ key: 'later' }, () => {}), /closed/);
+});
+
+test('cancelling the last waiter clears its polling timer without cancelling the active job', async () => {
+  const pool = new RunPool({ limit: () => 1 });
+  await pool.submit({ key: 'active' }, async () => pool.adopt({}));
+  await pool.submit({ key: 'waiting' }, () => assert.fail('cancelled waiter started'));
+  assert.ok(pool.timer); pool.cancel('waiting');
+  assert.equal(pool.timer, null); assert.ok(pool.get('active')); pool.close();
+});
+
+test('enabling Low RAM leaves two active jobs intact and holds the third until both release', async t => {
+  let limit = 2; const pool = new RunPool({ limit: () => limit }); t.after(() => pool.close());
+  const started = [];
+  const start = key => pool.submit({ key }, async () => { started.push(key); pool.adopt({}); });
+  await start('a'); await start('b'); await start('c'); limit = 1;
+  pool.release(pool.entries.get('a')); await delay(300);
+  assert.ok(pool.get('b')); assert.deepEqual(started, ['a', 'b']);
+  pool.release(pool.entries.get('b')); await until(() => started.includes('c'));
+  assert.equal(pool.size, 1);
+});

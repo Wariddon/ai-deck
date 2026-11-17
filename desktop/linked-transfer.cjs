@@ -48,7 +48,7 @@ function undoFile(root, file) {
     if (!info) return { hash: "absent" };
     if (info.isSymbolicLink() || (index < parts.length - 1 && !info.isDirectory())) return null;
     if (index === parts.length - 1) {
-      if (!info.isFile() || info.size > maxUndoFileBytes) return null;
+      if (!info.isFile() || info.nlink > 1 || info.size > maxUndoFileBytes) return null;
       const bytes = fs.readFileSync(current);
       if (bytes.length > maxUndoFileBytes) return null;
       const text = bytes.toString("utf8");
@@ -67,14 +67,14 @@ function postimage(hunk) {
     .map((line) => line.slice(1).replace(/\r$/u, "")).join("\n");
 }
 
-function uniquePostimage(text, hunk) {
+function postimagePosition(text, hunk) {
   const body = postimage(hunk);
-  if (!text || !body) return false;
+  if (!text || !body) return;
   // A final line without a newline may be a valid postimage.
   const needle = "\n" + body + "\n";
   const haystack = text.endsWith("\n") ? text : text + "\n";
   const first = haystack.indexOf(needle);
-  return first >= 0 && haystack.indexOf(needle, first + 1) < 0;
+  if (first >= 0 && haystack.indexOf(needle, first + 1) < 0) return haystack.slice(0, first).split('\n').length - 1;
 }
 
 function undoGuards(root, patches) {
@@ -82,8 +82,9 @@ function undoGuards(root, patches) {
   for (const patch of patches) {
     const current = undoFile(root, patch.file);
     if (!current) return null;
-    guards.push({ file: patch.file, hash: current.hash, mode: current.mode,
-      allowNearbyEdits: !patch.wholeOnly && patch.hunks.every((hunk) => uniquePostimage(current.text, hunk)) });
+    const positions = patch.hunks.map(hunk => postimagePosition(current.text, hunk));
+    const allowNearbyEdits = !patch.wholeOnly && positions.every(position => Number.isInteger(position));
+    guards.push({ file: patch.file, hash: current.hash, mode: current.mode, allowNearbyEdits, ...(allowNearbyEdits && { positions }) });
   }
   return guards;
 }
@@ -93,8 +94,10 @@ function verifyUndoGuards(root, patches, guards) {
     const guard = guards[index];
     const current = undoFile(root, patch.file);
     if (!guard || guard.file !== patch.file || !current || current.hash !== guard.hash &&
-        (!guard.allowNearbyEdits || current.mode !== guard.mode || !patch.hunks.every((hunk) => uniquePostimage(current.text, hunk)))) {
-      throw new Error("Undo stopped because the applied lines or file changed: " + patch.file);
+        (!guard.allowNearbyEdits || current.mode !== guard.mode || !Array.isArray(guard.positions) ||
+          guard.positions.length !== patch.hunks.length || !guard.positions.every(Number.isInteger) ||
+          !patch.hunks.every((hunk, index) => postimagePosition(current.text, hunk) === guard.positions[index]))) {
+      throw new Error("Undo stopped because the applied lines or file changed: " + patch.file + '. Position-shifting edits need a fresh manual review.');
     }
   }
 }

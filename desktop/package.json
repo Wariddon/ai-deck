@@ -1,7 +1,7 @@
 {
   "name": "ai-deck",
   "productName": "AI Deck",
-  "version": "0.9.162",
+  "version": "0.9.177",
   "private": true,
   "main": "main.cjs"
 }

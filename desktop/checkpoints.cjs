@@ -70,4 +70,15 @@ function clearRunningCheckpoint(profile, runId) {
   if (!runId || readCheckpoint(legacy)?.id === runId) fs.rmSync(legacy, { force: true });
 }
 
-module.exports = { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint };
+function writeProgressCheckpoint(profile, run, liveRows = []) {
+  if (run.finishedAt) return;
+  const copy = structuredClone(run);
+  const { recordEvent } = require('./run-history.cjs');
+  for (const row of liveRows.slice(-12)) if (copy.agents[row.agent] && typeof row.text === 'string') {
+    recordEvent(copy, row.agent, { type: 'message', key: 'partial:' + row.id, text: row.text.slice(-20000), profile: row.profile });
+  }
+  writeRunningCheckpoint(profile, copy);
+  run.checkpointSeq = copy.checkpointSeq;
+}
+
+module.exports = { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint, writeProgressCheckpoint };

@@ -48,6 +48,15 @@ async function readTaskFile(root, args, signal) {
 async function searchTaskFiles(root, args, signal) {
   root = await fs.realpath(root);
   if (typeof args.query !== "string" || !args.query.trim() || args.query.length > 160 || /[\x00-\x1f]/u.test(args.query)) throw new Error("Choose a short literal search phrase.");
+  if (args.file !== undefined) {
+    const filename = await scopedFile(root, args.file), data = await boundedText(filename, 512 * 1024, signal), query = args.query.toLocaleLowerCase();
+    const matches = []; let used = 0, truncated = false;
+    for (const [index, line] of data.text.split(/\r?\n/u).entries()) if (line.toLocaleLowerCase().includes(query)) {
+      const row = { file: args.file, line: index + 1, text: line.slice(0, 400) }; used += JSON.stringify(row).length;
+      if (matches.length >= 60 || used > 12000) { truncated = true; break; } matches.push(row);
+    }
+    return { source: 'Task files', text: JSON.stringify({ query: args.query, matches, bounded: true, visited: 1, bytesRead: data.size, truncated }) };
+  }
   const pending = [""], matches = [], query = args.query.toLocaleLowerCase(); let visited = 0, bytesRead = 0, used = 0;
   while (pending.length && visited < 4000 && matches.length < 60 && bytesRead < 12 * 1024 * 1024) {
     signal?.throwIfAborted(); const folder = pending.shift();

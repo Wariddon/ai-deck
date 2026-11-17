@@ -6,6 +6,7 @@ const { fileURLToPath, pathToFileURL } = require("node:url");
 const { createHash, randomUUID } = require("node:crypto");
 const { setTimeout: delay } = require("node:timers/promises");
 const { RunPool, KeyedMutex } = require("./run-pool.cjs");
+const { abortableRead } = require('./abortable-read.cjs');
 const { createUpdateMonitor, createUpdateReader, updateExecutable, updateProducts } = require("./software-updates.mjs");
 const { nativeAttachmentInput, nativeAttachmentPrefix, nativeMessageAttachments } = require("./native-attachments.mjs");
 const { recoverWaitingJob } = require("./waiting-jobs.cjs");
@@ -34,7 +35,11 @@ const { sessionTeamMode, teamProviders, nativeTeamProvider, sessionTeamHasWriter
 const { teamProvidersClient } = require("./team-providers.cjs");
 const { planAutoTeam, executeAutoTeam, reviewResult, reviewFormat } = require("./auto-team.cjs");
 const { validateRequiredChecks, sharedCheckSource, formatRequiredChecks, scopeIncludes } = require("./team-contract.cjs");
-const { readWorkContract, workContractPrompt, workContractMarkdown, workPlanInstructions } = require("./work-contract.mjs");
+const { readWorkContract, runWorkContracts, workCheckCommands, workContractPrompt, workContractMarkdown, workPlanInstructions } = require("./work-contract.mjs");
+const { contextSnapshot, contextNotesPrompt } = require('./context-notes.cjs');
+const { collectWorkEvidenceBatch, captureWorkArtifacts, workEvidencePrompt, requiredCheckEvidence, unmetObservableConditions } = require("./work-evidence.cjs");
+const { sessionRepairOwner, sessionWriterFilesCurrent, sessionUpstreamMembers, sessionReviewHandoff, sessionHandoffIssue, sessionRepairDecision, sessionRepairPrompt } = require("./session-review-cycle.mjs");
+const { observedCheckOutcome } = require('./claude-command-result.cjs');
 const { validScope, separateWriteScopes, overlappingScope, laneScopeResult } = require("./team-paths.mjs");
 const { listCodexSessions, readCodexSession, listClaudeSessions, readClaudeSession, findClaudeSession, nativeChatDelivery } = require("./native-recents.cjs");
 const { createRecentLoader } = require("./recent-loader.cjs");
@@ -55,8 +60,9 @@ const { linkedModes, linkedAgent, linkedResume, linkedContext, sameLinkedTarget,
   commandSummary, linkedEvidence, linkedReceipts, nativeResumeCommand } = require("./linked-sessions.cjs");
 const { gitLocation, handoffTarget, listHandoffRefs, sameHandoffTarget, handoffPrompt, nativeHandoffContext, samePath, teamHandoffModes, recentForkMessages, quickForkDraft } = require("./recent-handoff.cjs");
 const { splitFilePatch, composeLinkedPatch, maxPatchChars, undoGuards, verifyUndoGuards, inversePreview } = require("./linked-transfer.cjs");
-const { testCommand, statusEntries, testReports, reviewTestChecks, sameCheckout } = require("./delivery.cjs");
-const { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint } = require("./checkpoints.cjs");
+const { testCommand, workCheckCommand, statusEntries, testReports, reviewTestChecks, sameCheckout } = require("./delivery.cjs");
+const { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint, writeProgressCheckpoint } = require("./checkpoints.cjs");
+const { NativeSendJournal } = require('./native-send-journal.cjs');
 const { batchDeltas, streamSummaryPreview } = require("./stream-deltas.cjs");
 const { agentOutput, agentRole, autoTeam, buildThenReview, changeWorkflow, classifyTeamPlan, defaultTeamMode, effectiveTeamwork, handoffTeamwork, isTeamGreeting, normalizeTeamwork, planPair, selectedContext, separateEdits, separateEditsIssue,
   discussionMode, needsAutomaticAssignments, needsMessageIntent, startsDiscussionTopic, supportsDirectQuestion, supportsMessageIntent, steerableDraft, steerMode, teamConversation, teamInstructions, teamReviewer, unresolvedTeamPlan, planResultCanBeConfirmed } = require("./collaboration.mjs");
@@ -65,9 +71,13 @@ const { codexPermissions, permissionModes, sessionTeamPermissionModes, supportsR
 const { nativePermissionMode, changeNativePermission, nativeTurnPolicy, nativeWorkInstructions } = require("./native-chat-policy.mjs");
 const { nativeModelSettings, nativeModelStamp, changeNativeModels } = require("./native-chat-models.mjs");
 const { authenticationConnection } = require("./provider-auth.cjs");
+const { retainProviderPaths } = require("./provider-paths.cjs");
+const { nativeHistoryCursor } = require("./native-history.mjs");
 const { comparisonMetrics, discussionPrompt, economySummary, previousAskContext, previousDiscussion, previousMessageExchange, recordedSummaryLeader, teamAgentName, teamLeaderPrompt, verifiedTeamSummary } = require("./team-result.mjs");
 const { criteriaReplyFormat, newReviewChecks, recordCriteria, reviewCriteria, savedCriterionChecks, savedEvidenceCheckpoint, testCommandText, verifiedCheck, withCriterionEvidence } = require("./team-criteria.mjs");
 const { teamReviewGuidance, teamReviewFingerprint, recordReviewSkill } = require("./team-review-skill.cjs");
+const { policy: memberLearningPolicy, memberIdentity, snapshotMemberLearning, memberGuide, memberObservations,
+  updateMemberLearning, recordMemberGuides, memberCheckReports } = require('./member-learning.cjs');
 const { routeMode, messageIntentAgents, autoTeamPlanBaseMatches, autoTeamPlanNeedsBaseCheck, continuationFor, providerUsesApi } = require("./usage-routing.mjs");
 const { reviewPolicies, reviewPolicy, teamRunOptions, teamContextNotes, smartTextPath, smartReviewCandidate,
   usableDecisions, sentTurns, teamStagePrompt, priorTeamResult } = require("./team-handoff.mjs");
@@ -125,6 +135,8 @@ const nativeRecents = new Map();
 const nativeHistory = new Map();
 const nativeChatAttempts = new Map();
 const nativeChatJobs = new Map();
+let nativeSends;
+const nativeSendJournal = () => nativeSends ??= new NativeSendJournal(app.getPath('userData'));
 const worktreePreparation = new KeyedMutex();
 let nativeHandoffPending = false;
 let pendingLinkedRun;
@@ -211,13 +223,15 @@ function dispatchTaskRun(payload, options, start) {
   const workspace = options?.workspace ?? workspaceRequired();
   const task = options?.task ?? selectedTask(workspace);
   const frozen = structuredClone(payload);
+  const memberSnapshot = snapshotMemberLearning(workspace.repo,
+    options?.queuedId ? task.queue.find(item => item.id === options.queuedId)?.memberSnapshot : workspace.memberLearning);
   const stamp = setupHash(queueSetup(workspace, task, frozen));
   const locks = taskLocks(task);
   if (payload.computerToken || nativeChromeRequested(payload.prompt)) locks.push("computer");
   const priorRunId = task.runHistory.at(-1)?.id;
   return runPool.submit({ key: "task:" + task.id, workspace, task, locks }, async () => {
     if (stamp !== setupHash(queueSetup(workspace, task, frozen))) throw new Error("The waiting job's setup changed. Review and send the saved draft again.");
-    const result = await start(frozen, { ...options, workspace, task });
+    const result = await start(frozen, { ...options, workspace, task, memberSnapshot });
     if (task.pendingJob) { delete task.pendingJob; save(); }
     return result;
   }).then((result) => {
@@ -275,6 +289,23 @@ function save() {
   fs.writeFileSync(destination + ".tmp", JSON.stringify(storage, null, 2));
   fs.renameSync(destination + ".tmp", destination);
 }
+
+ipcMain.on('deck:native-text-checkpoint', (event, payload) => {
+  try {
+    if (!window || event.sender !== window.webContents) throw Error('The draft window changed.');
+    const filename = path.join(app.getPath('userData'), 'native-text-drafts.json');
+    if (!payload || payload.read === true) {
+      event.returnValue = { value: fs.existsSync(filename) ? fs.readFileSync(filename, 'utf8') : null }; return;
+    }
+    if (typeof payload.value !== 'string' || Buffer.byteLength(payload.value) > 16 * 1024 * 1024) throw Error('The saved draft list is too large.');
+    const rows = JSON.parse(payload.value);
+    if (!Array.isArray(rows) || rows.some(row => !Array.isArray(row) || typeof row[0] !== 'string' || typeof row[1] !== 'string' ||
+      typeof row[2] !== 'string' || !/^[a-z\d-]{16,80}$/iu.test(row[2]))) throw Error('The saved draft list is invalid.');
+    fs.mkdirSync(path.dirname(filename), { recursive: true });
+    fs.writeFileSync(filename + '.tmp', payload.value); fs.renameSync(filename + '.tmp', filename);
+    event.returnValue = { saved: true };
+  } catch (error) { event.returnValue = { error: error.message }; }
+});
 
 function emit(agent, payload) {
   const scope = runPool.scope;
@@ -429,6 +460,7 @@ async function createWindow() {
     window = null;
   });
   next.on("minimize", () => {
+    cancelVoice();
     endWindowShares();
   });
   next.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -605,6 +637,7 @@ function selectRepo(root, taskId) {
     if (!workspace.tasks.some((task) => task.id === taskId && !task.archivedAt)) throw new Error("Choose an active task. Restore archived tasks first.");
     workspace.currentTask = taskId;
   }
+  if (storage.currentRepo !== root || voiceJob && voiceJob.taskId !== workspace.currentTask || voiceMic && voiceMic.taskId !== workspace.currentTask) cancelVoice();
   workspace.openedAt = new Date().toISOString();
   selectedTask(workspace).openedAt = workspace.openedAt;
   storage.currentRepo = root;
@@ -692,7 +725,22 @@ async function readReviewInputs(workspace, task, cwd, phase, selectedFiles, targ
 }
 
 async function readReview(workspace, task, cwd, phase, selectedFiles, target, since, scope = {}) {
-  return reviewSnapshot({ ...await readReviewInputs(workspace, task, cwd, phase, selectedFiles, target), since, ...scope });
+  const { observation: observed, ...selection } = scope;
+  const packet = reviewSnapshot({ ...await readReviewInputs(workspace, task, cwd, phase, selectedFiles, target), since, ...selection });
+  const job = currentJob();
+  if (!target && job?.task === task && Object.values(job.run.workContracts ?? {}).some(contract => contract.readyWhen?.length)) {
+    await Promise.all(job.testSnapshots);
+    const observation = observed ?? await checkoutObservation(cwd);
+    const checks = [...requiredCheckEvidence(workspace.requiredChecks ?? [], job.run.autoTeam ?? job.run.collaboration, observation),
+      ...reviewTestChecks(job.run, observation, task.runHistory.filter(prior => prior !== job.run))];
+    job.run.workEvidence ??= {};
+    const collected = await collectWorkEvidenceBatch(job.run.workContracts, { cwd, observation, checks, observe: () => checkoutObservation(cwd) });
+    for (const [id, evidence] of Object.entries(collected)) {
+      job.run.workEvidence[id] = evidence;
+      packet.body += '\n\n' + workEvidencePrompt(evidence);
+    }
+  }
+  return packet;
 }
 
 function completedReview(run) {
@@ -745,10 +793,16 @@ async function updateWorktreeBase(payload) {
   let candidate;
   let saved = false;
   try {
+    const identity = await inspectManagedWorktree(git, { repo: workspace.repo, cwd: source, root });
+    if (identity.conflicted || identity.operation || identity.partial) throw Error('Finish the source worktree Git operation before updating its base.');
+    const sourcePreview = await transferPreview(git, { source, base: task.base, temp: app.getPath('temp'), includeDiff: false, includeIndex: true });
     const target = await projectHead(git, workspace.repo);
     if (!task.base || target.commit === task.base || target.commit !== payload.commit) throw new Error("The project HEAD changed. Refresh Git & Review before trying again.");
     candidate = await addWorktree(workspace, root, target.commit);
     const transferred = await copyOnBase(git, { source, destination: candidate, base: task.base, temp: app.getPath("temp") });
+    await inspectManagedWorktree(git, { repo: workspace.repo, cwd: source, root });
+    const sourceAfter = await transferPreview(git, { source, base: task.base, temp: app.getPath('temp'), includeDiff: false, includeIndex: true });
+    if (sourcePreview.stamp !== sourceAfter.stamp) throw Error('The source changed while preparing the updated base. Its task and files are intact.');
     if ((await projectHead(git, workspace.repo)).commit !== target.commit) throw new Error("The project HEAD moved while preparing the copy. Refresh and try again.");
     const copy = { ...newTask(), title: taskTitle(task.title.slice(0, 45) + " · Updated base"), worktree: candidate, base: target.commit,
       updatedFrom: { taskId: task.id, title: task.title, base: task.base, lane: payload.lane, ...transferred } };
@@ -765,13 +819,18 @@ async function updateWorktreeBase(payload) {
   }
 }
 
-async function compareLanes(task, root, includeDiff = true) {
+async function compareLanes(task, root, includeDiff = true, repo) {
   if (!task.base || ![task.worktree, task.claudeWorktree].every((source) => {
     if (!source || path.dirname(path.resolve(source)) !== root) return false;
     const info = fs.lstatSync(source, { throwIfNoEntry: false });
     return info?.isDirectory() && !info.isSymbolicLink();
   })) throw new Error("Both AI Deck worktrees must be available to compare them.");
-  const preview = (source) => transferPreview(git, { source, base: task.base, temp: app.getPath("temp"), includeDiff });
+  const preview = async (source) => {
+    const identity = await inspectManagedWorktree(git, { repo, cwd: source, root });
+    if (identity.conflicted || identity.operation || identity.partial) throw new Error('Finish the source worktree Git operation before combining its files.');
+    const result = await transferPreview(git, { source, base: task.base, temp: app.getPath('temp'), includeDiff, includeIndex: true });
+    return { ...result, stamp: digest([result.stamp, identity.head, identity.branch]) };
+  };
   const [main, claude] = await Promise.all([preview(task.worktree), preview(task.claudeWorktree)]);
   return { taskId: task.id, base: task.base, main, claude };
 }
@@ -781,7 +840,7 @@ async function compareWorktrees() {
   const task = selectedTask(workspaceRequired());
   maintenance = true;
   try {
-    const comparison = await compareLanes(task, path.join(app.getPath("userData"), "worktrees"));
+    const comparison = await compareLanes(task, path.join(app.getPath("userData"), "worktrees"), true, workspaceRequired().repo);
     const latest = task.runHistory.at(-1)?.autoTeam;
     return { ...comparison, reviewed: latest?.status === "reviewed" && !latest.partial &&
       latest.combined?.stamps.main === comparison.main.stamp && latest.combined?.stamps.claude === comparison.claude.stamp };
@@ -800,7 +859,7 @@ async function combineWorktrees(payload) {
   let candidate;
   let saved = false;
   try {
-    const before = await compareLanes(task, root);
+    const before = await compareLanes(task, root, true, workspace.repo);
     const lanes = ["main", "claude"];
     for (const lane of lanes) {
       if (payload.stamps?.[lane] !== before[lane].stamp) throw new Error("The worktrees changed after the preview. Compare them again.");
@@ -819,7 +878,7 @@ async function combineWorktrees(payload) {
       await copyOnBase(git, { source, destination: candidate, base: task.base, temp: app.getPath("temp"),
         paths: payload.paths[lane], keepStaged: true });
     }
-    const after = await compareLanes(task, root);
+    const after = await compareLanes(task, root, true, workspace.repo);
     if (lanes.some((lane) => before[lane].stamp !== after[lane].stamp)) throw new Error("The source changed while combining the files. Compare them again.");
     await git(candidate, ["-c", "core.hooksPath=NUL", "reset", "--quiet", "--mixed", "HEAD"], { timeout: 90000 });
     const copy = { ...newTask(), title: taskTitle(task.title.slice(0, 48) + " · Combined"), worktree: candidate, base: task.base,
@@ -855,6 +914,7 @@ async function readNote(workspace, source) {
   addNote(workspace, {
     source, name: source === "Skill" ? path.basename(path.dirname(file)) : path.basename(file),
     text, key: "file:" + path.resolve(file),
+    provenance: contextSnapshot(workspace.repo, text, { kind: 'file', file }),
   });
   save();
   return viewState();
@@ -865,15 +925,17 @@ function validateNote(name, text) {
   if (typeof text !== "string" || !text.trim() || text.includes("\0") || Buffer.byteLength(text) > 24000) throw new Error("Enter text under 24 KB.");
 }
 
-function addNote(workspace, { source, name, text, key, enabled = false }) {
+function addNote(workspace, { source, name, text, key, enabled = false, provenance }) {
   validateNote(name, text);
+  provenance ??= workspace.repo ? contextSnapshot(workspace.repo, text) : undefined;
   const previous = key && workspace.notes.find((note) => note.source === source && note.key === key);
   if (previous) {
-    if (previous.text !== text) Object.assign(previous, { name, text, enabled: false });
+    if (previous.text !== text) Object.assign(previous, { name, text, enabled: false, provenance });
+    else if (provenance) previous.provenance = provenance;
     return;
   }
   if (workspace.notes.length >= 30) throw new Error("This workspace can hold up to 30 context items.");
-  workspace.notes.push({ id: randomUUID(), source, name: name.trim(), text, key, enabled });
+  workspace.notes.push({ id: randomUUID(), source, name: name.trim(), text, key, enabled, ...(provenance && { provenance }) });
 }
 
 function requireSkillName(workspace, name, exceptId) {
@@ -923,21 +985,24 @@ function editSkillLibrary(payload) {
     const next = { notes: [...workspace.notes] };
     if (!existing) addNote(next, { source: "Skill", name: entry.name, text: entry.text });
     const index = existing ? next.notes.indexOf(existing) : next.notes.length - 1;
-    next.notes[index] = { ...next.notes[index], name: entry.name, text: entry.text, libraryId: entry.id, libraryRevision: entry.revision };
+    next.notes[index] = { ...next.notes[index], name: entry.name, text: entry.text, libraryId: entry.id, libraryRevision: entry.revision,
+      provenance: contextSnapshot(workspace.repo, entry.text, { kind: 'library', revision: entry.revision }) };
     return updateSkills(workspace, "notes", next.notes);
   }
   throw new Error("Choose a supported library action.");
 }
 
 async function importProjectNotes(workspace) {
+  const revision = (await projectHead(git, workspace.repo)).commit;
   const filenames = ["AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md"];
-  const tracked = (await git(workspace.repo, ["ls-tree", "--name-only", "HEAD", "--", ...filenames])).split(/\r?\n/u);
+  const tracked = (await git(workspace.repo, ['ls-tree', '--name-only', revision, '--', ...filenames])).split(/\r?\n/u);
   const found = filenames.filter((file) => tracked.includes(file));
   if (!found.length) throw new Error("No AGENTS.md or CLAUDE.md was found at this repo’s committed HEAD.");
   const notes = await Promise.all(found.map(async (file) => ({
     source: file === "AGENTS.md" ? "Codex" : "Claude", name: file, key: "head:" + file,
-    text: await git(workspace.repo, ["show", "HEAD:" + file], { limit: 24001 }),
+    text: await git(workspace.repo, ['show', revision + ':' + file], { limit: 24001 }),
   })));
+  for (const note of notes) note.provenance = contextSnapshot(workspace.repo, note.text, { kind: 'git', relative: note.name, revision });
   const draft = { notes: workspace.notes.map((note) => ({ ...note })) };
   for (const note of notes) addNote(draft, note);
   requireIdle();
@@ -968,8 +1033,7 @@ function updatePlugin(workspace, payload) {
 }
 
 function sharedPrompt(workspace, prompt, notes, promptLabel = "Task from the user") {
-  const context = notes.map((note) => `[${note.source}: ${note.name}]\n${note.text}`).join("\n\n");
-  if (context.length > 60000) throw new Error("Selected context exceeds 60,000 characters. Turn off some sources.");
+  const context = contextNotesPrompt(workspace.repo, notes);
   return [
     `${promptLabel}:\n${prompt}`,
     workspace.instructions && `Shared project instructions:\n${workspace.instructions}`,
@@ -1015,9 +1079,17 @@ function projectToolPrompt(job, cwd, agent, prompt) {
 }
 
 function closeProjectTools(job) {
+  if (job.projectToolsClosing) return job.projectToolsClosing;
   job.projectToolController?.abort();
-  for (const service of job.projectToolServices?.values() ?? []) service.close();
+  job.projectToolsClosing = Promise.allSettled([...(job.projectToolServices?.values() ?? [])].map(service => service.close()));
   job.projectToolServices?.clear();
+  return job.projectToolsClosing;
+}
+
+function readJobCodeGraph(job, cwd, query, lowMemory) {
+  if (job.stopping) return Promise.reject(new Error('Code lookup cancelled.'));
+  job.projectToolController ??= new AbortController();
+  return readCodeGraph(git, cwd, query, lowMemory, job.projectToolController.signal);
 }
 
 async function enabledCodexServers(engine, cwd) {
@@ -1058,7 +1130,8 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
     : job.run.collaboration?.options?.freshReview === true);
   const transient = quiet || wrapUp || freshReview || job.run.autoTeam || job.intentReview || Boolean(job.run.followupRunId) || job.run.collaboration?.options?.context.history === false;
   const unattended = Boolean(job.scheduled || job.intentReview || quiet);
-  const plugins = await withProjectTools(job, workspace, cwd, agent, effectiveCodexPlugins(workspace, readOnly, unattended), quiet || Boolean(job.run.resumedEvidence));
+  const plugins = await withProjectTools(job, workspace, cwd, agent, effectiveCodexPlugins(workspace, readOnly, unattended),
+    quiet || Boolean(job.run.resumedEvidence) || role === 'review' && job.run.collaboration?.options?.context?.diff === false);
   if (job.nativeEvents && job.computer?.plugin) plugins.push(job.computer.plugin);
   if (plugins.some(plugin => plugin.name === projectToolName)) prompt = projectToolPrompt(job, cwd, agent, prompt);
   const allowed = new Set(plugins.filter((plugin) => plugin.enabled !== false && plugin.scope !== "claude").map((plugin) => plugin.name));
@@ -1126,6 +1199,7 @@ async function codexTurn(job, workspace, cwd, prompt, readOnly, role = "write", 
         .catch(() => { /* Naming must not retry or duplicate an accepted provider turn. */ });
     }
     if (link) link.refs.codex = id;
+    else if (rosterMember && !resume.id) rememberSessionTeamChat(task, cwd, rosterMember, id);
     else if (!job.computer && !isolatedMember && !transient) {
       task[threadField] = id;
       if (job.writeScopeStamp) task.parallelSessionScopes = { ...task.parallelSessionScopes, codex: job.writeScopeStamp };
@@ -1171,7 +1245,7 @@ async function requestTeamAnswer(job, workspace, leader, usage) {
     (freshness === "matched" && output ? "\nQuoted test output:\n" + evidenceText(output).slice(0, 600) : "")).join("\n");
   const brief = teamLeaderPrompt(run, leader, observed);
   if (!brief) return;
-  const guidance = teamReviewGuidance(run.collaboration.options, "summary");
+  const guidance = withMemberGuide(job, workspace, leader, 'summary', teamReviewGuidance(run.collaboration.options, "summary"));
   const prompt = [brief, reviewSkillPrompt(guidance)].filter(Boolean).join("\n\n");
   const replies = new Map();
   const profile = {};
@@ -1190,7 +1264,10 @@ async function requestTeamAnswer(job, workspace, leader, usage) {
       if (event.effort) profile.effort = event.effort;
     }
     else if (["provider-call", "provider-usage"].includes(event.type)) {
-      if (event.type === "provider-call") recordReviewSkill(run, leader, "summary", guidance);
+      if (event.type === "provider-call") {
+        recordReviewSkill(run, leader, "summary", guidance);
+        recordMemberGuides(run, leader, 'summary', guidance);
+      }
       recordEvent(usageRecord, leader, event);
       usage?.(event);
     }
@@ -1223,6 +1300,33 @@ async function requestTeamAnswer(job, workspace, leader, usage) {
 
 function reviewSkillPrompt(guidance) {
   return guidance.length ? "AI Deck Team Review skill for this stage:\n" + guidance.map(({ text }) => text).join("\n") : "";
+}
+
+function withMemberGuide(job, workspace, agent, role, guidance) {
+  job.memberActive ??= {};
+  delete job.memberActive[agent];
+  if (!guidance.length || workspace.chatOnly || !job.memberSnapshot || job.run.collaboration?.options?.context?.history === false) return guidance;
+  const record = job.run.agents[agent], provider = record?.provider ?? agent;
+  const catalog = modelCatalogs.get(provider);
+  const resolvedModel = catalog?.exe === connections[provider]?.path ? catalogModel(catalog.catalog, record?.settings?.model)?.resolvedModel : undefined;
+  const identity = memberIdentity({ repo: workspace.repo, taskId: job.task.id,
+    memberId: job.run.sessionTeam ? agent : undefined, provider, role, settings: record?.settings,
+    version: connections[provider]?.version, resolvedModel });
+  const guide = memberGuide(job.memberSnapshot, identity);
+  if (!guide) return guidance;
+  job.memberActive[agent] = identity;
+  (job.memberIdentities ??= {})[identity.key] = identity;
+  return [...guidance, guide];
+}
+
+function prepareMemberLearningSave(workspace, job) {
+  if (job.stopping || !job.memberReports?.length || !job.run.memberLearning?.applied.length) return () => {};
+  const observations = memberObservations(job.run, job.memberReports, job.memberIdentities);
+  if (!observations.length) return () => {};
+  const previous = workspace.memberLearning;
+  workspace.memberLearning = updateMemberLearning(snapshotMemberLearning(workspace.repo, previous), observations);
+  job.run.memberLearning.observations = observations.map(({ id, profile, skill, passed }) => ({ id, profile, skill, passed }));
+  return () => { workspace.memberLearning = previous; job.run.memberLearning.observations = []; };
 }
 
 async function finishTeamAnswer(job, workspace, leader) {
@@ -1319,6 +1423,17 @@ function recordGeneratedImage(task, run, agent, event) {
   return true;
 }
 
+function checkpointJobProgress(job, immediate = false) {
+  if (!job || job.run?.finishedAt) return;
+  const flush = () => {
+    clearTimeout(job.progressCheckpointTimer); job.progressCheckpointTimer = null;
+    try { writeProgressCheckpoint(app.getPath('userData'), job.run, [...(job.liveMessages?.values() ?? [])]); }
+    catch { emit(null, { type: 'error', text: 'The latest progress could not be saved. Check recorded results before continuing after a restart.' }); }
+  };
+  if (immediate) flush();
+  else if (!job.progressCheckpointTimer) job.progressCheckpointTimer = setTimeout(flush, 500);
+}
+
 function report(agent, task, run, event) {
   const owner = runPool.entries.get("task:" + task.id);
   if (owner?.job.run === run && runPool.scope !== owner) {
@@ -1355,6 +1470,7 @@ function report(agent, task, run, event) {
     job.liveMessages.set(key, { id: run.id + ":" + key, agent, kind: "message", memberName: event.memberName,
       provider: event.provider, profile: event.profile, text: (previous + event.text).slice(-128000) });
     if (!job.scheduled) job.deltas.append(agent, event);
+    checkpointJobProgress(job);
     return;
   }
   if (event.type === "message") job?.liveMessages?.delete(agent + ":" + event.key);
@@ -1368,9 +1484,21 @@ function report(agent, task, run, event) {
     event = { ...event, usage, scope: "Auto Team run" };
   }
   recordEvent(run, agent, event);
+  if (event.type === 'command-start' && event.key && job?.memberActive?.[agent]) {
+    (job.memberCommandProfiles ??= new Map()).set(agent + ':' + event.key, job.memberActive[agent].key);
+  }
+  if (event.type === 'command-result' && event.key && job?.memberCommandProfiles) {
+    const commandKey = agent + ':' + event.key, profile = job.memberCommandProfiles.get(commandKey);
+    job.memberCommandProfiles.delete(commandKey);
+    const observed = run.evidence?.at(-1);
+    if (profile && observed?.kind === 'command' && observed.agent === agent && observed.id === event.key) observed.memberProfileKey = profile;
+  }
+  if (['provider-call', 'approval', 'question'].includes(event.type)) checkpointJobProgress(job, true);
+  else if (['message', 'answer', 'status'].includes(event.type)) checkpointJobProgress(job);
   if (event.type === "provider-call" && job?.guidanceByAgent?.[agent]) {
     const { stage, guidance } = job.guidanceByAgent[agent];
     recordReviewSkill(run, agent, stage, guidance);
+    recordMemberGuides(run, agent, stage, guidance);
   }
   if (event.type === "provider-call" && run.followupEvidence) run.followupEvidence.sent = true;
   if (event.type === "provider-call" && job?.handoffByAgent?.[agent]) job.handoffByAgent[agent].sent = true;
@@ -1379,13 +1507,19 @@ function report(agent, task, run, event) {
     return;
   }
   const cwd = job?.checkouts?.[agent];
-  if (cwd && event.type === "command-result" && job.testSnapshots.length < 6 && !job.testInFlight.has(cwd)) {
+  if (cwd && event.type === "command-result" && job.testSnapshots.length < (workCheckCommands(run).length ? 24 : 6) && !job.testInFlight.has(cwd)) {
     const result = run.evidence?.at(-1);
-    if (testCommand(result?.subject)) {
+    if (result?.kind === 'command' && workCheckCommand(result.subject, run)) {
       job.testInFlight.add(cwd);
-      job.testSnapshots.push(checkoutObservation(cwd).then((observation) => {
-        if (observation.stamp) result.checkout = observation;
-      }).catch(() => {}).finally(() => job.testInFlight.delete(cwd)));
+      job.testSnapshots.push((async () => {
+        const contracts = runWorkContracts(run);
+        if (contracts.some(contract => contract.evidenceRefs?.length)) result.artifactSnapshot = await captureWorkArtifacts(contracts, cwd);
+        const observation = await checkoutObservation(cwd);
+        if (observation.stamp) {
+          result.checkout = observation;
+          if (result.memberProfileKey && !event.hook) (job.memberChecks ??= []).push(result);
+        }
+      })().catch(() => {}).finally(() => job.testInFlight.delete(cwd)));
     }
   }
   const panelChanged = recordGeneratedImage(task, run, provider, event) || recordPanelEvidence(run, agent, event, evidenceText);
@@ -1458,6 +1592,10 @@ function validateDraft(payload, workspace, { task = selectedTask(workspace), aut
   } else if ((draft.mode === sessionTeamMode || autoTeam(draft.mode) || planPair(draft.mode)) && payload.teamOptions !== undefined) {
     const { teamReviewSkill, traceBug } = teamRunOptions("normal", payload.teamOptions);
     draft.teamOptions = { teamReviewSkill, traceBug };
+    if (draft.mode === sessionTeamMode && payload.teamOptions.turnLimit !== undefined) {
+      if (!Number.isInteger(payload.teamOptions.turnLimit) || payload.teamOptions.turnLimit < 1 || payload.teamOptions.turnLimit > 10) throw new Error('Choose a Session Team turn budget between one and ten.');
+      draft.teamOptions.turnLimit = payload.teamOptions.turnLimit;
+    }
   }
   if (payload.linkedStepId !== undefined) {
     const step = task.linkedSession?.steps?.find(({ id }) => id === payload.linkedStepId);
@@ -1670,7 +1808,13 @@ async function runRosterMember(job, workspace, cwd, member, prompt, send) {
       if (plugins.some(plugin => plugin.name === projectToolName)) prompt = projectToolPrompt(job, cwd, id, prompt);
       job.claude = runClaude(connections.claude.path, cwd, prompt, plugins, resume,
         (event) => send(id, event), { ...settings, role, interactive: true, images: job.images,
-          sessionName: job.task.title, onSessionId: session => trackNativeSession(job, id, "claude", session),
+          sessionName: job.task.title, onSessionId: session => {
+            if (resume && session !== resume) throw new Error('Claude Code returned an unexpected session ID.');
+            trackNativeSession(job, id, "claude", session);
+            if (!wrapUp && !freshReview && !resume && nativeChatId.test(session)) {
+              rememberSessionTeamChat(job.task, cwd, member, session); save();
+            }
+          },
           ...(!wrapUp && nativeChromeOptions(job, job.run.prompt)),
           model: settings.model || "default", persistSession: !wrapUp && !freshReview,
           allowCommands: role === "write" && (job.run.permissionMode === "full" || workspace.claudeCommands === true),
@@ -1746,7 +1890,7 @@ function sessionTeamMemberSettings(workspace, task, { provider, model }) {
 }
 
 function beginSessionTeam(payload, options) { return dispatchTaskRun(payload, options, beginSessionTeamInternal); }
-async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, workspace, task } = {}) {
+async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, workspace, task, memberSnapshot } = {}) {
   requireIdle();
   if (!queuedId) assertNewSubmission(task, payload);
   if (task.linkedSession || payload.computerToken) throw new Error("Use Session Team in a regular AI Deck session.");
@@ -1756,6 +1900,7 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
   const { topology, shareDiff } = team;
   const tree = topology === "tree";
   const members = sessionTeamOrder(team);
+  if (draft.teamOptions?.turnLimit !== undefined && draft.teamOptions.turnLimit < members.length + (team.summaryMemberId ? 1 : 0)) throw new Error('The turn budget must cover the saved team roster and wrap-up.');
   const availability = rosterAvailability();
   const issue = sessionTeamIssue({ members, topology, readOnly: workspace.readOnly, ...availability });
   if (issue) throw new Error(issue);
@@ -1802,7 +1947,8 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
   const run = newRun(sessionTeamMode, text, ids, storage.lowMemory);
   run.sessionTeam = team;
   run.teamwork = brief;
-  run.teamReview = { freshReview: team.freshReview !== false, findings: [], reviews: {} };
+  run.teamReview = { freshReview: team.freshReview !== false, findings: [], reviews: {}, writes: {}, cycles: [], evidence: {}, handoffHolds: {},
+    turnLimit: Math.max(members.length + (wrapUp ? 1 : 0), draft.teamOptions?.turnLimit ?? members.length + (wrapUp ? 1 : 0) + 2) };
   const permissionMode = sessionTeamPermission(workspace, task, members);
   if (permissionMode) run.permissionMode = permissionMode;
   run.images = draft.images;
@@ -1833,7 +1979,7 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
   cleanConsumedDraft(task);
   const job = { task, run, setup, stopping: false, approvals: [], panelCommands: new Map(), testSnapshots: [], testInFlight: new Set(),
     checkouts: {}, images, deltas: batchDeltas((agent, event) => emit(agent, { ...event, taskId: task.id, repo: workspace.repo, runId: run.id })),
-    rosterController: new AbortController(), geminiKey, guidanceByAgent: {} };
+    rosterController: new AbortController(), geminiKey, guidanceByAgent: {}, memberSnapshot };
   setCurrentJob(job);
   const send = (id, event) => report(id, task, run, event);
   emit(null, { type: "run-start", runId: run.id, prompt: text, images: run.images, agents: ids, startedAt: run.startedAt, workspace: workspaceView(workspace) });
@@ -1856,52 +2002,108 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
       const sharedBrief = sharedBriefPrompt(brief, decisions);
       emit(null, { type: "workspace", workspace: workspaceView(workspace) });
       const hooks = (workspace.deckHooks ?? []).filter(({ enabled }) => enabled);
-      const runStage = async (member, summary = false) => {
+      const runStage = async (member, summary = false, correction) => {
         if (job.stopping) return "interrupted";
         const { id, provider, position, parentId } = member;
         const native = nativeTeamProvider(provider);
         const freshReview = position === "review" && team.freshReview !== false;
+        const differences = setupDifferences(setup, queueSetup(workspace, task, draft));
+        if (differences.length) {
+          run.teamReview.setupChanged = differences;
+          return recordBlock(id, { status: 'skipped', reason: 'Saved team setup changed; send a new plan before continuing. ' + differences.join(' ') });
+        }
+        if (!summary && !correction) {
+          const earlierReviews = sessionUpstreamMembers(members, member, topology).map(entry => run.teamReview.reviews[entry.id])
+            .filter(review => review?.current && review.verdict === 'pass' && (review.hasChanges || review.structured));
+          if (earlierReviews.length) {
+            const observed = await checkoutObservation(cwd);
+            for (const review of earlierReviews) review.current = sameCheckout(review.observation, observed);
+          }
+          const upstreamIssue = sessionHandoffIssue({ member, members, topology, reviews: run.teamReview.reviews,
+            reports: tree ? reports : new Map(handoffs.map(report => [report.memberId, report])) });
+          if (upstreamIssue) {
+            run.teamReview.handoffHolds[id] = upstreamIssue;
+            return recordBlock(id, { status: 'skipped', reason: 'Waiting for verified upstream work · ' + upstreamIssue });
+          }
+        }
         if (parentId && !reports.has(parentId)) {
           return recordBlock(id, { status: "skipped", reason: "Skipped · " + memberNames.get(parentId) + " did not finish." });
         }
         const unavailable = blocked.get(summary ? summaryMember.id : id) ?? sessionMemberBlock(member, rosterAvailability());
         if (unavailable) return recordBlock(id, unavailable);
+        if (correction) {
+          correction.previousReports ??= {};
+          correction.previousReports[id] = agentOutput(run.agents[id]);
+          const oldKeys = new Set(run.agents[id].messages.map(message => message.key));
+          run.timeline = run.timeline.filter(item => item.agent !== id || item.kind !== 'message' || !oldKeys.has(item.key));
+          run.agents[id].messages = [];
+          delete run.agents[id].answer;
+          emitRunUpdate(task, run);
+        }
         const upstream = summary ? members.map(({ id }) => reports.get(id)).filter(Boolean)
           : tree ? parentId ? [reports.get(parentId)] : [] : handoffs;
         job.checkouts[id] = cwd;
         send(id, { type: "status", status: "running" });
         let status;
         try {
+          const writeBefore = position === "write" ? await checkoutObservation(cwd, true) : null;
           if (native) await runDeckHooks(job, hooks, provider, "before", cwd, (_provider, event) => send(id, event));
           if (job.stopping) return "interrupted";
-          let diff;
+          let diff, reviewPacket, reviewObservation, observedChecks = [];
           if (position === "review" || position === "summarize") {
-            if (native) diff = (await readReview(workspace, task, cwd, "after-build")).body;
+            if (native) {
+              await Promise.all(job.testSnapshots);
+              reviewObservation = await checkoutObservation(cwd);
+              reviewPacket = await readReview(workspace, task, cwd, "after-build");
+              if (reviewPacket.info.head !== reviewObservation.head || !sameCheckout(reviewObservation, await checkoutObservation(cwd))) reviewPacket.info.partial = true;
+              observedChecks = reviewTestChecks(run, reviewObservation, task.runHistory.filter(prior => prior !== run));
+              diff = reviewPacket.body + (observedChecks.length ? "\n\nObserved test evidence for this checkout:\n" + JSON.stringify(observedChecks) : "");
+            }
             else if (shareDiff) diff = await supplementalReviewDiff(git, cwd, task.base);
           }
           if (job.stopping) return "interrupted";
           const previousRounds = (priorByMember?.get(id) ?? prior) || forkHistory;
+          const upstreamPackets = upstream.map(packet => {
+            const review = run.teamReview.reviews[packet.memberId];
+            return review ? { ...packet, review: sessionReviewHandoff({ ...review,
+              current: review.current && (reviewObservation ? sameCheckout(review.observation, reviewObservation) : !summary) }) } : packet;
+          });
           const inputs = sessionMemberInputs({ member, team, userPrompt: text,
             projectPrompt: [freshReview ? reviewerPrompt : nativePrompt, sharedBrief, freshReview && priorAsk].filter(Boolean).join("\n\n"),
-            prior: summary ? "" : [priorAsk, previousRounds].filter(Boolean).join("\n\n"), handoffs: upstream, diff });
+            prior: summary ? "" : [priorAsk, previousRounds].filter(Boolean).join("\n\n"), handoffs: upstreamPackets, diff });
           const withheld = Boolean(parentId && !inputs.handoffs.length);
           const outcomes = summary && members.map((entry) => {
             const status = run.agents[entry.id].status;
-            const received = inputs.handoffs.includes(reports.get(entry.id));
+            const received = inputs.handoffs.some(packet => packet.memberId === entry.id);
             return entry.name + ": " + status + (status === "completed" ? received ? " (report attached)" : " (report withheld)" : "");
           }).join("\n");
           if (summary) send(id, { type: "handoff", key: randomUUID(), text: "Wrap-up · " + inputs.handoffs.length + " reports shared" +
             (inputs.handoffs.length < upstream.length ? " · " + (upstream.length - inputs.handoffs.length) + " withheld" : "") });
           else if (inputs.handoffs.length) send(id, { type: "handoff", key: randomUUID(), text: inputs.handoffs.at(-1).name + " → " + member.name });
           if (withheld) send(id, { type: "handoff", key: randomUUID(), text: "Upstream report withheld for " + member.name + " · Data sharing" });
-          const guidance = teamReviewGuidance({ ...teamRunOptions("normal", draft.teamOptions), sharedWork: members.length > 1 },
-            position === "summarize" ? "summary" : position, undefined, inputs.diff);
+          const guidanceRole = position === 'summarize' ? 'summary' : position;
+          const guidance = withMemberGuide(job, workspace, id, guidanceRole,
+            teamReviewGuidance({ ...teamRunOptions("normal", draft.teamOptions), sharedWork: members.length > 1 }, guidanceRole, undefined, inputs.diff));
           if (guidance.length) job.guidanceByAgent[id] = { stage: summary ? "summary" : position, guidance };
+          const contractEvidence = [];
+          if (native && Object.values(run.teamReview.plans ?? {}).some(plan => plan.readyWhen?.length)) {
+            const evidenceObservation = reviewObservation ?? await checkoutObservation(cwd);
+            const evidenceChecks = reviewObservation ? observedChecks : reviewTestChecks(run, evidenceObservation, task.runHistory.filter(prior => prior !== run));
+            const collected = await collectWorkEvidenceBatch(run.teamReview.plans ?? {},
+              { cwd, observation: evidenceObservation, checks: evidenceChecks, observe: () => checkoutObservation(cwd) });
+            for (const [planner, evidence] of Object.entries(collected)) {
+              run.teamReview.evidence[planner] = evidence;
+              contractEvidence.push(workEvidencePrompt(evidence));
+            }
+          }
           const prompt = [sessionMemberPrompt({ member, members, topology, withheld, summary: outcomes, ...inputs }),
-            position === "review" && freshReviewPrompt(), reviewSkillPrompt(guidance)].filter(Boolean).join("\n\n");
+            position === "review" && freshReviewPrompt(), position === "review" && native && reviewPacket?.hasChanges && reviewFormat,
+            ...contractEvidence, correction?.kind === "repair" ? sessionRepairPrompt(correction) : correction &&
+              "Fresh recheck of the bounded repair. Verify the current diff and observed tests against the earlier findings. " + reviewFormat,
+            reviewSkillPrompt(guidance)].filter(Boolean).join("\n\n");
           const canReceiveSteer = native && !summary;
           if (canReceiveSteer) job.steerMember = member;
-          const result = await timeStage(run, id, summary ? "summary" : member.position, () =>
+          const result = await timeStage(run, id, correction?.kind ?? (summary ? "summary" : member.position), () =>
             runRosterMember(job, workspace, cwd, member,
               native ? prompt : redactSupplementalPrompt(prompt, geminiKey || environmentGeminiKey), send)).finally(async () => {
             if (!canReceiveSteer) return;
@@ -1929,18 +2131,32 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
           if (memberPlan) emitRunUpdate(task, run);
           const output = agentOutput(run.agents[id]);
           status = job.stopping ? "interrupted" : result.status === "completed" && !output ? "failed" : result.status;
+          if (position === "write" && status === "completed" && !correction) {
+            const after = await checkoutObservation(cwd, true);
+            run.teamReview.writes[id] = { before: writeBefore, after, paths: changedReviewPaths(writeBefore?.fileDigests, after.fileDigests) };
+          }
           if (position === "review") {
-            run.teamReview.reviews[id] = { status, fresh: freshReview };
-            if (status === "completed") run.teamReview.findings = mergeReviewFindings(run.teamReview.findings, output, id);
+            const reviewed = reviewResult(rawOutput);
+            const findings = mergeReviewFindings([], rawOutput, id);
+            const actionable = findings.some(finding => ['major', 'blocker'].includes(finding.severity));
+            run.teamReview.reviews[id] = { status, fresh: freshReview, verdict: reviewed.verdict === 'pass' && actionable ? 'changes' : reviewed.verdict, text: output.slice(0, 6000),
+              findings, structured: /^AI_DECK_REVIEW:/u.test(rawOutput.trim()),
+              hasChanges: reviewPacket?.hasChanges === true, partial: reviewPacket?.info.partial !== false, observation: reviewObservation,
+              current: reviewObservation && sameCheckout(reviewObservation, await checkoutObservation(cwd)),
+              failedChecks: observedChecks.some(check => observedCheckOutcome(check) === 'failed') };
+            if (status === "completed") run.teamReview.findings = mergeReviewFindings(run.teamReview.findings, rawOutput, id);
           }
           if (result.error || status === "failed" && !output) {
             send(id, { type: "activity", text: result.error || "This member returned no report to hand off." });
           }
           if (status === "completed" && !summary) {
-            const report = { name: member.name, text: (memberPlan?.text ?? output).slice(0, 2800), projectData: inputs.projectData,
+            const report = { memberId: id, name: member.name, text: (memberPlan?.text ?? output).slice(0, 2800), projectData: inputs.projectData,
               ...(memberPlan && { planState: memberPlan.state, contract: readWorkContract(memberPlan) }) };
             if (tree) reports.set(id, report);
-            else handoffs.push(report);
+            else {
+              const previous = handoffs.findIndex(entry => entry.memberId === id);
+              if (previous < 0) handoffs.push(report); else handoffs[previous] = report;
+            }
           }
         } catch (error) {
           send(id, { type: "activity", text: error.message });
@@ -1958,6 +2174,57 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
         if (failure) throw failure.reason;
         save();
         if (!tree && settled[0].value !== "completed") break;
+        for (const reviewer of batch.filter(member => member.position === "review" && nativeTeamProvider(member.provider))) {
+          const review = run.teamReview.reviews[reviewer.id];
+          if (review?.status !== "completed" || !review.hasChanges || review.verdict !== 'changes') continue;
+          const findings = review.findings ?? mergeReviewFindings([], review.text, reviewer.id);
+          const owner = sessionRepairOwner({ members, reviewer, topology, writes: run.teamReview.writes, findings });
+          if (!owner.writer) { review.repairNote = owner.reason; continue; }
+          const writer = owner.writer;
+          const written = writer && run.teamReview.writes[writer.id];
+          const decision = sessionRepairDecision({ verdict: review.verdict, findings,
+            paths: written?.paths, used: run.teamReview.cycles.length, stopped: job.stopping,
+            turnsLeft: run.teamReview.turnLimit - members.length - (wrapUp ? 1 : 0) - run.teamReview.cycles.length * 2,
+            partial: review.partial, current: review.current && sameCheckout(review.observation, await checkoutObservation(cwd)),
+            available: writer && !sessionMemberBlock(writer, rosterAvailability()) && !sessionMemberBlock(reviewer, rosterAvailability()) });
+          if (!decision.repair) {
+            if (decision.reason) review.repairNote = decision.reason;
+            continue;
+          }
+          const repairBefore = await checkoutObservation(cwd, true);
+          if (!sameCheckout(review.observation, repairBefore)) {
+            review.current = false;
+            review.repairNote = 'The checkout changed before repair; inspect the current source before continuing.';
+            continue;
+          }
+          if (!sessionWriterFilesCurrent(written, repairBefore)) {
+            review.repairNote = 'The recorded writer files changed before repair; keep the findings for a new scoped plan.';
+            continue;
+          }
+          const cycle = { id: randomUUID(), writer: writer.id, reviewer: reviewer.id, paths: decision.paths,
+            findings: decision.findings, observation: review.observation, before: repairBefore, initialReview: review.text, kind: "repair", status: "repairing" };
+          run.teamReview.cycles.push(cycle);
+          send(writer.id, { type: "handoff", key: cycle.id, text: reviewer.name + " → " + writer.name + " · One scoped repair" });
+          currentIds = [writer.id]; save(); emitRunUpdate(task, run);
+          const repaired = await runStage(writer, false, cycle);
+          const repairedObservation = await checkoutObservation(cwd, true);
+          const changed = changedReviewPaths(repairBefore.fileDigests, repairedObservation.fileDigests);
+          const scoped = changed && changed.every(file => cycle.paths.includes(file)) &&
+            repairBefore.head === repairedObservation.head && repairBefore.branch === repairedObservation.branch && repairBefore.staged === repairedObservation.staged;
+          if (repaired !== "completed" || !scoped || job.stopping) {
+            cycle.status = scoped ? repaired : "scope needs review";
+            review.repairNote = "The repair did not finish within its verified file scope; the saved changes require review.";
+            continue;
+          }
+          cycle.kind = "recheck"; cycle.status = "rechecking"; currentIds = [reviewer.id]; save();
+          const checked = await runStage(reviewer, false, cycle);
+          const finalReview = run.teamReview.reviews[reviewer.id];
+          cycle.status = checked === "completed" && finalReview.verdict === "pass" && finalReview.current && !finalReview.partial && !finalReview.failedChecks ? "reviewed" : "needs review";
+          if (cycle.status === 'reviewed') run.teamReview.findings = run.teamReview.findings.map(finding =>
+            cycle.findings.some(initial => initial.key === finding.key) ? { ...finding, resolvedBy: cycle.id } : finding);
+          cycle.finalReview = finalReview.text; cycle.finalObservation = finalReview.observation;
+          save(); emitRunUpdate(task, run);
+        }
       }
       if (wrapUp && !job.stopping) {
         currentIds = [wrapUp.id];
@@ -1970,9 +2237,31 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
         if (["preparing", "running"].includes(run.agents[id].status)) send(id, { type: "status", status: job.stopping ? "interrupted" : "failed" });
       }
     } finally {
-      closeProjectTools(job);
+      await closeProjectTools(job);
       job.deltas.flush();
       await Promise.all(job.testSnapshots);
+      const finalCwd = task.worktree;
+      if (finalCwd) {
+        try {
+          const observation = await checkoutObservation(finalCwd);
+          for (const review of Object.values(run.teamReview.reviews)) review.current = review.current && sameCheckout(review.observation, observation);
+          const checks = reviewTestChecks(run, observation, task.runHistory.filter(prior => prior !== run));
+          job.memberReports = memberCheckReports(run, observation, job.memberChecks);
+          Object.assign(run.teamReview.evidence, await collectWorkEvidenceBatch(run.teamReview.plans ?? {},
+            { cwd: finalCwd, observation, checks, observe: () => checkoutObservation(finalCwd) }));
+        } catch {
+          for (const review of Object.values(run.teamReview.reviews)) review.current = false;
+          for (const evidence of Object.values(run.teamReview.evidence)) {
+            evidence.current = false; delete evidence.stamp;
+            for (const condition of evidence.conditions) {
+              condition.status = 'unverified';
+              for (const item of condition.files.concat(condition.tests)) item.status = 'unverified';
+              for (const assertion of condition.assertions ?? []) { assertion.status = 'unverified'; delete assertion.actual; }
+            }
+          }
+        }
+        for (const cycle of run.teamReview.cycles) if (cycle.status === 'reviewed' && !run.teamReview.reviews[cycle.reviewer]?.current) cycle.status = 'snapshot changed';
+      }
       for (const id of ids) {
         if (["preparing", "queued"].includes(run.agents[id].status)) send(id, { type: "status", status: "skipped",
           reason: memberStatusNote(run, id, "skipped") });
@@ -1980,12 +2269,19 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
       }
       finishRun(run);
       clearApprovalNotification(job);
-      const shouldDrain = task.queue.length > 0 && canDrain(run, job.stopping, task.queuePaused);
+      run.teamReview.needsReview = Boolean(run.teamReview.setupChanged?.length || Object.keys(run.teamReview.handoffHolds).length) ||
+        Object.values(run.teamReview.plans ?? {}).some(plan => plan.state !== 'ready') ||
+        Object.values(run.teamReview.reviews).some(review => review.verdict === 'changes' || review.failedChecks || review.hasChanges &&
+        (review.verdict !== "pass" || !review.current || review.partial)) || run.teamReview.cycles.some(cycle => cycle.status !== "reviewed") ||
+        Object.values(run.teamReview.evidence).some(evidence => evidence.conditions.some(condition => condition.status === 'failed')) ||
+        unmetObservableConditions(run.teamReview.evidence).length > 0;
+      const shouldDrain = task.queue.length > 0 && !run.teamReview.needsReview && canDrain(run, job.stopping, task.queuePaused);
       task.queuePaused = task.queue.length > 0 && !shouldDrain;
       releaseCurrentJob();
       let saved = false;
+      const rollbackLearning = prepareMemberLearningSave(workspace, job);
       try { save(); saved = true; if (run.checkpointSeq) clearRunningCheckpoint(app.getPath("userData"), run.id); }
-      catch (error) { emit(null, { type: "error", text: error.message }); }
+      catch (error) { if (!saved) rollbackLearning(); emit(null, { type: "error", text: error.message }); }
       const completion = saved && !job.stopping && notifyRunCompletion(task, run);
       emit(null, { type: "finished", workspace: workspaceView(workspace), completion });
       if (saved && shouldDrain && !quitting) await drainQueue(workspace, task);
@@ -2068,7 +2364,7 @@ async function classifyMessageIntent(workspace, task, draft, agent, previousExch
 }
 
 function beginRun(payload, options) { return dispatchTaskRun(payload, options, beginRunInternal); }
-async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetupStamp, workspace = workspaceRequired(), task = selectedTask(workspace), scheduled, continuation, approvedGit, approvedSetup, teamReview } = {}) {
+async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetupStamp, workspace = workspaceRequired(), task = selectedTask(workspace), scheduled, continuation, approvedGit, approvedSetup, teamReview, memberSnapshot } = {}) {
   requireIdle();
   if (!queuedId && !scheduled && !continuation && !teamReview) assertNewSubmission(task, payload);
   const submittedDraft = validateDraft(payload, workspace);
@@ -2290,6 +2586,8 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
   let continuationHandoff;
   const prior = continuation && task.runHistory.find((entry) => entry.id === continuation.runId);
   const appliedPlan = continuation?.kind === "apply-team-plan" && prior?.teamPlan;
+  if (appliedPlan) run.workContracts = { plan: readWorkContract(appliedPlan),
+    ...Object.fromEntries(Object.entries(appliedPlan.assignments ?? {}).map(([id, assignment]) => [id, readWorkContract(assignment)])) };
   const resumed = continuation?.resumeRunId && task.runHistory.find(({ id }) => id === continuation.resumeRunId)?.autoTeam;
   const sameChecks = !resumed || appliedPlan?.executionSetup?.requiredChecks === runSetup.requiredChecks;
   const savedResults = Object.entries(resumed?.results ?? {}).filter(([id]) => sameChecks || !/^(?:integration|(?:codex|claude)-check-)/u.test(id));
@@ -2401,7 +2699,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
   if (computer) computerGrant = null;
   cleanConsumedDraft(task);
   const job = { stopping: false, codex: null, claude: null, run, task, approvals: [], panelCommands: new Map(), testSnapshots: [], testInFlight: new Set(),
-    deltas: batchDeltas((agent, event) => emit(agent, { ...event, taskId: task.id, repo: workspace.repo, runId: run.id })), scheduled, images, intentReview, setup: runSetup, handoffByAgent: {}, guidanceByAgent: {},
+    deltas: batchDeltas((agent, event) => emit(agent, { ...event, taskId: task.id, repo: workspace.repo, runId: run.id })), scheduled, images, intentReview, setup: runSetup, handoffByAgent: {}, guidanceByAgent: {}, memberSnapshot,
     ...(computer && { computer: { closed: false, decisions: new Map() } }) };
   const hooks = quietConversation || intentReview || run.resumedEvidence ? [] : (workspace.deckHooks ?? []).filter((hook) => hook.enabled);
   setCurrentJob(job);
@@ -2670,6 +2968,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
           collaboration.reviewPreparationMs = Math.round(performance.now() - preparationStarted);
           const history = task.runHistory.filter((entry) => entry.id !== run.id && entry.finishedAt);
           let checks = reviewTestChecks(run, observation ?? {}, history);
+          job.memberReports = observation ? memberCheckReports(run, observation, job.memberChecks) : [];
           const scopedPacket = context.diff ? packet : { ...packet, body: "The user excluded the Git diff and new-file contents for this turn. Do not retrieve that evidence using tools.",
             info: { ...packet.info, sha256: digest("Git diff excluded by the user."), includedPaths: [], partial: true } };
           if (options.runChecks && policy !== "smart" && phase === "after-build" && !previous &&
@@ -2711,7 +3010,8 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
             const freshReview = role === "review" && options?.freshReview === true;
             const sharedWork = agents.length > 1 || automatic || Boolean(pair);
             const guidanceOptions = options || sharedWork && teamRunOptions("normal", draft.teamOptions);
-            const guidance = quietConversation ? [] : teamReviewGuidance(guidanceOptions && { ...guidanceOptions, sharedWork }, role, stage?.kind, review);
+            const guidance = withMemberGuide(job, workspace, agent, role, quietConversation ? []
+              : teamReviewGuidance(guidanceOptions && { ...guidanceOptions, sharedWork }, role, stage?.kind, review));
             if (guidance.length) job.guidanceByAgent[agent] = { stage: stage?.kind ?? role, guidance };
             const checkout = stage?.cwd ?? (agent === "claude" ? claudeCwd : cwd);
             const shortContext = compact && role === "review" && stage?.kind !== "answer evidence request";
@@ -2731,7 +3031,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
                 (role === "write" && !stage || role === "review" && context.diff && review?.info.phase === "after-build")) {
               try {
                 const graph = await timeStage(run, "graph", "code graph", () =>
-                  readCodeGraph(git, checkout, options.codeGraph, lowMemory));
+                  readJobCodeGraph(job, checkout, options.codeGraph, lowMemory));
                 if (job.stopping) return { status: "interrupted" };
                 const current = role !== "review" || await reviewStillCurrent(review);
                 const outcome = storage.preferences.localGraphRules && (current ? decideGraph(text, graph)
@@ -2914,7 +3214,8 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
                   : scheduled || workspace.readOnly || quietConversation || intentReview || run.resumedEvidence ? [] : workspace.plugins;
                 const hasSavedCheck = review?.recordedCheckOnly || stage?.kind === "recheck evidence" && stage.focus && review?.info.evidenceDelta &&
                   handoff?.from === "checks" && review.checks?.some((check) => check.criterionId === stage.focus.id && verifiedCheck(check));
-                const plugins = await withProjectTools(job, workspace, checkout, agent, basePlugins, quietConversation || Boolean(run.resumedEvidence) || hasSavedCheck);
+                const plugins = await withProjectTools(job, workspace, checkout, agent, basePlugins,
+                  quietConversation || Boolean(run.resumedEvidence) || hasSavedCheck || role === 'review' && context?.diff === false);
                 if (plugins.some(plugin => plugin.name === projectToolName)) agentPrompt = projectToolPrompt(job, checkout, agent, agentPrompt);
                 const packetOnly = hasSavedCheck &&
                   !native && !link && !computer && !images.length && !claudeProjectPlugins(plugins, role, false).length;
@@ -2927,7 +3228,17 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
                 const browser = !scheduled && !packetOnly && nativeChromeOptions(job, run.prompt);
                 job.claude = runClaude(connections.claude.path, checkout, agentPrompt, plugins,
                   resume.id, (event) => send(agent, event), { ...settings,
-                    sessionName: task.title, onSessionId: session => trackNativeSession(job, agent, "claude", session),
+                    sessionName: task.title, onSessionId: session => {
+                      if (link && resume.id && (resume.fork ? session === resume.id : session !== resume.id)) throw new Error('Claude Code returned an unexpected session ID.');
+                      trackNativeSession(job, agent, 'claude', session);
+                      if (!nativeChatId.test(session)) return;
+                      if (link) link.refs.claude = session;
+                      else if (!computer && !transient) {
+                        task[sessionField] = session;
+                        if (job.writeScopeStamp) task.parallelSessionScopes = { ...task.parallelSessionScopes, claude: job.writeScopeStamp };
+                      } else return;
+                      save();
+                    },
                     model: settings.model || (link && resume.id ? undefined : "default"), role: packetOnly || quietConversation && !browser?.nativeChrome ? "test" : role, allowCommands,
                     ...browser,
                     persistSession: !transient, permissionMode: run.permissionMode,
@@ -3059,7 +3370,7 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
         send(agent, { type: "status", status: job.stopping ? "interrupted" : "failed" });
       }
     } finally {
-      closeProjectTools(job);
+      await closeProjectTools(job);
       if (conversationCwd) { try { fs.rmdirSync(conversationCwd); } catch {} }
       revokeComputer(job);
       if (job.steerPromise) await job.steerPromise.catch(() => {});
@@ -3114,7 +3425,8 @@ async function beginRunInternal(payload, { queuedId, queuedTeamwork, queuedSetup
       clearApprovalNotification(job);
       releaseCurrentJob();
       let saved = false;
-      try { save(); saved = true; } catch (error) { emit(null, { type: "error", text: error.message }); }
+      const rollbackLearning = prepareMemberLearningSave(workspace, job);
+      try { save(); saved = true; } catch (error) { rollbackLearning(); emit(null, { type: "error", text: error.message }); }
       if (saved && run.checkpointSeq) {
         try { clearRunningCheckpoint(app.getPath("userData"), run.id); } catch {}
       }
@@ -3172,9 +3484,11 @@ function reviewSetupHash(workspace, notes, options) {
 
 async function runRequiredChecks(job, cwd, checks, checkpoint) {
   const controller = job.checkController = new AbortController();
-  const results = checks.map(({ name, owner }) => ({ name, owner, status: "not run" }));
+  const results = checks.map(({ name, owner, command }) => ({ name, owner, commandHash: setupHash(command), status: "not run" }));
   const record = job.run.autoTeam ?? job.run.collaboration;
   record.requiredChecks = results;
+  delete record.checkSnapshot;
+  const observedBefore = await checkoutObservation(cwd).catch(() => null);
   checkpoint();
   try {
     for (const [index, { command }] of checks.entries()) {
@@ -3182,8 +3496,8 @@ async function runRequiredChecks(job, cwd, checks, checkpoint) {
       const entry = results[index];
       const sharedFrom = sharedCheckSource(checks, results, index);
       if (sharedFrom) {
-        const { status, code } = results[index - 1];
-        Object.assign(entry, { status, code, sharedFrom });
+        const { status, code, artifactSnapshot } = results[index - 1];
+        Object.assign(entry, { status, code, sharedFrom, ...(artifactSnapshot && { artifactSnapshot }) });
         checkpoint();
         continue;
       }
@@ -3200,11 +3514,15 @@ async function runRequiredChecks(job, cwd, checks, checkpoint) {
           status: result.reason === "cancelled" ? "cancelled" : result.reason === "timeout" ? "timed out" :
             result.code === 0 ? "passed" : Number.isInteger(result.code) ? "failed" : "unavailable",
           output: evidenceText([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n")) });
+        if (runWorkContracts(job.run).some(contract => contract.evidenceRefs?.length)) entry.artifactSnapshot = await captureWorkArtifacts(runWorkContracts(job.run), cwd);
       } catch (error) {
         Object.assign(entry, { status: controller.signal.aborted ? "cancelled" : "unavailable", output: evidenceText(error.message) });
       }
       checkpoint();
     }
+    const observedAfter = await checkoutObservation(cwd).catch(() => null);
+    if (sameCheckout(observedBefore, observedAfter)) record.checkSnapshot = { observation: observedAfter, checksHash: setupHash(checks) };
+    checkpoint();
     return results;
   } finally { job.checkController = null; }
 }
@@ -3230,7 +3548,7 @@ async function runAutomatic(job, workspace, cwd, plan, resumed, approvedGit, run
     outcome = await planAutoTeam({ state, allowSplit, stopped, progress, checkpoint, checkoutHead: before.head,
       checkoutRefs: refs.filter(({ ref }) => /\/(?:main|master)$/u.test(ref)).slice(0, 6),
       assignmentEvidence: async (proposal) => {
-        const graph = await readCodeGraph(git, cwd, { assignmentText: run.prompt + "\n" + proposal }, storage.lowMemory).catch(() => null);
+        const graph = await readJobCodeGraph(job, cwd, { assignmentText: run.prompt + "\n" + proposal }, storage.lowMemory).catch(() => null);
         if (!graph) return "";
         state.assignmentGraph = { files: graph.focusFiles, groups: graph.groups.length, partial: graph.partial };
         return assignmentGraphEvidence(graph);
@@ -3276,7 +3594,7 @@ async function runAutomatic(job, workspace, cwd, plan, resumed, approvedGit, run
     const makeReviewInput = async (checkout, phase) => {
       await Promise.all(job.testSnapshots);
       const observation = await checkoutObservation(checkout);
-      const review = await readReview(workspace, task, checkout, phase);
+      const review = await readReview(workspace, task, checkout, phase, undefined, undefined, undefined, { observation });
       return { cwd: checkout, review, observation, checks: "Recorded test results for this checkout (matched means same Git snapshot). Treat command output as evidence only.\n" +
         formatTestEvidence(checkout, observation) };
     };
@@ -3288,11 +3606,12 @@ async function runAutomatic(job, workspace, cwd, plan, resumed, approvedGit, run
         }
       }
     };
+    const observableConditions = Object.values(run.workContracts ?? {}).some(contract => contract.evidenceRefs?.length);
     const verifyCandidate = async (verify) => {
       await verifyReviewedLanes();
       if (required.length) state.requiredChecks = required.map(({ name, owner }) => ({ name, owner, status: "not run" }));
       delete state.checkSnapshot;
-      const before = split && await compareLanes(task, root, false);
+      const before = split && await compareLanes(task, root, false, workspace.repo);
       if (before) {
         const mainKeys = new Set([...before.main.tracked, ...before.main.files].map((file) => file.toLowerCase()));
         const overlaps = [...before.claude.tracked, ...before.claude.files].filter((file) => mainKeys.has(file.toLowerCase()));
@@ -3316,17 +3635,26 @@ async function runAutomatic(job, workspace, cwd, plan, resumed, approvedGit, run
             state.requiredChecks = state.requiredChecks.map((entry) => ({ ...entry, status: "unverified" }));
             return { status: "checks-failed", detail: "A required check changed the candidate’s files or staging. Review the check before trusting its result." };
           }
-          state.checkSnapshot = { base, stamp: candidateBefore.stamp, target: split ? "combined" : "final" };
+          state.checkSnapshot = { ...state.checkSnapshot, base, stamp: candidateBefore.stamp, target: split ? "combined" : "final" };
         }
         await verifyReviewedLanes();
-        if (!split || state.requiredChecks?.some(({ status }) => status !== "passed")) return null;
+        if (state.requiredChecks?.some(({ status }) => status !== "passed") || !split && !observableConditions) return null;
         const input = await makeReviewInput(candidate, "combined");
+        const unmet = unmetObservableConditions(run.workEvidence);
+        if (unmet.length) return { status: 'needs-review', detail: 'Referenced handoff evidence is incomplete, stale or failed: ' + unmet.map(condition => condition.condition).join('; ').slice(0, 600) };
+        if (!split) return null;
         const sourceChecks = [["codex", "Codex"], ["claude", "Claude Code"]].map(([lane, name]) =>
           name + " source worktree:\n" + formatTestEvidence(laneCwd[lane], state.verified?.[lane] ?? {}));
         input.checks += "\n\nSource worktree checks recorded before combining. Each result applies to its own checkout.\n\n" + sourceChecks.join("\n\n");
         if (required.length) input.checks += "\n\nRequired checks executed on this combined checkout:\n" + formatRequiredChecks(state.requiredChecks);
         const result = await verify(input);
-        const after = await compareLanes(task, root, false);
+        if (!sameCheckout(input.observation, await checkoutObservation(candidate))) {
+          delete state.results.integration;
+          delete state.results['integration-recheck'];
+          delete state.combined;
+          return { status: 'blocked', detail: 'The combined checkout changed during review. Its earlier review cannot certify the current files.' };
+        }
+        const after = await compareLanes(task, root, false, workspace.repo);
         await verifyReviewedLanes();
         if (before.main.stamp !== after.main.stamp || before.claude.stamp !== after.claude.stamp) {
           delete state.results.integration;
@@ -3342,7 +3670,7 @@ async function runAutomatic(job, workspace, cwd, plan, resumed, approvedGit, run
       source: checkout, base, temp: app.getPath("temp"), includeDiff: false, includeFileDigests: true,
     }).then(({ fileDigests }) => fileDigests);
     outcome = await executeAutoTeam({ state, plan, lowMemory: storage.lowMemory, stopped, progress, checkpoint,
-      combine: verifyCandidate, verifySingle: required.length ? verifyCandidate : undefined,
+      combine: verifyCandidate, verifySingle: required.length || observableConditions ? verifyCandidate : undefined,
       reviewInput: (writer) => makeReviewInput(laneCwd[writer], "after-build"),
       turn: async (agent, stage) => {
         const checkout = stage.cwd ?? laneCwd[stage.lane];
@@ -3579,12 +3907,12 @@ function queueSetup(workspace, task, draft, { useTaskPermissions = true } = {}) 
   return {
     models: Object.fromEntries(team ? team.members.map((member) => [member.id, sessionTeamMemberSettings(workspace, task, member)])
       : agents.map((agent) => [agent, effectiveAgentSettings(storage.agentSettings, workspace, agent, task)])),
-    ...(team && { sessionTeam: setupHash(team) }),
+    ...(team && { sessionTeam: setupHash(team), teamRepairPolicy: setupHash(['one-scoped-repair-v2-owner-gates', draft.teamOptions?.turnLimit ?? null]) }),
     ...(team && { teamwork: setupHash(effectiveTeamwork(draft.teamwork, task.teamAssignment, workspace.teamwork)) }),
     ...((team || policy || autoTeam(draft.mode) || planPair(draft.mode)) && {
-      teamReviewGuidance: teamReviewFingerprint(teamRunOptions(policy ?? "normal", draft.teamOptions)),
+      teamReviewGuidance: digest([teamReviewFingerprint(teamRunOptions(policy ?? "normal", draft.teamOptions)), memberLearningPolicy]),
     }),
-    context: notes.map(({ id, name, source, text }) => ({ id, name, source, hash: setupHash(text) })),
+    context: notes.map(({ id, name, source, text, provenance }) => ({ id, name, source, hash: setupHash([text, provenance ?? null]) })),
     missing,
     instructions: setupHash(workspace.instructions),
     permissions: setupHash([workspace.readOnly, workspace.claudeCommands, workspace.shareNewFiles, workspace.inheritCodexMcp, workspace.plugins,
@@ -3605,6 +3933,7 @@ function setupDifferences(previous, current, legacyMessage) {
   const changes = [];
   if (!previous) changes.push(legacyMessage);
   else {
+    if (current.teamRepairPolicy !== previous.teamRepairPolicy) changes.push('The Session Team repair policy or turn budget changed.');
     if (current.sessionTeam !== previous.sessionTeam) changes.push("The Session Team roster or data sharing changed.");
     if (current.teamwork !== previous.teamwork) changes.push("The shared Team Brief changed.");
     if ((current.teamReviewGuidance ?? null) !== (previous.teamReviewGuidance ?? null)) changes.push("The shared team skill guidance changed.");
@@ -3703,7 +4032,8 @@ function queueMessage(payload) {
     (workspace.readOnly || payload.steerAgent !== undefined || !needsAutomaticAssignments(draft.mode, teamworkSnapshot)) &&
     separateEditsIssue(draft.mode, teamworkSnapshot);
   if (assignmentIssue) throw new Error(assignmentIssue);
-  const item = { id: randomUUID(), queuedAt: new Date().toISOString(), ...draft, setup: queueSetup(workspace, task, draft), teamworkSnapshot };
+  const item = { id: randomUUID(), queuedAt: new Date().toISOString(), ...draft, setup: queueSetup(workspace, task, draft), teamworkSnapshot,
+    memberSnapshot: snapshotMemberLearning(workspace.repo, workspace.memberLearning) };
   const agent = payload.steerAgent;
   let images;
   if (agent !== undefined && !teamConversation(draft)) {
@@ -3879,6 +4209,14 @@ async function scheduleTick() {
   finally { scheduling = false; }
 }
 
+function rememberProviderExecutables(checked) {
+  const previous = storage.executables;
+  const next = retainProviderPaths(previous, checked);
+  if (next === previous) return;
+  storage.executables = next;
+  try { save(); } catch (error) { storage.executables = previous; throw error; }
+}
+
 async function refreshConnections() {
   if (!connectionCheck) {
     requireIdle();
@@ -3890,12 +4228,16 @@ async function refreshConnections() {
         const started = Date.now();
         connections[agent] = { ...connections[agent], checking: true };
         emit(null, { type: "connections", connections: connectionView() });
-        const result = await probe(agent);
+        const signal = AbortSignal.timeout(10000);
+        const result = await abortableRead(() => probe(agent, signal), signal).catch(error => ({
+          status: 'unavailable', path: findExecutable(agent), error: signal.aborted ? 'Connection check timed out. Refresh to try again.' : error.message,
+        }));
         connections[agent] = { ...result, checkedAt: Date.now(), checkMs: Date.now() - started };
         emit(null, { type: "connections", connections: connectionView() });
       };
       if (storage.lowMemory) { await check("codex"); await check("claude"); }
       else await Promise.all([check("codex"), check("claude")]);
+      rememberProviderExecutables(connections);
       accountQuotas.clear();
       quotaAttempts.clear();
     })().finally(() => { connectionCheck = null; });
@@ -4257,6 +4599,14 @@ async function applyNativeSessionChange(payload, { engine, persist = true } = {}
   }
   if (next) nativeRecents.set(key, next);
   else nativeRecents.delete(key);
+  if (action === 'delete') {
+    nativeSendJournal().remove(entry);
+    const checkpoint = path.join(app.getPath('userData'), 'native-text-drafts.json');
+    if (fs.existsSync(checkpoint)) {
+      const rows = JSON.parse(fs.readFileSync(checkpoint, 'utf8')).filter(row => row[0] !== JSON.stringify([entry.provider, '', entry.id]));
+      fs.writeFileSync(checkpoint + '.tmp', JSON.stringify(rows)); fs.renameSync(checkpoint + '.tmp', checkpoint);
+    }
+  }
   nativeHistory.delete(key);
   storage.nativePins = storage.nativePins.flatMap((pin) => nativeSessionKey(pin) === key ? next ? [next] : [] : [pin]);
   if (persist) save();
@@ -4349,6 +4699,7 @@ async function pullNativeRecents(payload) {
 
 async function startupData() {
   if (connectionCheck) await connectionCheck;
+  const began = performance.now(), timings = { connectionChecks: Object.fromEntries(Object.entries(connections).map(([agent, result]) => [agent, result.checkMs])), quota: [] };
   let expired = false;
   const timer = setTimeout(() => {
     expired = true;
@@ -4356,15 +4707,21 @@ async function startupData() {
     accountReads.abort();
   }, 12000);
   try {
+    const historyStart = performance.now();
     const recents = await pullNativeRecents();
+    timings.historyMs = Math.round(performance.now() - historyStart);
     emit(null, { type: "startup-progress", stage: "quota" });
     if (!recents.deferred) {
-      for (const agent of ["codex", "claude"]) {
-        if (expired || runPool.size || maintenance || quitting) break;
-        await quotaSummary(agent);
-      }
+      const readQuota = async agent => {
+        if (expired || runPool.size || maintenance || quitting) return;
+        const start = performance.now();
+        const result = await quotaSummary(agent, { parallel: !storage.lowMemory });
+        timings.quota.push({ agent, ms: Math.round(performance.now() - start), reported: Boolean(result) });
+      };
+      if (storage.lowMemory) { await readQuota('codex'); await readQuota('claude'); }
+      else await Promise.all(['codex', 'claude'].map(readQuota));
     }
-    return { recents, connections: connectionView(), timedOut: expired };
+    return { recents, connections: connectionView(), timedOut: expired, timings: { ...timings, totalMs: Math.round(performance.now() - began) } };
   } finally { clearTimeout(timer); }
 }
 
@@ -4377,12 +4734,13 @@ async function previewNativeSession(payload) {
   if (!payload.older && !entry.archived && !payload.sourceTaskId) {
     maintenance = true;
     try { return nativeChatPreview(entry, await nativeChatSnapshot(entry)); }
-    catch { chat = { available: false, unverified: true }; }
+    catch (error) { chat = { available: false, unverified: true, recoveryError: error.message }; }
     finally { maintenance = false; }
   }
-  if (payload.older && !nativeHistory.has(key)) throw new Error("Reopen the session to read older messages.");
-  const cursor = payload.older ? nativeHistory.get(key) : undefined;
-  if (cursor === null) return { messages: [], hasOlder: false };
+  const explicitCursor = payload.older && Object.hasOwn(payload, "cursor");
+  if (payload.older && !explicitCursor && !nativeHistory.has(key)) throw new Error("Reopen the session to read older messages.");
+  const cursor = payload.older ? explicitCursor ? nativeHistoryCursor(entry.provider, payload.cursor) : nativeHistory.get(key) : undefined;
+  if (cursor === null) return { messages: [], cursor: null, hasOlder: false };
   const query = typeof payload.query === "string" ? payload.query.trim().slice(0, 200).toLocaleLowerCase() : "";
   async function load(read) {
     const messages = [];
@@ -4397,7 +4755,7 @@ async function previewNativeSession(payload) {
       if (!next || page.messages.some(({ text }) => !query || text.toLocaleLowerCase().includes(query))) break;
     }
     rememberNativeHistory(key, next);
-    return { messages: nativeMessageAttachments(messages, storage.nativeAttachmentMessages, key), hasOlder: next !== null, skipped, ...(chat && { chat }) };
+    return { messages: nativeMessageAttachments(messages, storage.nativeAttachmentMessages, key), cursor: next, hasOlder: next !== null, skipped, ...(chat && { chat }) };
   }
   if (entry.provider === "codex") return inspectCodexHistory((engine) => load((next) => readCodexSession(engine, entry.id, next)));
   maintenance = true;
@@ -4435,8 +4793,8 @@ function handoffWorkspace(repo) {
   return workspace.chatOnly ? null : workspace;
 }
 
-async function checkNativeHandoff(payload) {
-  requireIdle();
+async function checkNativeHandoff(payload, { allowJobs = false } = {}) {
+  requireIdle({ allowJobs });
   const entry = nativeSession(payload);
   const current = selected()?.chatOnly ? null : selected();
   const source = await gitLocation(git, entry.cwd).catch(() => null);
@@ -4465,14 +4823,14 @@ async function checkNativeHandoff(payload) {
 }
 
 async function createNativeHandoff(payload) {
-  requireIdle();
+  requireIdle({ allowJobs: payload?.quick === true });
   const entry = nativeSession(payload);
   if (payload.quick === true) {
     // Read saved history locally; creating a fork never sends a provider turn.
     quickForkDraft(payload.recipient, false);
     const history = await previewNativeSession({ provider: entry.provider, id: entry.id });
-    const check = await checkNativeHandoff({ provider: entry.provider, id: entry.id }).catch(() => null);
-    requireIdle();
+    const check = await checkNativeHandoff({ provider: entry.provider, id: entry.id }, { allowJobs: true }).catch(() => null);
+    requireIdle({ allowJobs: true });
     const repo = check?.repo ?? teamChatsWorkspace;
     const existing = check ? handoffWorkspace(repo) : storage.workspaces[repo];
     const workspace = existing ?? ensureTasks(restoreWorkspace({ repo, notes: [], plugins: [], instructions: "",
@@ -4730,17 +5088,22 @@ async function nativeChatSnapshot(entry) {
 function nativeChatPreview(entry, { cwd, page, revision }, { completedJob } = {}) {
   const key = nativeSessionKey(entry);
   rememberNativeHistory(key, page.cursor);
+  const saved = cwd && nativeSendJournal().reconcile(entry, cwd, page);
   const attempt = nativeChatAttempts.get(key);
-  const delivery = attempt && nativeChatDelivery(attempt, page.messages);
-  if (delivery || !page.active) nativeChatAttempts.delete(key);
+  const delivery = saved && ['saved', 'replied'].includes(saved.status) ? saved.status : attempt && nativeChatDelivery(attempt, page.messages);
+  if (delivery) nativeChatAttempts.delete(key);
   const modelSettings = nativeModelSettings(storage.nativeChatModels, entry, cwd);
   const pooled = runPool.get(nativeJobKey(entry));
   const job = pooled === completedJob ? undefined : pooled;
-  return { messages: nativeMessageAttachments(page.messages, storage.nativeAttachmentMessages, key), hasOlder: page.cursor !== null, skipped: page.skipped,
-    ...(delivery && { delivered: { prompt: attempt.displayPrompt ?? attempt.prompt, requestId: attempt.requestId, status: delivery, revision } }),
+  return { messages: nativeMessageAttachments(page.messages, storage.nativeAttachmentMessages, key), cursor: page.cursor, hasOlder: page.cursor !== null, skipped: page.skipped,
+    ...(delivery && { delivered: { prompt: saved?.prompt ?? attempt.displayPrompt ?? attempt.prompt,
+      requestId: saved?.requestId ?? attempt.requestId, draftToken: saved?.draftToken, status: delivery, revision } }),
     chat: { revision, available: Boolean(cwd), active: Boolean(page.active) || Boolean(job),
       pending: job && { requestId: job.requestId, prompt: job.prompt, events: job.nativeLog ?? [], waiting: job.waiting,
         ...(job.computer && { window: { title: job.nativeComputer?.title, ended: job.computer.closed } }) },
+      ...(!job && saved && saved.status !== 'replied' && saved.phase !== 'completed' && { recovery: { requestId: saved.requestId, prompt: saved.prompt,
+        status: saved.status === 'dispatched' ? 'unverified' : saved.status === 'saved' ? 'saved' : 'not-sent', phase: saved.phase,
+        partialText: saved.partialText, at: saved.at } }),
       modelSettings, modelStamp: nativeModelStamp(entry, cwd, modelSettings),
       permissionMode: nativePermissionMode(storage.nativeChatPermissions, entry, cwd), cwd } };
 }
@@ -4794,7 +5157,10 @@ function nativeChatControl(payload, kind) {
   if (!job || job.sessionKey !== payload.provider + ":" + payload.id || job.requestId !== payload.requestId || job.stopping) {
     throw new Error("This original chat turn has ended. Refresh the messages.");
   }
-  if (kind === "stop" && runPool.cancel(key)) return { stopped: true, cancelledBeforeStart: true };
+  if (kind === "stop" && runPool.cancel(key)) {
+    nativeSendJournal().update(payload, job.nativeModelSnapshot.cwd, job.requestId, { status: 'not-sent', phase: 'cancelled' });
+    return { stopped: true, cancelledBeforeStart: true };
+  }
   if (kind === "stop") {
     stopTransientTurn(job);
     job.nativeEvents({ type: "stopping" });
@@ -4825,6 +5191,7 @@ async function sendNativeChat(payload) {
   if (payload.modelStamp && payload.modelStamp !== modelStamp) throw new Error("This chat's model settings changed. Refresh before sending.");
   const mode = nativePermissionMode(storage.nativeChatPermissions, entry, cwd);
   const key = nativeJobKey(entry);
+  if (runPool.get(key)) throw new Error('This chat already has a pending message. Refresh messages before sending.');
   const locks = [key];
   const target = payload.computerToken ? checkedNativeComputerGrant(payload.computerToken, entry, cwd, mode) : null;
   if (target || entry.provider === "claude" && nativeChromeRequested(payload.prompt)) locks.push("computer");
@@ -4835,12 +5202,19 @@ async function sendNativeChat(payload) {
   resolveAttachments(imageDirectory(), payload.images ?? []);
   payload = { ...payload, images: structuredClone(payload.images ?? []) };
   job.images = payload.images;
+  nativeSendJournal().begin(entry, cwd, { requestId: payload.requestId, prompt: validatePrompt(payload.prompt),
+    ...(typeof payload.draftToken === 'string' && /^[a-z\d-]{16,80}$/iu.test(payload.draftToken) && { draftToken: payload.draftToken }),
+    permissionMode: mode, settings: structuredClone(settings), images: payload.images });
   // Native send's promise stays attached to its own caller, even while it waits for a slot.
   let resolve, reject;
   const done = new Promise((a, b) => { resolve = a; reject = b; });
   const start = async () => {
     try { const result = await sendNativeChatInternal(payload); resolve(result); return result; }
-    catch (error) { reject(error); throw error; }
+    catch (error) {
+      const record = nativeSendJournal().read(entry, cwd).records.find(record => record.requestId === payload.requestId);
+      if (record && ['waiting', 'preparing'].includes(record.status)) nativeSendJournal().update(entry, cwd, payload.requestId, { status: 'not-sent', phase: 'not-started' });
+      reject(error); throw error;
+    }
   };
   const submitted = runPool.submit({ key, locks, title: entry.title, job }, start);
   submitted.catch(reject);
@@ -4853,7 +5227,6 @@ async function sendNativeChatInternal(payload) {
   const entry = nativeSession(payload);
   if (entry.archived) throw new Error("Restore this chat before sending a message.");
   const key = nativeSessionKey(entry);
-  if (nativeChatAttempts.has(key)) throw new Error("Refresh the messages to check the previous send before trying again.");
   const agent = entry.provider;
   const userPrompt = validatePrompt(payload.prompt);
   const images = resolveAttachments(imageDirectory(), payload.images ?? []);
@@ -4868,7 +5241,20 @@ async function sendNativeChatInternal(payload) {
   const job = runPool.scope.job;
   const { settings, modelStamp, cwd: settingsCwd } = job.nativeModelSnapshot;
   job.run = { agents: { [agent]: { settings } } };
+  let checkpointTimer, partialText = '', partialKey;
+  const checkpoint = changes => nativeSendJournal().update(entry, job.nativeModelSnapshot.cwd, job.requestId, changes);
+  const safeCheckpoint = changes => {
+    try { checkpoint(changes); }
+    catch { job.nativeCheckpointError = 'The latest progress could not be saved. Refresh the original chat before retrying.'; }
+  };
+  const flushPartial = () => { clearTimeout(checkpointTimer); checkpointTimer = null; safeCheckpoint({ partialText }); };
   job.nativeEvents = (event) => {
+    if (event.type === 'approval' || event.type === 'question') safeCheckpoint({ phase: event.type === 'approval' ? 'waiting-approval' : 'waiting-answer', partialText });
+    if (['message', 'delta'].includes(event.type) && typeof event.text === 'string') {
+      if (event.key !== partialKey) { partialKey = event.key; partialText = ''; }
+      partialText = (event.type === 'delta' ? partialText + event.text : event.text).slice(-6000);
+      if (!checkpointTimer) checkpointTimer = setTimeout(flushPartial, 500);
+    }
     if (job.nativeLog.length >= 80) job.nativeLog.shift();
     job.nativeLog.push(event);
     if (event.type === "approval" || event.type === "question") job.controls.set(event.key, event.type);
@@ -4880,6 +5266,7 @@ async function sendNativeChatInternal(payload) {
   let timer;
   try {
     const before = await nativeChatSnapshot(entry);
+    checkpoint({ status: 'preparing' });
     if (!before.cwd) throw new Error("The recorded folder is unavailable. Restore it to continue this chat.");
     if (!samePath(before.cwd, settingsCwd) || nativeModelStamp(entry, before.cwd,
         nativeModelSettings(storage.nativeChatModels, entry, before.cwd)) !== modelStamp) {
@@ -4913,6 +5300,9 @@ async function sendNativeChatInternal(payload) {
       job.run.computer = target;
       await connectComputer(job, target);
     }
+    // Durable fence before entering either runner, including a crash before its first event.
+    checkpoint({ status: 'dispatched', phase: 'working', wirePrompt: prompt, wirePrefix: attempt.wirePrefix,
+      previousIds: [...attempt.previousIds] });
     let outcome;
     try {
       if (agent === "codex") outcome = await codexTurn(job, { repo: before.cwd, plugins: [], chatOnly: policy.readOnly }, before.cwd, prompt,
@@ -4929,6 +5319,8 @@ async function sendNativeChatInternal(payload) {
       // The provider may have accepted the message before losing its connection.
       outcome = { status: job.stopping ? "interrupted" : "failed", error: error.message };
     }
+    flushPartial();
+    checkpoint({ phase: job.stopping ? 'interrupted' : outcome?.status ?? 'failed' });
     recordAuthentication(agent, outcome);
     if (outcome?.limit) {
       storage.usageLimits[agent] = outcome.limit;
@@ -4945,9 +5337,10 @@ async function sendNativeChatInternal(payload) {
     return { ...nativeChatPreview(entry, after, { completedJob: job }), outcome: { status: job.stopping ? "interrupted" : outcome?.status,
       error: outcome?.error, settings: { ...settings } } };
   } finally {
+    clearTimeout(checkpointTimer);
     clearTimeout(timer);
     revokeComputer(job);
-    closeProjectTools(job);
+    await closeProjectTools(job);
     job.controls.clear();
     job.nativeEvents({ type: "finished" });
     if (nativeChatJobs.get(key) === job) nativeChatJobs.delete(key);
@@ -5561,7 +5954,7 @@ const accountReads = createAccountReader((agent, signal) => agent === "codex"
     { nativeExtensions: false, nativeHooks: false, signal })
   : inspectClaude(connections.claude.path, os.tmpdir(), true, { signal }));
 
-async function quotaSummary(agent) {
+async function quotaSummary(agent, { parallel = false } = {}) {
   requireAgent(agent);
   const connection = connections[agent];
   if (connection?.status !== "ready" || providerUsesApi(agent, connection.authMethod)) return null;
@@ -5569,7 +5962,7 @@ async function quotaSummary(agent) {
   const cached = accountQuotas.get(agent);
   const resetSinceFetch = cached?.windows.some(({ resetAt }) => resetAt > cached.fetchedAt && resetAt <= now);
   if (cached && now - cached.fetchedAt < 300_000 && !resetSinceFetch) return cached;
-  if (runPool.size || maintenance || connectionCheck || scheduling || quitting || recentLoader.pending || quotaRead || watchRead || !window?.isVisible() ||
+  if (runPool.size || maintenance || connectionCheck || scheduling || quitting || recentLoader.pending || quotaRead && (!parallel || quotaRead !== accountReads) || watchRead || !window?.isVisible() ||
       now - (quotaAttempts.get(agent) ?? 0) < 60_000) return cached ?? null;
   quotaAttempts.set(agent, now);
   quotaRead = accountReads;
@@ -5890,6 +6283,7 @@ async function providerModels({ agent, refresh } = {}) {
         throw new Error("The provider connection changed. Refresh models again.");
       }
       connection = connections[agent] = checked;
+      rememberProviderExecutables({ [agent]: checked });
       read.key = modelConnectionKey(connection);
       accountQuotas.delete(agent);
       quotaAttempts.delete(agent);
@@ -6531,7 +6925,7 @@ function saveTeamAssignment(payload) {
 async function decisionScope(workspace, task) {
   const root = await projectHead(git, workspace.repo);
   const checkout = task.worktree ? await projectHead(git, task.worktree) : root;
-  return { branch: checkout.branch || root.branch, base: checkout.commit };
+  return { repo: fs.realpathSync.native(workspace.repo), branch: checkout.branch || root.branch, base: checkout.commit };
 }
 
 async function teamDecisions(payload, writing = false) {
@@ -6604,7 +6998,7 @@ function wire(name, handler) {
 
 function checkVoiceTask(payload) {
   if (typeof payload?.id !== "string" || !/^[a-f\d-]{36}$/u.test(payload.id) ||
-      !payload.taskId || payload.taskId !== selected()?.currentTask || !window.isVisible()) {
+      !payload.taskId || payload.taskId !== selected()?.currentTask || !window.isVisible() || window.isMinimized()) {
     throw new Error("Open the current task to use voice chat.");
   }
   if (runPool.size || maintenance || voiceJob) throw new Error("Wait until the current work finishes before using voice.");
@@ -6618,10 +7012,15 @@ function cancelVoice(id) {
 async function runVoice(payload, operation) {
   checkVoiceTask(payload);
   voiceMic = null;
-  const job = { id: payload.id, controller: new AbortController() };
+  const job = { id: payload.id, taskId: payload.taskId, repo: storage.currentRepo, controller: new AbortController() };
   voiceJob = job;
-  try { return await operation(job.controller.signal); }
-  finally { voiceJob = null; }
+  try {
+    const value = await operation(job.controller.signal);
+    job.controller.signal.throwIfAborted();
+    if (job.repo !== storage.currentRepo || job.taskId !== selected()?.currentTask) throw new Error("Voice cancelled after switching chats.");
+    return value;
+  }
+  finally { if (voiceJob === job) voiceJob = null; }
 }
 
 app.whenReady().then(() => {
@@ -7076,7 +7475,7 @@ app.whenReady().then(() => {
       const { name, text } = payload;
       validateNote(name, text);
       requireSkillName(workspace, name, skill.id);
-      return updateSkills(workspace, "notes", workspace.notes.map((note) => note === skill ? { ...skill, name: name.trim(), text } : note));
+      return updateSkills(workspace, "notes", workspace.notes.map((note) => note === skill ? { ...skill, name: name.trim(), text, provenance: contextSnapshot(workspace.repo, text) } : note));
     } else if (payload.action === "note-add") {
       if (!["Codex", "Claude", "Project", "Skill"].includes(payload.source)) throw new Error("Choose a source for this item.");
       if (payload.source === "Skill") requireSkillName(workspace, payload.name);

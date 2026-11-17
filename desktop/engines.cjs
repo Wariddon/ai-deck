@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawnOwned: spawn, stopChild } = require('./process-owner.cjs');
 const { lstatSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { createInterface } = require("node:readline");
@@ -12,6 +12,7 @@ const { computerName } = require("./computer-use.cjs");
 const { attachmentInput } = require("./task-images.cjs");
 const { nativeChromeTools, nativeChromeDecision, claudeMemoryPreferences, chromePrefix } = require("./native-capabilities.cjs");
 const { suggestedSessionTitle } = require("./session-title.cjs");
+const { claudeCommandResult } = require('./claude-command-result.cjs');
 
 const processExitGraceMs = 3500;
 
@@ -45,7 +46,7 @@ function capture(exe, args, { cwd, timeout = 12000, limit = 256 * 1024, signal }
     const timer = setTimeout(() => {
       timedOut = true;
       if (child.exitCode != null || child.signalCode != null) reject(new Error("Command timed out."));
-      else child.kill();
+      else void stopChild(child);
     }, timeout);
     child.stdout.setEncoding("utf8").on("data", (part) => { stdout = (stdout + part).slice(0, limit); });
     child.stderr.setEncoding("utf8").on("data", (part) => { stderr = (stderr + part).slice(0, 5000); });
@@ -123,7 +124,7 @@ class CodexEngine {
       ...disabledServers.flatMap((name) => ["-c", `mcp_servers.${name}.enabled=false`]),
     ];
     this.child = spawn(exe, ["app-server", "--listen", "stdio://", ...overrides], {
-      cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+      cwd, windowsHide: true, reapOnExit: true, stdio: ["pipe", "pipe", "pipe"],
     });
     this.stderr = "";
     this.child.stderr.setEncoding("utf8").on("data", (part) => { this.stderr = (this.stderr + part).slice(-3000); });
@@ -401,14 +402,15 @@ class CodexEngine {
   }
 
   close() {
-    this.child.kill();
+    const closing = stopChild(this.child);
     this.child.stdin.destroy();
     this.child.stdout.destroy();
     this.child.stderr.destroy();
+    return closing;
   }
 
   async shutdown() {
-    this.close();
+    await this.close();
     await this.exited;
   }
 }
@@ -501,10 +503,10 @@ function inspectClaude(exe, cwd, accountUsage = false, { signal } = {}) {
     const write = (data) => child.stdin.write(JSON.stringify(data) + "\n");
     const timer = setTimeout(() => {
       reject(new Error(missing));
-      child.kill();
+      void stopChild(child);
     }, accountUsage ? 18_000 : 20_000);
     child.once("error", (error) => { clearTimeout(timer); clearTimeout(exitTimer); reject(error); });
-    child.stdin.on("error", (error) => { reject(error); child.kill(); });
+    child.stdin.on("error", (error) => { reject(error); void stopChild(child); });
     child.once("close", (code) => {
       clearTimeout(timer);
       clearTimeout(exitTimer);
@@ -518,7 +520,7 @@ function inspectClaude(exe, cwd, accountUsage = false, { signal } = {}) {
         if (!accountUsage && Array.isArray(response?.models)) {
           // Metadata is ready even if the CLI takes time to shut down after EOF.
           clearTimeout(timer);
-          exitTimer = setTimeout(() => child.kill(), processExitGraceMs);
+          exitTimer = setTimeout(() => { void stopChild(child); }, processExitGraceMs);
           child.stdin.end();
           resolve(response);
           return;
@@ -606,7 +608,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     options.writePaths.some((scope) => scopeIncludes(scope, path.relative(cwd, path.resolve(cwd, filename)).split(path.sep).join("/"))));
   const editDenied = "The file is outside the approved worktree edit scope.";
   const child = spawn(exe, claudeArguments(plugins, resume, options), {
-    cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    cwd, windowsHide: true, reapOnExit: true, stdio: ["pipe", "pipe", "pipe"],
     ...(options.hookRuntime && { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } }),
   });
   let sessionId = resume;
@@ -621,6 +623,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
   let initialized = false;
   let remaining = 0;
   let finishTimer;
+  let cleanup;
   let endedAfterResult = false;
   let usageTotal;
   let textKey;
@@ -726,7 +729,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
           if (nativeToolReview) {
             const input = request.input.tool_input;
             if (!allowedBash(input)) return respond(id, hookDecision("deny", "Ask for one foreground command under 8,000 characters."));
-            if (request.input.tool_use_id) bashCalls.set(request.input.tool_use_id, input.command);
+            if (request.input.tool_use_id) bashCalls.set(request.input.tool_use_id, { command: input.command, foreground: input.run_in_background !== true });
             return respond(id, {});
           }
           return requestBashApproval(id, { fromHook: true, tool_name: tool, input: request.input.tool_input,
@@ -784,7 +787,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     approvals.delete(key);
     const bashId = accept && request.tool_name === "Bash" && request.tool_use_id;
     if (bashId) {
-      bashCalls.set(bashId, request.input.command);
+      bashCalls.set(bashId, { command: request.input.command, foreground: request.input.run_in_background !== true });
       emit({ type: "command-start", command: request.input.command, key: bashId });
     }
     const sent = respond(key, request.fromHook ? hookDecision(accept ? "allow" : "deny", accept ? "Approved once in AI Deck." : "Declined in AI Deck.")
@@ -811,10 +814,12 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     closeChild();
   }
   function closeChild() {
-    child.kill();
+    cleanup = stopChild(child);
+    clearTimeout(finishTimer);
     child.stdin.destroy();
     child.stdout.destroy();
     child.stderr.destroy();
+    return cleanup;
   }
   child.stderr.setEncoding("utf8").on("data", (part) => { stderr = (stderr + part).slice(-3500); });
   lineReader(child, (message) => {
@@ -899,14 +904,16 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
     if (interactive && options.allowCommands && message.type === "user" && !message.parent_tool_use_id) {
       const content = message.message?.content;
       if (Array.isArray(content)) for (const item of content) {
-        const command = item.type === "tool_result" && bashCalls.get(item.tool_use_id);
-        if (!command) continue;
+        const call = item.type === "tool_result" && bashCalls.get(item.tool_use_id);
+        if (!call) continue;
+        const command = call.command;
         bashCalls.delete(item.tool_use_id);
         const output = typeof item.content === "string" ? item.content : (Array.isArray(item.content)
           ? item.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : "");
         emit({ type: "activity", key: "output-" + item.tool_use_id,
           text: (item.is_error ? "Command reported an error" : "Command output") + (output ? "\n" + output.slice(-9000) : "") });
-        emit({ type: "command-result", key: item.tool_use_id, command, status: item.is_error === true ? "failed" : "returned", output: output.slice(-9000) });
+        emit({ type: "command-result", key: item.tool_use_id, command, status: item.is_error === true ? "failed" : "returned", output: output.slice(-9000),
+          ...claudeCommandResult(message, item, call.foreground) });
       }
     }
     if (message.type === "result") {
@@ -961,7 +968,7 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
       }
       if (stopped) child.stdin.end();
       else sendInput(claudeInput(prompt, options.images), randomUUID());
-    }).catch((error) => { stderr = error.message; child.kill(); });
+    }).catch((error) => { stderr = error.message; closeChild(); });
   } else {
     emit({ type: "provider-call" });
     child.stdin.end(options.images?.some(({ kind }) => kind !== "text")
@@ -970,7 +977,8 @@ function runClaude(exe, cwd, prompt, plugins, resume, emit, options = {}) {
   }
   const done = new Promise((resolve) => {
     child.once("error", (error) => resolve({ status: "failed", error: error.message, sessionId }));
-    child.once("close", (code) => {
+    child.once("close", async (code) => {
+      await (cleanup ?? stopChild(child));
       clearTimeout(finishTimer);
       for (const entry of [...controls.values(), ...acknowledgements.values()]) {
         clearTimeout(entry.timer);

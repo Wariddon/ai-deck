@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const test = require("node:test");
-const { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint } = require("../desktop/checkpoints.cjs");
+const { writeDraft, clearDraft, restoreCheckpoints, writeRunningCheckpoint, clearRunningCheckpoint, writeProgressCheckpoint } = require("../desktop/checkpoints.cjs");
 const { batchDeltas, streamSummaryPreview } = require("../desktop/stream-deltas.cjs");
 
 test("summary preview batches fragments, replaces snapshots and cancels a pending update", (t) => {
@@ -100,4 +100,15 @@ test("finishing one job preserves the other job's recovery evidence", (t) => {
   restoreCheckpoints(profile, { repo: { tasks } });
   assert.equal(tasks[0].runHistory[0].evidence, undefined);
   assert.equal(tasks[1].runHistory[0].evidence[0].id, runs[1].evidence[0].id);
+});
+
+test('streamed partial replies survive an unfinished-run checkpoint without changing the live final-message list', t => {
+  const {profile,files}=profileFixture(t),id=randomUUID();files.push('running-checkpoints/'+id+'.json');
+  const run={id,agents:{codex:{status:'running',messages:[]}},timeline:[],finishedAt:null};
+  writeProgressCheckpoint(profile,run,[{id:'stream',agent:'codex',text:'Partial reply before the crash'}]);
+  assert.equal(run.agents.codex.messages.length,0);assert.equal(run.checkpointSeq,1);
+  const restored={tasks:[{runHistory:[{id,agents:run.agents}]}]};restoreCheckpoints(profile,{repo:restored});
+  assert.equal(restored.tasks[0].runHistory[0].agents.codex.messages[0].text,'Partial reply before the crash');
+  run.finishedAt='done';writeProgressCheckpoint(profile,run,[{id:'stream',agent:'codex',text:'Obsolete'}]);
+  assert.equal(run.checkpointSeq,1);
 });

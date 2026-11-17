@@ -68,6 +68,8 @@ function recordEvidence(run, agent, event) {
     ...(approval ? { title: evidenceText(event.title), subject: evidenceText(event.subject), status: event.accepted ? "allowed" : "declined",
       ...(typeof event.commandId === "string" && { commandId: event.commandId }) }
       : { subject: evidenceText(event.command), status: event.status,
+        ...(event.completionSource === 'claude-tool-result' && ['succeeded', 'failed', 'interrupted'].includes(event.completion) &&
+          { completion: event.completion, completionSource: event.completionSource }),
         ...(Number.isSafeInteger(event.exitCode) && { exitCode: event.exitCode }),
         ...((run.linkedTurn || event.hook || testCommand(event.command)) && event.output && { output: evidenceText(event.output) }) }),
   };

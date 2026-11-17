@@ -79,6 +79,7 @@ app.once("browser-window-created", (_, win) => win.webContents.once("did-finish-
       assert.equal(state.workspace.runHistory.at(-1).agents.claude.status, "completed");
       result.checks.push("Hidden note survives restart and the same chat can run a tool-free Codex/Claude exchange without applying the old plan");
     }
+    await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     fs.writeFileSync(path.join(root, restoring ? "chat.png" : "notice-hidden.png"), (await win.webContents.capturePage()).toPNG());
     result.passed = true;
   } catch (error) { result.error = error.stack; result.ui = await js("document.body.innerText.slice(-2200)").catch(() => ""); }

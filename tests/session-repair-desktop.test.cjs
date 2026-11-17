@@ -1,0 +1,5 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{execFile}=require('node:child_process'),{promisify}=require('node:util');
+test('Session Team repairs real fixture edits once, rechecks both provider orders, and retains unresolved evidence without extra sends',{timeout:150000,skip:process.platform!=='win32'},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'deck-session-repair-'));let passed=false;
+ try{await promisify(execFile)(require('electron'),[path.join(__dirname,'fixtures/session-repair.cjs')],{windowsHide:true,timeout:140000,maxBuffer:2*1024*1024,env:{...process.env,AI_DECK_QA_ROOT:root,AI_DECK_QA_NODE:process.execPath,AI_DECK_QA_APP:path.resolve(__dirname,'../desktop')}});const report=JSON.parse(fs.readFileSync(path.join(root,'result.json')));assert.equal(report.error,undefined,report.error+' '+root);assert.equal(report.passed,true);assert.equal(report.cases.length,9);passed=true;}finally{if(passed&&fs.realpathSync(root)===root&&path.dirname(root)===os.tmpdir())fs.rmSync(root,{recursive:true});}
+});

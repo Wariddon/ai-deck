@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawnOwned: spawn, stopChild } = require("./process-owner.cjs");
 const { existsSync, promises: fs } = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -32,20 +32,26 @@ function recordingBytes(value) {
 function voiceProcess(exe, args, signal, timeoutMs, failed) {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(exe, args, { windowsHide: true, stdio: "ignore" });
+    const child = spawn(exe, args, { windowsHide: true, stdio: "ignore", reapOnExit: true });
     let expired = false;
-    const stop = () => child.kill();
-    const timer = setTimeout(() => { expired = true; stop(); }, timeoutMs);
-    signal.addEventListener("abort", stop, { once: true });
-    child.once("error", () => reject(new Error(failed)));
-    child.once("close", (code) => {
+    let settled = false;
+    const finish = async (error) => {
+      if (settled) return;
+      settled = true;
       signal.removeEventListener("abort", stop);
       clearTimeout(timer);
-      if (signal.aborted) reject(new Error("Voice cancelled."));
-      else if (expired) reject(new Error("Voice processing timed out. Try a shorter message."));
-      else if (code === 3 && exe === powershell) reject(new Error("Install the reply language voice in Windows Settings > Time & language > Speech."));
-      else if (code !== 0) reject(new Error(failed));
-      else resolve();
+      await stopChild(child);
+      if (error) reject(error); else resolve();
+    };
+    const stop = () => void finish(new Error("Voice cancelled."));
+    const timer = setTimeout(() => { expired = true; void finish(new Error("Voice processing timed out. Try a shorter message.")); }, timeoutMs);
+    signal.addEventListener("abort", stop, { once: true });
+    child.once("error", () => void finish(new Error(failed)));
+    child.once("close", (code) => {
+      const error = signal.aborted ? "Voice cancelled." : expired ? "Voice processing timed out. Try a shorter message."
+        : code === 3 && exe === powershell ? "Install the reply language voice in Windows Settings > Time & language > Speech."
+          : code !== 0 ? failed : null;
+      void finish(error && new Error(error));
     });
   });
 }
@@ -92,4 +98,4 @@ async function speak(value, signal) {
   });
 }
 
-module.exports = { voiceAvailable, transcribe, speak };
+module.exports = { voiceAvailable, transcribe, speak, recordingBytes, voiceProcess };

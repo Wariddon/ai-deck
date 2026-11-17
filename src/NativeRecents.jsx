@@ -11,16 +11,29 @@ import { NativeModelPicker } from "./NativeModelPicker.jsx";
 import { ComposerAttachments } from "./ComposerAttachments.jsx";
 import { useNativeAttachments } from "./NativeAttachments.jsx";
 import { OnDemandDetails, WorkSteps } from "./WorkActivity.jsx";
+import { mergeNativeOlder } from "../desktop/native-history.mjs";
+import { DeferredChatMarkdown, markdownViewport } from './DeferredChatMarkdown.jsx';
 
-const NativeMessages = memo(function NativeMessages({ messages, provider, preview }) {
-  return messages?.map(({ id, role, text, images, at }, index) => role === "user"
+const NativeMessages = memo(function NativeMessages({ messages, provider, preview, feed, follow }) {
+  const history = useRef(null);
+  const viewport = useMemo(() => markdownViewport(feed), [feed]);
+  useEffect(() => () => viewport.dispose(), [viewport]);
+  useEffect(() => {
+    if (!history.current || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (follow.current && feed.current) feed.current.scrollTop = feed.current.scrollHeight;
+    });
+    observer.observe(history.current); if (feed.current) observer.observe(feed.current);
+    return () => observer.disconnect();
+  }, [feed, follow]);
+  return <div className="deck-native-history" ref={history}>{messages?.map(({ id, role, text, images, at }, index) => role === "user"
     ? <div className="deck-native-turn" key={id}><ChatTimestamp at={at} previousAt={messages[index - 1]?.at} everyTurn />
       <article className="thread-prompt" aria-label="You"><div className="thread-prompt-body"><p>{text}</p>
       <ImageChips images={images} preview={preview} /></div></article></div>
     : <article className="deck-native-reply" key={id}>
       <div className="thread-session-provider"><Brand agent={provider} size={16} /><strong>{agentNames[provider]}</strong></div>
-      <ChatMarkdown text={text} />
-    </article>);
+      <DeferredChatMarkdown text={text} defer={messages.length > 160} viewport={viewport} />
+    </article>)}</div>;
 });
 
 function recentForkMessages(messages = []) {
@@ -97,7 +110,8 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
     onEdited: () => { draftEdits.current++; keepDraft(draftValue.current); },
     canEdit: Boolean(chat?.permissionMode && chat.permissionMode !== "chat"),
     onDelivered: (text) => clearSentDraft(text, draftEdits.current) });
-  const canSend = !readOnly && ready && chat?.available && !chat.active && !chat.unverified && !savingModels;
+  const repeatsUnknown = chat?.recovery?.status === 'unverified' && draft.trim() === chat.recovery.prompt;
+  const canSend = !readOnly && ready && chat?.available && !chat.active && !chat.unverified && !repeatsUnknown && !savingModels;
   const term = query.trim().toLocaleLowerCase();
   const visible = useMemo(() => messages?.filter(({ text }) => !term || text.toLocaleLowerCase().includes(term)).reverse(), [messages, term]);
   const workSteps = useMemo(() => activity.steps?.map(step => ({ ...step, id: step.key })), [activity.steps]);
@@ -196,8 +210,10 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
 
   const hint = busy && !messages ? "Loading original chat…" : session.archived ? "Restore this chat to continue it."
     : sourceTaskId ? "Original chat · Read only" : !chat ? "Refresh to verify this chat."
-    : chat.unverified ? "Refresh messages before sending."
+    : chat.unverified ? chat.recoveryError || "Refresh messages before sending."
       : !chat.available ? "The recorded folder is unavailable. Restore it to continue this chat."
+        : chat.recovery?.status === 'unverified' ? 'Previous send is unconfirmed. Refresh its original messages before repeating it; your draft is kept.'
+        : chat.recovery?.status === 'not-sent' ? 'The previous request stopped before sending. Your draft is kept; send it when ready.'
         : delivered?.status === "saved" ? "Message saved in the original chat. Refresh to check for a reply."
         : activity.cancelled ? "Waiting message cancelled. Your draft is kept."
         : chat.active ? "The original chat is working. Refresh when it finishes."
@@ -247,7 +263,9 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
         onClick={() => { follow.current = false; void older(term); }}>{term ? "Search older messages" : "Load older messages"}</button>}
       {skipped && <p className="setting-detail">Some very large transcript records were skipped.</p>}
       {visible?.length === 0 && <p className="setting-detail">{term ? "No matches in loaded messages." : "No readable messages in this chat."}</p>}
-      <NativeMessages messages={visible} provider={session.provider} preview={attachments.preview} />
+      <NativeMessages messages={visible} provider={session.provider} preview={attachments.preview} feed={feed} follow={follow} />
+      {chat?.recovery?.partialText && <details className="deck-native-work"><summary>Saved partial reply</summary>
+        <ChatMarkdown text={chat.recovery.partialText} /></details>}
       {workSteps?.length > 0 && <OnDemandDetails className="deck-native-work"
         summary={<>{workSteps.length} work steps · {commandSummary(workSteps.at(-1).text)}</>}>
         <WorkSteps steps={workSteps} />
@@ -385,13 +403,12 @@ export function NativeChatTransfer({ preview, older, busy, repositories, recents
   async function loadOlder() {
     if (!secondary) return older(term);
     const { provider, id } = other.session;
-    const page = await action("native-session-preview", { provider, id, older: true, query: term });
+    const page = await action("native-session-preview", { provider, id, older: true, query: term,
+      ...(Object.hasOwn(other, "cursor") && { cursor: other.cursor }) });
     if (!page) return;
     setOther((current) => {
-      if (current?.session.id !== id) return current;
-      const loaded = new Set(current.messages.map((message) => message.id));
-      return { ...current, ...page, skipped: current.skipped || page.skipped,
-        messages: [...current.messages, ...page.messages.filter((message) => !loaded.has(message.id))] };
+      if (current?.session.id !== id || current.session.provider !== provider) return current;
+      return mergeNativeOlder(current, page);
     });
   }
 

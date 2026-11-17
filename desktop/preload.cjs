@@ -50,6 +50,7 @@ api["import-task-files"] = async ({ files, taskId, native, existing }) => {
   return ipcRenderer.invoke("deck:add-task-attachments", { sources, taskId, native, existing });
 };
 api.autosaveDraft = (payload) => ipcRenderer.sendSync("deck:autosave-draft", payload);
+api.nativeTextCheckpoint = (payload) => ipcRenderer.sendSync('deck:native-text-checkpoint', payload);
 api.onEvent = (listener) => {
   const handler = (_event, data) => listener(data);
   ipcRenderer.on("deck:event", handler);

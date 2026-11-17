@@ -40,3 +40,12 @@ test("Foreground actions cancel all account readers and a subsequent refresh is 
   assert.equal(reader.pending, false);
   assert.equal(await reader.read("claude"), "ready");
 });
+
+test('an account reader that ignores cancellation cannot retain the busy state or publish a late value', async () => {
+  let release; const reader = createAccountReader(() => new Promise(resolve => { release = resolve; }), { timeout: 10 });
+  const pending = reader.read('claude'); let settled = false;
+  const observed = pending.then(() => { settled = true; return 'unexpected value'; }, error => { settled = true; return error.message; });
+  await delay(100); const endedWithinBudget = settled;
+  release('late account value'); const outcome = await observed;
+  assert.equal(endedWithinBudget, true); assert.match(outcome, /timed out/); assert.equal(reader.pending, false);
+});

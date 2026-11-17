@@ -169,9 +169,9 @@ export function TeamAnswerPreview({ preview }) {
   </article>;
 }
 
-function TeamReviewRecord({ run }) {
+export function TeamReviewRecord({ run }) {
   if (!run.teamReview) return null;
-  const { findings = [], reviews = {} } = run.teamReview;
+  const { findings = [], reviews = {}, cycles = [], needsReview } = run.teamReview;
   const reviewers = Object.entries(run.agents).filter(([id, record]) => record.position === "review" || reviews[id] ||
     !run.sessionTeam && agentRole(run.mode, id) === "review");
   const brief = sharedBriefPrompt(run.teamwork, run.teamReview.decisions);
@@ -182,11 +182,44 @@ function TeamReviewRecord({ run }) {
       <AgentMark provider={record.provider ?? id} /><strong>{teamAgentName(id, record)}</strong>
       <span>{reviews[id]?.fresh ? "Fresh context · " : ""}{reviews[id]?.status ?? record.status}</span>
     </p>)}
-    {findings.length > 0 ? <ul>{findings.map(({ id, severity, scope, detail, reviewers: sources }) =>
-      <li key={id}><strong>{id} · {severity.toUpperCase()}</strong> · <code>{scope}</code>
+    {needsReview && <p className="setting-detail">The saved changes still need review. You can continue this chat; queued work stays paused.</p>}
+    {cycles.map(cycle => <details key={cycle.id}>
+      <summary>Repair → recheck · {cycle.status}</summary>
+      <p className="setting-detail">{teamAgentName(cycle.writer, run.agents[cycle.writer])} · {cycle.paths.join(', ')}</p>
+      {cycle.previousReports?.[cycle.writer] && <details><summary>Before repair</summary><ChatMarkdown text={cycle.previousReports[cycle.writer]} /></details>}
+      <ul>{cycle.findings.map(finding => <li key={finding.key}><code>{finding.scope}</code> · {finding.detail}</li>)}</ul>
+      {cycle.finalReview && <ChatMarkdown text={cycle.finalReview.replace(/^AI_DECK_REVIEW: (?:PASS|CHANGES|BLOCKED)\s*\n/u, '')} />}
+    </details>)}
+    {Object.entries(reviews).filter(([, review]) => review.repairNote).map(([id, review]) =>
+      <p className="setting-detail" key={id}>{review.repairNote}</p>)}
+    {findings.length > 0 ? <ul>{findings.map(({ id, severity, scope, detail, reviewers: sources, resolvedBy }) =>
+      <li key={id}><strong>{id} · {severity.toUpperCase()}{resolvedBy && ' · Addressed in recheck'}</strong> · <code>{scope}</code>
         <ChatMarkdown text={detail} /><p className="setting-detail">Reported by {sources.map((id) => teamAgentName(id, run.agents[id])).join(", ")}</p>
       </li>)}</ul> : <p className="setting-detail">No structured findings were recorded. This does not certify that the checks passed.</p>}
     {brief && <details><summary>Brief and decisions supplied</summary><ChatMarkdown text={brief} /></details>}
+  </details>;
+}
+
+export function WorkEvidenceRecord({ run }) {
+  const records = Object.entries(run.workEvidence ?? run.teamReview?.evidence ?? {}).filter(([, evidence]) => evidence.conditions?.length);
+  if (!records.length) return null;
+  return <details className="team-brief-record"><summary>Handoff evidence</summary>
+    <p className="setting-detail">Saved observations at handoff support the conditions. Verified values apply to the recorded target and environment; image hashes do not certify appearance. This is not a live environment check.</p>
+    {records.map(([id, evidence]) => <div key={id}>
+      <p className="setting-detail">Code {evidence.head?.slice(0, 10) || 'unknown'} · snapshot {evidence.stamp?.slice(0, 10) || 'unverified'}</p>
+      <ul>{evidence.conditions.map((condition, index) => <li key={index}>
+        <strong>{evidence.proofVersion !== 2 && condition.assertions?.length && condition.status === 'verified' ? 'historical observation' : condition.status}</strong> · {condition.condition}
+        {condition.reason && <p className="setting-detail">{condition.reason}</p>}
+        {condition.files.map(file => <p className="setting-detail" key={file.path}>{file.path} · {file.status}{file.sha256 && ' · ' + file.sha256.slice(0, 10)}</p>)}
+        {condition.tests.map(test => <p className="setting-detail" key={test.command}>{test.command} · {test.status}{Number.isInteger(test.exitCode) ? ' · exit ' + test.exitCode : test.completionSource === 'claude-tool-result' ? ' · native tool result' : ''}</p>)}
+        {condition.tests.filter(test => test.observedAt).map(test => <p className="setting-detail" key={'observed-' + test.command}>Artifacts observed {test.observedAt}{test.host && ' · runner host ' + test.host.platform + '/' + test.host.arch}</p>)}
+        {condition.assertions?.map((assertion, index) => <p className="setting-detail" key={index}>
+          {assertion.path}#{assertion.pointer} · {assertion.status} · expected {{ equals: '=', atMost: '≤', atLeast: '≥' }[assertion.operator]} {JSON.stringify(assertion.expected)}
+          {Object.hasOwn(assertion, 'actual') && ' · observed ' + JSON.stringify(assertion.actual)}
+          {assertion.reason && ' · ' + assertion.reason}
+        </p>)}
+      </li>)}</ul>
+    </div>)}
   </details>;
 }
 
@@ -238,6 +271,7 @@ export const TeamRunResult = memo(function TeamRunResult({ run, work = [], summa
     </div>}
     {!answer && collaboration.findings && <ChatMarkdown text={collaboration.findings} />}
     <TeamReviewRecord run={run} />
+    <WorkEvidenceRecord run={run} />
     {collaboration.evidenceRequest && <p className="usage-hold" role="status">{collaboration.evidenceRequest}</p>}
     {collaboration.criteria?.length > 0 && <details open={collaboration.verdict === "blocked" || undefined}>
       <summary>Review criteria</summary>

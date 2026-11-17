@@ -4,6 +4,18 @@ const { execFile } = require("node:child_process"), { promisify } = require("nod
 const { createProjectTools, githubRepository } = require("../desktop/project-tools.cjs");
 const { remoteClient } = require("../desktop/mcp-client.cjs");
 const exec = promisify(execFile);
+
+test('closing a remote tool aborts its own in-flight request and leaves its peer usable', async () => {
+  const signals = [];
+  const send = (_url, options) => new Promise((_resolve, reject) => {
+    signals.push(options.signal); options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+  });
+  const first = remoteClient('https://example.invalid', {}, { fetch: send }), peer = remoteClient('https://example.invalid', {}, { fetch: send });
+  const a = first.request('tools/call', {}), b = peer.request('tools/call', {});
+  first.close(); await assert.rejects(a, /ended/); assert.equal(signals[1].aborted, false);
+  await assert.rejects(first.request('tools/call', {}), /ended/); assert.equal(signals.length, 2);
+  peer.close(); await assert.rejects(b, /ended/);
+});
 const git = async (cwd, args) => (await exec("git", ["-c", "core.hooksPath=NUL", "-c", "user.name=AI Deck QA", "-c", "user.email=qa@example.invalid", "-c", "commit.gpgSign=false", ...args], { cwd, windowsHide: true })).stdout;
 async function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "deck-project-tools-"));
@@ -13,6 +25,29 @@ async function fixture(t) {
   await git(root, ["add", "."]); await git(root, ["commit", "-qm", "fixture"]);
   return root;
 }
+
+test('project cleanup awaits the GitHub client even when initialization finishes after Stop', async t => {
+  const root = await fixture(t); await git(root, ['remote', 'add', 'origin', 'https://github.com/owner/project.git']);
+  const entered = Promise.withResolvers(), gate = Promise.withResolvers(); let closed = false, requested = false;
+  const tools = createProjectTools({ cwd: root, git, getToken: async () => 'fixture', connectGitHub: () => ({
+    initialize: async () => { entered.resolve(); await gate.promise; },
+    close: async () => { await new Promise(r => setTimeout(r, 10)); closed = true; },
+    request: async () => { requested = true; },
+  }) });
+  const pending = tools.call('github_read', { action: 'pr', number: 1 }, 'codex');
+  await entered.promise; await tools.close(); assert.equal(closed, true);
+  gate.resolve(); await assert.rejects(pending, /ended/); assert.equal(requested, false);
+});
+
+test('failed tool initialization releases its resource immediately rather than retaining it until job end', async t => {
+  const root = await fixture(t); await git(root, ['remote', 'add', 'origin', 'https://github.com/owner/project.git']);
+  let closed = 0;
+  const tools = createProjectTools({ cwd: root, git, getToken: async () => 'fixture', connectGitHub: () => ({
+    initialize: async () => { throw Error('Controlled metadata failure'); }, close: async () => { closed++; },
+  }) });
+  await assert.rejects(tools.call('github_read', { action: 'pr', number: 1 }, 'codex'), /Controlled/);
+  assert.equal(closed, 1); await tools.close(); assert.equal(closed, 1);
+});
 
 test("shared project tools are read-only, scoped to the checkout, revocable and quoted to peers", async t => {
   const root = await fixture(t), observations = [];

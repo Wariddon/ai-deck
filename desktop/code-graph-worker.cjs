@@ -1,59 +1,69 @@
 const path = require("node:path");
 const { Worker } = require("node:worker_threads");
+const { randomUUID } = require('node:crypto');
 const { shareableDiffPath } = require("./review-snapshot.cjs");
 const { evidenceText } = require("./run-history.cjs");
 
 const sourcePath = /\.(?:[cm]?[jt]s|[jt]sx)$/iu;
 const excluded = /(?:^|\/)(?:node_modules|vendor|dist|build|coverage|\.next)(?:\/|$)/iu;
 let worker;
-let idleTimer;
-
-function closeCodeGraph() {
-  clearTimeout(idleTimer);
-  const current = worker;
-  worker = undefined;
-  if (current) void current.terminate();
+function stopWorker(current, error = new Error('The code graph worker stopped.')) {
+  if (!current) return Promise.resolve();
+  if (current.ending) return current.ending;
+  current.closed = true; clearTimeout(current.idle);
+  if (worker === current) worker = undefined;
+  for (const slot of [...current.pending.values()]) slot.finish(error);
+  current.worker.removeAllListeners();
+  current.worker.on('error', () => {});
+  return current.ending = current.worker.terminate().catch(() => {});
 }
 
-async function readCodeGraph(git, cwd, query, lowMemory) {
-  const listing = await git(cwd, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { limit: 2 * 1024 * 1024 });
+function closeCodeGraph() { return stopWorker(worker); }
+
+function graphWorker() {
+  const current = { worker: new Worker(path.join(__dirname, 'code-graph.cjs'), { resourceLimits: { maxOldGenerationSizeMb: 192 } }), pending: new Map() };
+  current.worker.on('message', ({ id, cwd, error, result }) => {
+    const slot = current.pending.get(id);
+    if (slot) slot.finish(cwd !== slot.cwd ? new Error('Code evidence belongs to another checkout.') : error && new Error(error), result);
+  });
+  current.worker.once('error', error => { void stopWorker(current, error); });
+  current.worker.once('exit', () => { void stopWorker(current); });
+  return current;
+}
+
+async function readCodeGraph(git, cwd, query, lowMemory, signal) {
+  signal?.throwIfAborted();
+  const listing = await git(cwd, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { limit: 2 * 1024 * 1024, signal });
+  signal?.throwIfAborted();
   if (listing && (listing.length >= 2 * 1024 * 1024 || !listing.endsWith("\0"))) throw new Error("Too many project files to scan.");
   const files = [...new Set(listing.split("\0").filter((file) => sourcePath.test(file) && !excluded.test(file) && shareableDiffPath(file)))];
   const explicit = files.indexOf(query.file);
   if (explicit > 0) files.unshift(...files.splice(explicit, 1));
-  clearTimeout(idleTimer);
-  const current = worker ??= new Worker(path.join(__dirname, "code-graph.cjs"),
-    { resourceLimits: { maxOldGenerationSizeMb: 192 } });
+  const current = worker ??= graphWorker(), id = randomUUID();
+  clearTimeout(current.idle); current.worker.ref();
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      closeCodeGraph();
-      done(new Error("Code graph timed out. Choose a more focused project."));
+      finish(new Error('Code graph timed out. Choose a more focused project.'));
+      if (!current.pending.size) void stopWorker(current);
     }, 12000);
-    function done(error, result) {
+    const abort = () => {
+      finish(signal.reason ?? new Error('Code lookup cancelled.'));
+      if (!current.pending.size) void stopWorker(current);
+    };
+    function finish(error, result) {
+      if (!current.pending.delete(id)) return;
       clearTimeout(timeout);
-      current.off("message", onMessage);
-      current.off("error", onError);
-      current.off("exit", onExit);
+      signal?.removeEventListener('abort', abort);
       if (error) reject(error);
       else resolve(result);
+      if (!current.closed && !current.pending.size) {
+        current.idle = setTimeout(() => { void stopWorker(current); }, lowMemory ? 8000 : 45000);
+        current.idle.unref(); current.worker.unref();
+      }
     }
-    function onMessage({ error, result }) {
-      idleTimer = setTimeout(closeCodeGraph, lowMemory ? 8000 : 45000);
-      idleTimer.unref();
-      done(error && new Error(error), result);
-    }
-    function onError(error) {
-      if (worker === current) closeCodeGraph();
-      done(error);
-    }
-    function onExit() {
-      if (worker === current) worker = undefined;
-      done(new Error("The code graph worker stopped."));
-    }
-    current.once("message", onMessage);
-    current.once("error", onError);
-    current.once("exit", onExit);
-    current.postMessage({ cwd, files, query });
+    current.pending.set(id, { cwd, finish }); signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) return abort();
+    try { current.worker.postMessage({ id, cwd, files, query }); } catch (error) { finish(error); }
   });
 }
 

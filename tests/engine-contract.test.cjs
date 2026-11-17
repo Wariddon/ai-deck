@@ -595,7 +595,8 @@ test("Claude surfaces Bash hook requests and records the result only after appro
       hook(child, "test", { command });
     } else if (frame.response?.request_id === "test") {
       assert.equal(frame.response.response.hookSpecificOutput.permissionDecision, "allow");
-      child.send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "test-tool", content: "1 test passed" }] } });
+      child.send({ type: "user", tool_use_result: { stdout: "1 test passed", stderr: "", interrupted: false },
+        message: { content: [{ type: "tool_result", tool_use_id: "test-tool", is_error: false, content: "1 test passed" }] } });
       child.send({ type: "result", result: "Passed", is_error: false });
     }
   }, (child) => queueMicrotask(() => child.kill())));
@@ -613,6 +614,7 @@ test("Claude surfaces Bash hook requests and records the result only after appro
     assert.equal(events.find((event) => event.type === "approval").commandId, "test-tool");
     assert.deepEqual(events.find((event) => event.type === "command-result"), {
       type: "command-result", key: "test-tool", command, status: "returned", output: "1 test passed",
+      completionSource: 'claude-tool-result', completion: 'succeeded',
     });
   } finally {
     replace.mock.restore();

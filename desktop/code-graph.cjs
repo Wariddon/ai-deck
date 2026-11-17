@@ -16,10 +16,10 @@ let cache;
 
 function collect(root, candidates) {
   const files = new Map();
-  let bytes = 0;
+  let bytes = 0, scannedFiles = 0;
   let skipped = 0;
   for (const file of candidates) {
-    if (files.size >= maxFiles || bytes >= maxBytes) { skipped++; continue; }
+    if (scannedFiles++ >= maxFiles || bytes >= maxBytes) { skipped++; continue; }
     const absolute = path.resolve(root, file);
     const relative = path.relative(root, absolute);
     if (!relative || path.isAbsolute(relative) || relative.startsWith(".." + path.sep)) { skipped++; continue; }
@@ -27,20 +27,24 @@ function collect(root, candidates) {
       const real = fs.realpathSync(absolute);
       if (path.relative(absolute, real)) { skipped++; continue; }
       const stat = fs.statSync(real);
-      if (!stat.isFile() || stat.size > maxFileBytes || bytes + stat.size > maxBytes) { skipped++; continue; }
-      const input = fs.readFileSync(real);
-      const after = fs.statSync(real);
+      if (!stat.isFile() || stat.nlink > 1 || stat.size > maxFileBytes || bytes + stat.size > maxBytes) { skipped++; continue; }
+      const fd = fs.openSync(real, 'r'); let input, after;
+      try {
+        const buffer = Buffer.alloc(stat.size + 1); let read = 0;
+        while (read < buffer.length) { const count = fs.readSync(fd, buffer, read, buffer.length - read, read); if (!count) break; read += count; }
+        input = buffer.subarray(0, read); bytes += read; after = fs.fstatSync(fd);
+      } finally { fs.closeSync(fd); }
       if (path.relative(real, fs.realpathSync(absolute)) || stat.mtimeMs !== after.mtimeMs || stat.size !== after.size ||
-          input.length > maxFileBytes || bytes + input.length > maxBytes || input.includes(0)) { skipped++; continue; }
+          stat.ino !== after.ino || input.length !== stat.size || input.length > maxFileBytes || bytes > maxBytes || input.includes(0)) { skipped++; continue; }
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(input);
       const digest = hash(input);
       const name = normalize(absolute);
       const old = cache?.root === root && cache.files.get(name);
-      const entry = old?.digest === digest ? old : { digest, text: input.toString("utf8") };
+      const entry = old?.digest === digest ? old : { digest, text };
       files.set(name, entry);
-      bytes += input.length;
     } catch { skipped++; }
   }
-  return { files, skipped };
+  return { files, skipped, bytesRead: bytes, scannedFiles: Math.min(scannedFiles, maxFiles) };
 }
 
 function makeProgram(files, root, oldProgram) {
@@ -154,7 +158,7 @@ function buildIndex(program, root) {
 function queryCodeGraph(cwd, candidates, query) {
   const started = performance.now();
   const root = fs.realpathSync(cwd);
-  const { files, skipped } = collect(root, candidates);
+  const { files, skipped, bytesRead, scannedFiles } = collect(root, candidates);
   const snapshot = hash(JSON.stringify([...files].map(([file, entry]) => [normalize(path.relative(root, file)), entry.digest]).sort()));
   const reused = cache?.root === root && cache.snapshot === snapshot;
   if (!reused) {
@@ -187,7 +191,7 @@ function queryCodeGraph(cwd, candidates, query) {
   const unique = [...new Map(rows.map((row) => [JSON.stringify(row), row])).values()];
   unique.sort((left, right) => order.indexOf(left.kind) - order.indexOf(right.kind) ||
     left.file.localeCompare(right.file) || left.line - right.line);
-  return { query, rows: unique.slice(0, maxRows), snapshot, indexedFiles: files.size, skipped,
+  return { query, rows: unique.slice(0, maxRows), snapshot, indexedFiles: files.size, skipped, bytesRead, scannedFiles,
     partial: skipped > 0 || unique.length > maxRows, ambiguous: definitions.length > 1,
     elapsedMs: Math.round(performance.now() - started), cacheHit: Boolean(reused) };
 }
@@ -244,10 +248,10 @@ function assignmentGraph(cwd, candidates, text) {
     partial: skipped > 0 || named.length !== focus.size || links.size > 14 };
 }
 
-if (!isMainThread) parentPort.on("message", ({ cwd, files, query }) => {
-  try { parentPort.postMessage({ result: query.assignmentText === undefined
+if (!isMainThread) parentPort.on("message", ({ id, cwd, files, query }) => {
+  try { parentPort.postMessage({ id, cwd, result: query.assignmentText === undefined
     ? queryCodeGraph(cwd, files, query) : assignmentGraph(cwd, files, query.assignmentText) }); }
-  catch (error) { parentPort.postMessage({ error: error.message }); }
+  catch (error) { parentPort.postMessage({ id, cwd, error: error.message }); }
 });
 
 module.exports = { queryCodeGraph, assignmentGraph };

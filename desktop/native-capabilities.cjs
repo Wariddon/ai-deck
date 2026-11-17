@@ -5,9 +5,12 @@ const path = require("node:path");
 // Inspect the user's request, never retrieved pages, attachments or teammate text.
 function nativeChromeRequested(prompt) {
   if (typeof prompt !== "string") return false;
+  // An English substring such as knowledge or edge cases is not a browser.
+  prompt = prompt.replace(/\bedge\s+cases?\b/giu, "");
+  const browser = /(?<![\p{L}\p{N}_])(?:chrome|(?:microsoft\s+)?edge)(?![\p{L}\p{N}_])|โครม|เอดจ์/iu;
   if (/(?:ไม่ต้อง|อย่า|ห้าม|do\s+not|don't)[^\n.!?]{0,60}(?:chrome|โครม|edge|เอดจ์)/iu.test(prompt)) return false;
   return /(?:^|\s)(?:\/chrome\b|@chrome\b)/iu.test(prompt) ||
-    /(?:chrome|โครม|edge|เอดจ์)/iu.test(prompt) &&
+    browser.test(prompt) &&
     /(?:\b(?:open|browse|navigate|click|inspect|screenshot|capture|control|check|read|test)\b|เปิด|เข้าเว็บ|คลิก|กด|ตรวจ|เช็ค|เช็ก|อ่าน|จับจอ|จับหน้าจอ|แคป|ควบคุม|ทดสอบ)/iu.test(prompt);
 }
 
@@ -24,6 +27,7 @@ function nativeChromeDecision(tool, input, active = true) {
   // Full file access does not silently approve changes in a signed-in browser.
   if (JSON.stringify(input ?? {}).length > 12000) return "deny";
   const name = tool.slice(chromePrefix.length);
+  if (name === "tabs_context_mcp" && input?.createIfEmpty) return "ask";
   return chromeReadTools.has(name) || name === "computer" && input?.action === "screenshot" ? "allow" : "ask";
 }
 

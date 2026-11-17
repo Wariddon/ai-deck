@@ -1,5 +1,5 @@
 const { validateAssignments, formatRequiredChecks } = require("./team-contract.cjs");
-const { workContractPrompt } = require("./work-contract.mjs");
+const { workContractPrompt, workEvidenceInstructions } = require("./work-contract.mjs");
 
 const agents = ["codex", "claude"];
 const peer = (agent) => agent === "codex" ? "claude" : "codex";
@@ -81,6 +81,7 @@ async function planAutoTeam({ state, allowSplit, checkoutHead, checkoutRefs = []
         "AI_DECK_AUTO: SPLIT (both write), AI_DECK_AUTO: NEEDS_INPUT, or AI_DECK_AUTO: BLOCKED. Output only the marker and value on that line.",
       'For CODEX, CLAUDE or SPLIT, follow the marker with one JSON object and no code fence. Shape: {"requiredBase":"full commit hash","summary":"steps and risks","assignments":{"codex":{"task":"its job","paths":["src/a.js"],"acceptance":["observable outcome"],"inputs":["current interface and task evidence"],"outputs":["changed interface and check evidence"],"readyWhen":["the interface is compatible and the relevant check is observed"]},"claude":{"task":"its job","paths":[],"acceptance":["observable outcome"],"inputs":["builder diff and observed checks"],"outputs":["findings tied to acceptance criteria"],"readyWhen":["missing evidence and open findings are explicit"]}}}.',
       "Include inputs, outputs and readyWhen for each assignment: up to six concise strings per field, at most 300 characters each. Name concrete interfaces, artifacts and evidence; these are requirements, not claims that checks already passed. SPLIT inputs must be available at the common base, not depend on the other writer's unmerged edits. Put integration dependencies in the summary instead.",
+      workEvidenceInstructions,
       checkoutHead && "Use a writer decision only when the work can start on the verified HEAD. Set requiredBase to the full commit hash above. If another checkout is necessary, use NEEDS_INPUT and name the required checkout and why it is needed.",
       "Give each writer exact repository-relative files or directories with a trailing slash. A reviewer has an empty paths array. SPLIT writers must be independent. For NEEDS_INPUT or BLOCKED, give the question or blocker in plain text.",
       "For SPLIT, each assignment's acceptance criteria must be verifiable in its own worktree. Put cross-worktree criteria in the summary for final integration.",

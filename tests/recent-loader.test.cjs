@@ -45,7 +45,7 @@ test("Foreground work cancels Recents without publishing partial results or erro
   assert.deepEqual([...cache.keys()], ["codex:saved"]);
   const deferred = await loader.refresh();
   assert.equal(deferred.deferred, true);
-  assert.equal(calls, 1);
+  assert.equal(calls, 0, 'Cancellation before dispatch must not start a metadata reader');
 });
 
 test("A slow provider times out while the successful provider's chats stay available", async () => {
@@ -65,4 +65,18 @@ test("Connection command cancellation stops a stalled child instead of waiting f
   controller.abort();
   await assert.rejects(pending, { name: "AbortError" });
   assert.throws(() => capture(process.execPath, ["--version"], { signal: controller.signal }), { name: "AbortError" });
+});
+
+test('Recents settles on its deadline even when a reader ignores abort and retains the last known rows', async () => {
+  const cache = new Map([['codex:saved', { provider: 'codex', id: 'saved', updatedAt: 1 }]]); let release;
+  const loader = createRecentLoader({ cache, timeout: 10, readers: {
+    codex: () => new Promise(resolve => { release = resolve; }),
+    claude: async () => [{ provider: 'claude', id: 'ready', updatedAt: 2 }],
+  } });
+  let settled = false; const pending = loader.refresh().then(result => { settled = true; return result; });
+  await delay(100); const endedWithinBudget = settled;
+  release([{ provider: 'codex', id: 'late', updatedAt: 3 }]); const result = await pending;
+  assert.equal(endedWithinBudget, true); assert.equal(loader.pending, false);
+  assert.deepEqual(result.sessions.map(row => row.id), ['ready', 'saved']); assert.ok(result.errors.codex);
+  assert.equal(cache.has('codex:late'), false);
 });

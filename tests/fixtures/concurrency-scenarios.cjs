@@ -1,0 +1,32 @@
+const assert = require('node:assert/strict');
+module.exports = async ({ report, js, api, click, type, open, draft, wait, holdTurn, ids }) => {
+  const jobs = async () => (await api('state')).jobs;
+  const submit = async (key, text) => {
+    await open(key); await type(text);
+    await js("document.querySelector('.deck-native-chat form').requestSubmit();document.querySelector('.deck-native-chat form').requestSubmit()");
+  };
+  await api('pull-native-recents');
+  const a = holdTurn('codex'); await submit('a', 'Phase 4 A'); await wait(() => a.entered, 'Codex A active');
+  const c = holdTurn('claude'); await submit('c', 'Phase 4 Claude'); await wait(() => c.entered, 'Claude active');
+  const b = holdTurn('codex'); await submit('b', 'Phase 4 B queued');
+  await wait(async () => (await jobs()).length === 3 && (await jobs()).some(j => j.key === 'native:codex:' + ids.b && j.state === 'waiting'), 'third chat queued');
+  assert.equal(report.calls.length, 2); assert.equal(b.entered, false);
+  await assert.rejects(api('save-low-memory', true)); assert.equal((await api('state')).lowMemory, false);
+  await open('a'); assert.equal(await click('Stop'), true);
+  await wait(async () => b.entered && !(await jobs()).some(j => j.key === 'native:codex:' + ids.a), 'Stop releases only A');
+  assert.equal(a.stopped, true); assert.equal(c.stopped, undefined);
+  assert.deepEqual(report.calls.map(row => [row.provider, row.id]), [['codex', ids.a], ['claude', ids.a], ['codex', ids.b]]);
+  assert.equal((await jobs()).length, 2); b.release(); c.release(); await wait(async () => !(await jobs()).length, 'both peers complete');
+  report.checks.push('two native jobs overlap; the third waits; duplicate submit and targeted Stop leave the peer intact');
+  await api('save-low-memory', true);
+  const solo = holdTurn('codex'); await submit('a', 'Low RAM A'); await wait(() => solo.entered, 'Low RAM A active');
+  await submit('c', 'Keep cancelled Claude draft');
+  await wait(async () => (await jobs()).some(j => j.key === 'native:claude:' + ids.a && j.state === 'waiting'), 'Low RAM queue');
+  assert.match((await jobs()).find(j => j.key === 'native:claude:' + ids.a).reason, /Low RAM/);
+  assert.equal(report.calls.length, 4); assert.equal(await click('Stop'), true);
+  await wait(async () => (await jobs()).length === 1, 'queued Stop released');
+  assert.equal(await draft(), 'Keep cancelled Claude draft'); assert.equal(solo.stopped, undefined);
+  solo.release(); await wait(async () => !(await jobs()).length, 'Low RAM job complete');
+  await api('save-low-memory', false); assert.equal(report.calls.length, 4);
+  report.checks.push('Low RAM serializes jobs; cancelling the queued chat preserves its draft and makes no provider call');
+};

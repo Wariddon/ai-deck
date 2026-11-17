@@ -1,8 +1,8 @@
-const { spawn } = require("node:child_process");
+const { spawnOwned: spawn, stopChild } = require('./process-owner.cjs');
 const { createInterface } = require("node:readline");
 
 function stdioClient(exe, args, options = {}) {
-  const child = spawn(exe, args, { cwd: options.cwd, env: options.env, windowsHide: true, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(exe, args, { cwd: options.cwd, env: options.env, signal: options.signal, windowsHide: true, reapOnExit: true, stdio: ["pipe", "pipe", "pipe"] });
   const pending = new Map(); let sequence = 0, closed = false, stopping = false;
   child.stdin.on("error", () => {}); child.stderr.on("data", () => {});
   const fail = () => { closed = true; for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error("The semantic tool service stopped.")); } pending.clear(); };
@@ -21,13 +21,11 @@ function stdioClient(exe, args, options = {}) {
     pending.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
   const close = () => {
-    if (stopping) return;
-    stopping = true;
+    if (stopping) return stopping;
+    stopping = stopChild(child);
     fail(); reader.close(); child.stdin.destroy();
-    if (child.pid && child.exitCode === null && child.signalCode === null) {
-      if (process.platform === "win32") spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on("error", () => child.kill());
-      else { try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill(); } }
-    }
+    options.signal?.removeEventListener('abort', close);
+    return stopping;
   };
   options.signal?.addEventListener("abort", close, { once: true });
   return { request, async initialize() {
@@ -38,9 +36,11 @@ function stdioClient(exe, args, options = {}) {
 
 function remoteClient(url, headers, { signal, fetch: send = fetch } = {}) {
   let sequence = 0, session;
+  const lifetime = new AbortController();
   async function request(method, params, notification = false) {
+    lifetime.signal.throwIfAborted();
     const id = notification ? undefined : ++sequence;
-    const response = await send(url, { method: "POST", redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
+    const response = await send(url, { method: "POST", redirect: "error", signal: AbortSignal.any([lifetime.signal, signal, AbortSignal.timeout(25000)].filter(Boolean)),
       headers: { ...headers, Accept: "application/json, text/event-stream", "Content-Type": "application/json", "MCP-Protocol-Version": "2025-03-26", ...(session && { "Mcp-Session-Id": session }) },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) });
     if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "GitHub authentication or repository access is unavailable." : "GitHub MCP could not complete the read request.");
@@ -61,6 +61,6 @@ function remoteClient(url, headers, { signal, fetch: send = fetch } = {}) {
     } } finally { await reader.cancel().catch(() => {}); }
     throw new Error("GitHub MCP returned no result.");
   }
-  return { request, async initialize() { await request("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "AI Deck", version: "1" } }); await request("notifications/initialized", {}, true); } };
+  return { request, close() { lifetime.abort(new Error("This task's tool access has ended.")); }, async initialize() { await request("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "AI Deck", version: "1" } }); await request("notifications/initialized", {}, true); } };
 }
 module.exports = { stdioClient, remoteClient };

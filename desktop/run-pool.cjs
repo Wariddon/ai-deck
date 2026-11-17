@@ -22,7 +22,7 @@ class RunPool {
     this.changed();
     return job;
   }
-  reason(entry) {
+  availability(entry) {
     const running = [...this.entries.values()].filter((other) => other !== entry && other.state !== 'waiting');
     if (this.blocked() || running.some((other) => other.state === 'preparing')) return 'Preparing another job';
     if (running.length >= this.limit()) return this.limit() === 1 ? 'Low RAM: one job at a time' : 'Waiting for a free job slot';
@@ -32,7 +32,17 @@ class RunPool {
     }
     return '';
   }
+  reason(entry) {
+    const reason = this.availability(entry);
+    if (reason) return reason;
+    for (const earlier of this.entries.values()) {
+      if (earlier === entry) break;
+      if (earlier.state === 'waiting' && !this.availability(earlier)) return 'Waiting for an earlier queued job';
+    }
+    return '';
+  }
   submit({ key, workspace, task, locks = [], title, job }, start) {
+    if (this.closed) throw new Error('The job pool is closed.');
     if (this.entries.has(key)) throw new Error('This session already has a job. Queue a follow-up or wait for it to finish.');
     const entry = { key, workspace, task, locks, title, start, state: 'waiting',
       job: job ?? { task, workspace, waiting: true, approvals: [], stopping: false } };
@@ -81,12 +91,17 @@ class RunPool {
     return true;
   }
   wake() {
-    if (this.timer || ![...this.entries.values()].some((entry) => entry.state === 'waiting')) return;
+    if (this.closed || ![...this.entries.values()].some((entry) => entry.state === 'waiting')) {
+      clearTimeout(this.timer); this.timer = null; return;
+    }
+    if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = null;
       for (const entry of this.entries.values()) {
         if (entry.state !== 'waiting') continue;
+        const previous = entry.reason;
         entry.reason = this.reason(entry);
+        if (entry.reason !== previous) this.changed();
         if (!entry.reason) { void this.launch(entry); break; }
       }
       this.wake();
@@ -94,9 +109,10 @@ class RunPool {
     this.timer.unref?.();
   }
   close() {
+    this.closed = true;
     clearTimeout(this.timer);
     this.timer = null;
-    for (const entry of [...this.entries.values()]) if (entry.state === 'waiting') this.cancel(entry.key);
+    for (const entry of [...this.entries.values()]) this.cancel(entry.key);
     clearTimeout(this.timer);
     this.timer = null;
   }

@@ -1,6 +1,6 @@
 import { agentRole } from "../desktop/collaboration.mjs";
 import { Brand, agentNames } from "./TeamThread.jsx";
-import { TeamHandoffs } from "./TeamHandoff.jsx";
+import { TeamHandoffs, WorkEvidenceRecord } from "./TeamHandoff.jsx";
 import { teamAgentName } from "../desktop/team-result.mjs";
 import "./team-progress.css";
 
@@ -121,10 +121,11 @@ function stepLabel(id) {
   return who + (stage === "fix" ? " · Revision" : " · Implementation");
 }
 
-export function AutoTeamRecord({ record }) {
+export function AutoTeamRecord({ record, evidence }) {
   if (!record) return null;
   return <section className="live-note">
     <strong>{teamResults[record.status] ?? "Auto Team"}</strong>
+    <WorkEvidenceRecord run={{ workEvidence: evidence }} />
     {record.detail && <p className="setting-detail">{record.detail}</p>}
     {record.assignmentGraph && <p className="setting-detail">JS/TS dependency graph · {record.assignmentGraph.files} files · {record.assignmentGraph.groups} groups
       {record.assignmentGraph.partial && " · Partial"}</p>}

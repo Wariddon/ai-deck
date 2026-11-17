@@ -60,7 +60,7 @@ export function criteriaReplyFormat(focus) {
 export const emptyReviewNote = (line) => /^(?:review notes: none|ไม่มี check ที่ขาด)[.!]?$/iu.test(line.trim());
 
 export function testCommandText(command) {
-  return /^(?:"[^"]*[\\/](?:pwsh|powershell)(?:\.exe)?"|(?:pwsh|powershell)(?:\.exe)?)\s+-Command\s+(['"])(.*)\1$/iu
+  return /^(?:"[^"]*[\\/](?:pwsh|powershell)(?:\.exe)?"|(?:pwsh|powershell)(?:\.exe)?)(?:\s+-(?:NoLogo|NoProfile|NonInteractive))*\s+-Command\s+(['"])(.*)\1$/iu
     .exec(command ?? "")?.[2] ?? command;
 }
 

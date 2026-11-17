@@ -9,14 +9,19 @@ export class NativeTextDrafts {
     this.clearTimer = clearTimer;
     this.delay = delay;
     this.drafts = new Map();
+    this.tokens = new Map();
     this.dirty = false;
     this.timer = null;
     this.error = "";
     try {
       const rows = JSON.parse(storage.getItem(nativeTextDraftsKey) ?? "[]");
       if (!Array.isArray(rows)) throw new Error("Invalid saved draft list");
-      for (const row of rows) if (Array.isArray(row) && typeof row[0] === "string" && typeof row[1] === "string" && row[1])
+      for (const row of rows) if (Array.isArray(row) && typeof row[0] === "string" && typeof row[1] === "string" && row[1]) {
         this.drafts.set(row[0], row[1]);
+        this.tokens.set(row[0], typeof row[2] === 'string' && /^[a-z\d-]{16,80}$/iu.test(row[2]) ? row[2] : crypto.randomUUID());
+        if (!row[2]) this.dirty = true;
+      }
+      if (storage.needsCheckpoint && this.drafts.size) this.dirty = true;
     } catch {
       this.error = "Saved chat drafts could not be read on this PC.";
     }
@@ -25,20 +30,23 @@ export class NativeTextDrafts {
   set(key, text) {
     if ((this.drafts.get(key) ?? "") === text) return;
     this.drafts.delete(key);
+    this.tokens.delete(key);
     if (text) this.drafts.set(key, text);
+    if (text) this.tokens.set(key, crypto.randomUUID());
     this.dirty = true;
     if (!text) this.flush();
     else if (this.timer === null) this.timer = this.setTimer(() => { this.timer = null; this.flush(); }, this.delay);
   }
 
   delete(key) { this.set(key, ""); }
+  token(key) { return this.tokens.get(key); }
 
   flush() {
     if (this.timer !== null) { this.clearTimer(this.timer); this.timer = null; }
     if (!this.dirty) return !this.error;
     let error = "";
     try {
-      this.storage.setItem(nativeTextDraftsKey, JSON.stringify([...this.drafts]));
+      this.storage.setItem(nativeTextDraftsKey, JSON.stringify([...this.drafts].map(([key, text]) => [key, text, this.tokens.get(key)])));
       this.dirty = false;
     } catch {
       error = "Chat drafts could not be saved on this PC. Keep the app open and copy your draft before closing.";

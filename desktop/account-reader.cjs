@@ -1,3 +1,5 @@
+const { abortableRead } = require('./abortable-read.cjs');
+
 function createAccountReader(read, { timeout = 12000 } = {}) {
   const jobs = new Map();
   return {
@@ -10,10 +12,7 @@ function createAccountReader(read, { timeout = 12000 } = {}) {
       const job = { controller };
       const timer = setTimeout(() => controller.abort(new Error("Account usage check timed out. Retry or open Account usage.")), timeout);
       jobs.set(agent, job);
-      job.promise = Promise.resolve().then(() => {
-        controller.signal.throwIfAborted();
-        return read(agent, controller.signal);
-      }).then((result) => { controller.signal.throwIfAborted(); return result; })
+      job.promise = abortableRead(() => read(agent, controller.signal), controller.signal)
         .catch((error) => { throw controller.signal.aborted ? controller.signal.reason : error; })
         .finally(() => { clearTimeout(timer); if (jobs.get(agent) === job) jobs.delete(agent); });
       return job.promise;

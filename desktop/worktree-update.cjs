@@ -7,6 +7,26 @@ const maxNewBytes = 32 * 1024 ** 2;
 const maxPaths = 200;
 const commitId = /^[a-f\d]{40}(?:[a-f\d]{24})?$/iu;
 const fingerprint = (buffer) => createHash("sha256").update(buffer).digest("hex");
+const physical = value => fs.realpathSync.native(path.resolve(value));
+const samePath = (left, right) => process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+
+async function transferIdentity(git, cwd) {
+  // Existing project aliases may resolve to a checkout; pin its physical Git
+  // identity below and reject aliases of the same source/destination folder.
+  if (!fs.statSync(cwd).isDirectory()) throw Error('A transfer checkout must resolve to a directory.');
+  const [metadata, branch, staged] = await Promise.all([
+    git(cwd, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir', '--absolute-git-dir', 'HEAD']),
+    git(cwd, ['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => ''),
+    git(cwd, ['diff', '--cached', '--binary', '--full-index', '--no-renames', '--no-ext-diff', '--no-textconv', 'HEAD', '--'], { limit: maxPatchBytes + 1 }),
+  ]);
+  const [top, common, gitDir, head] = metadata.trim().split(/\r?\n/u), folder = physical(cwd);
+  if (!top || !common || !gitDir || !commitId.test(head ?? '') || !samePath(physical(top), folder) || staged.length >= maxPatchBytes || /^\* Unmerged path /mu.test(staged)) throw Error('The transfer checkout or staging could not be verified.');
+  if (['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG'].some(file => fs.existsSync(path.join(gitDir, file)))) {
+    throw Error('Finish the existing Git operation before replaying this checkout.');
+  }
+  const value = { folder, common: physical(common), gitDir: physical(gitDir), head, branch: branch.trim(), staged: fingerprint(staged) };
+  return { ...value, stamp: fingerprint(JSON.stringify(value)) };
+}
 
 async function projectHead(git, repo) {
   const [revision, branch] = await Promise.all([
@@ -57,9 +77,10 @@ function readNewFile(source, file, remaining) {
   return data;
 }
 
-async function transferPreview(git, { source, base, temp, includeDiff = true, includeFileDigests = false }) {
+async function transferPreview(git, { source, base, temp, includeDiff = true, includeFileDigests = false, includeIndex = false }) {
   if (!commitId.test(base)) throw new Error("The task's original base is invalid.");
   if (await git(source, ["ls-files", "--unmerged", "-z"], { limit: 2 })) throw new Error("Resolve the source worktree's existing conflicts first.");
+  const identity = includeIndex && await transferIdentity(git, source);
   const scratch = fs.mkdtempSync(path.join(temp, "ai-deck-compare-"));
   const file = path.join(scratch, "compare.patch");
   try {
@@ -76,7 +97,8 @@ async function transferPreview(git, { source, base, temp, includeDiff = true, in
       remaining -= data.length;
       digests.push([name, fingerprint(data)]);
     }
-    const stamp = fingerprint(JSON.stringify([tracked, fingerprint(patch), digests]));
+    if (identity && identity.stamp !== (await transferIdentity(git, source)).stamp) throw Error('The source identity or staging changed during the preview. Compare again.');
+    const stamp = fingerprint(JSON.stringify([tracked, fingerprint(patch), digests, ...(identity ? [identity.stamp] : [])]));
     let fileDigests;
     if (includeFileDigests) {
       const boundaries = patch.length ? [0] : [];
@@ -96,6 +118,9 @@ async function transferPreview(git, { source, base, temp, includeDiff = true, in
 async function copyOnBase(git, { source, destination, base, temp, paths, keepStaged = false }) {
   if (!commitId.test(base)) throw new Error("The task's original base is invalid.");
   if (await git(source, ["ls-files", "--unmerged", "-z"], { limit: 2 })) throw new Error("Resolve the source worktree's existing conflicts first.");
+  const [identity, target] = await Promise.all([transferIdentity(git, source), transferIdentity(git, destination)]);
+  if (samePath(identity.folder, target.folder)) throw Error('Use different source and destination checkouts for replay.');
+  if (!samePath(identity.common, target.common)) throw Error('Both transfer checkouts must belong to the same Git repository.');
   const scratch = fs.mkdtempSync(path.join(temp, "ai-deck-base-"));
   const patch = path.join(scratch, "changes.patch");
   const comparison = path.join(scratch, "verification.patch");
@@ -124,7 +149,7 @@ async function copyOnBase(git, { source, destination, base, temp, paths, keepSta
       copied.push({ file, size: data.length, hash: fingerprint(data) });
     }
     const current = await trackedPatch(comparison);
-    if (!original.equals(current) || JSON.stringify(files) !== JSON.stringify(await selectedNew()) || copied.some(({ file, size, hash }) => {
+    if (identity.stamp !== (await transferIdentity(git, source)).stamp || !original.equals(current) || JSON.stringify(files) !== JSON.stringify(await selectedNew()) || copied.some(({ file, size, hash }) => {
       const from = fileInside(source, file, false);
       const info = fs.lstatSync(from);
       return !info.isFile() || info.isSymbolicLink() || info.size !== size || fingerprint(fs.readFileSync(from)) !== hash;

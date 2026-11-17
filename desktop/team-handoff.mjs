@@ -64,7 +64,7 @@ export function smartReviewCandidate(file, packet) {
 }
 
 export function matchingDecision(decision, scope) {
-  return Boolean(scope && decision.scope?.branch === scope.branch && decision.scope?.base === scope.base);
+  return Boolean(scope?.repo && decision.scope?.repo === scope.repo && decision.scope?.branch === scope.branch && decision.scope?.base === scope.base);
 }
 
 export function usableDecisions(decisions, scope) {

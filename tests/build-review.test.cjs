@@ -553,7 +553,7 @@ test("team context defaults are compact and explicit choices remain separate per
   assert.deepEqual(teamContextNotes(notes, ["selected"], "normal", normal, "review"), notes.slice(1));
   assert.deepEqual(teamContextNotes(notes, [], "normal", { ...normal, reviewerNotes: ["enabled"] }, "review"), notes.slice(0, 1));
   assert.deepEqual(teamContextNotes(notes, ["selected"], "normal", { ...normal, writerNotes: [] }, "write"), []);
-  const scope = { branch: "main", base: "new" };
+  const scope = { repo: 'project-a', branch: "main", base: "new" };
   const decision = { text: "review separately", scope };
   const pinned = { text: "keep staged files", pinned: true, scope };
   assert.deepEqual(usableDecisions([decision, pinned, { text: "stale", scope: { ...scope, base: "old" } }], scope), [pinned, decision]);

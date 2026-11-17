@@ -115,6 +115,16 @@ test("legacy teams keep private reports and history out of supplemental prompts,
   assert.deepEqual(nativeInputs.handoffs, handoffs);
 });
 
+test('structured review details use the same report-sharing gate as the original report', () => {
+  const external=member('ollama','Summary','fixture','summarize');
+  const privateReport={name:'Reviewer',memberId:'reviewer',projectData:true,text:'Short report',review:{verdict:'changes',current:true,partial:false,findings:[{severity:'major',scope:'private.js:1',detail:'Private contract detail'}]}};
+  const options={member:external,team:{},userPrompt:'Task',projectPrompt:'Private project',prior:'',handoffs:[privateReport]};
+  const hidden=sessionMemberPrompt({member:external,members:[external],...sessionMemberInputs(options)});
+  assert.ok(!hidden.includes('Private contract detail'));
+  const shared=sessionMemberPrompt({member:external,members:[external],...sessionMemberInputs({...options,team:{shareReports:true}})});
+  assert.ok(shared.includes('Recorded review disposition: changes'));assert.ok(shared.includes('Private contract detail'));
+});
+
 test("a missing Gemini key or a native usage limit blocks sending before the runner", () => {
   const members = [member("gemini", "Planner", "gemini-flash"), member("claude", "Reviewer", "")];
   const connections = { claude: { status: "ready", usageLimit: { resetAt: 2000 } } };

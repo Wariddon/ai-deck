@@ -238,6 +238,8 @@
 .deck-native-search { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px var(--workspace-padding); border-bottom: 1px solid var(--line); }
 .deck-native-search .thread-search { flex: 1 1 12rem; min-width: 0; }
 .deck-native-feed { gap: 16px; }
+.deck-native-history { display: grid; gap: 16px; min-width: 0; }
+.deck-native-plain { white-space: pre-wrap; overflow-wrap: anywhere; content-visibility: auto; contain-intrinsic-block-size: auto 190px; }
 .deck-native-older { justify-self: center; }
 .deck-native-reply { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; }
 .deck-native-actions { position-area: bottom span-left; }

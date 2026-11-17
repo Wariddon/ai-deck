@@ -53,3 +53,13 @@ test("malformed saved rows do not erase other chats and empty legacy drafts are 
   const f = fixture([["a", "Keep"], null, {}, ["bad", 3], ["empty", ""], ["b", "Also keep"]]);
   assert.deepEqual([...new NativeTextDrafts(f.storage, f.options).drafts], [["a", "Keep"], ["b", "Also keep"]]);
 });
+
+test('persistent draft identity distinguishes a restored send from a newer identical follow-up', () => {
+  const f = fixture([['chat', 'Do it']]), original = new NativeTextDrafts(f.storage, f.options);
+  const sent = original.token('chat'); original.flush();
+  const restored = new NativeTextDrafts(f.storage, f.options);
+  assert.equal(restored.token('chat'), sent);
+  restored.set('chat', ''); restored.set('chat', 'Do it'); restored.flush();
+  assert.notEqual(restored.token('chat'), sent);
+  assert.equal(new NativeTextDrafts(f.storage, f.options).token('chat'), restored.token('chat'));
+});

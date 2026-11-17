@@ -1,3 +1,5 @@
+const { abortableRead } = require('./abortable-read.cjs');
+
 // Read-only history refreshes yield to foreground work and never lock the app.
 function createRecentLoader({ cache, readers, view = (entry) => entry, blocked = () => false, ttl = 60000, timeout = 24000, now = Date.now }) {
   let flight;
@@ -21,7 +23,7 @@ function createRecentLoader({ cache, readers, view = (entry) => entry, blocked =
           const deadline = new AbortController();
           const timer = setTimeout(() => deadline.abort(new Error("History check timed out.")), timeout);
           const signal = AbortSignal.any([controller.signal, deadline.signal]);
-          try { return { provider, entries: await read(signal) }; }
+          try { return { provider, entries: await abortableRead(() => read(signal), signal) }; }
           catch (reason) { return { provider, error: String(reason.message ?? reason).slice(0, 240) }; }
           finally { clearTimeout(timer); }
         }));

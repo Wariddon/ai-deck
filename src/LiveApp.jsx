@@ -36,6 +36,7 @@ import { CommandMenu, LibrarySkillPreview, LocalSkillLibrary, SharedSkills, Skil
 import { TaskPanel, TaskPanelEntry } from "./TaskPanel.jsx";
 import { BatchSessionDeletion, LinkAttachment, SessionActions, SessionButton, WindowAttachment } from "./SessionTools.jsx";
 import { nativeJobKey, sessionKey } from "../desktop/session-selection.mjs";
+import { mergeNativeLatest, mergeNativeOlder } from "../desktop/native-history.mjs";
 import { HandoffLocation, HandoffSources, NativeChat, NativeChatTransfer } from "./NativeRecents.jsx";
 import { latestReportedRun } from "./usage-view.mjs";
 import { idleRefresh } from "./idle-refresh.mjs";
@@ -51,7 +52,7 @@ import { SessionTeamEditor, SessionProviders, SessionTeamProgress, SessionTeamSc
 import { sessionTeamMode, sessionMemberBlock, sessionTeamHasWriter, sessionTeamIssue, teamProviders, teamPositions } from "../desktop/session-team.mjs";
 import { reviewPolicies, reviewPolicy, smartTextPath, teamRunOptions } from "../desktop/team-handoff.mjs";
 import { TeamDecisions, TeamRunOptions } from "./TeamRunOptions.jsx";
-import { DecisionShadowReceipt, LocalDecisionReceipt, TeamBriefRecord, TeamHandoffs, TeamRunResult } from "./TeamHandoff.jsx";
+import { DecisionShadowReceipt, LocalDecisionReceipt, TeamBriefRecord, TeamHandoffs, TeamReviewRecord, TeamRunResult, WorkEvidenceRecord } from "./TeamHandoff.jsx";
 import { createTimelineProjector, displayedTeamRun } from "./timeline-projection.mjs";
 import "./team-thread.css";
 
@@ -734,6 +735,7 @@ function History({ runs, initialRun, busy, usePrompt, draftHandoff, reviewPlan, 
       <AssignmentEvidence mode={run.mode} teamwork={run.teamwork} planner={run.autoTeam?.planner} label="Roles used in this run" lowMemory={run.lowMemory} />
       {run.collaboration && <TeamBriefRecord run={run} />}
       {run.finishedAt && run.collaboration && <TeamRunResult run={run} />}
+      {run.sessionTeam && <><TeamReviewRecord run={run} /><WorkEvidenceRecord run={run} /></>}
       {!run.collaboration && <DecisionShadowReceipt entries={run.decisionShadow} />}
       {!run.collaboration && <LocalDecisionReceipt entries={run.localDecisions} />}
       {run.lowMemory && <p className="setting-detail">Low RAM · agents ran one at a time</p>}
@@ -744,7 +746,7 @@ function History({ runs, initialRun, busy, usePrompt, draftHandoff, reviewPlan, 
       {run.skills?.length > 0 && <p className="setting-detail">Shared skills · {run.skills.map((skill) => skill.name).join(", ")}</p>}
       {run.timeline?.filter((entry) => entry.kind === "handoff").map((entry) => <p className="setting-detail" key={entry.key}>{entry.text}</p>)}
       <ReviewEvidence snapshot={run.reviewSnapshot} />
-      <AutoTeamRecord record={run.autoTeam} />
+      <AutoTeamRecord record={run.autoTeam} evidence={run.workEvidence} />
       {run.teamPlan && <section className="live-note">
         <strong>{needsBaseCheck ? "Plan base needs verification" : implementationLabels[run.teamPlan.applyStatus] ?? ({ completed: run.teamPlan.decidedAt ? "Implemented" : "Completed in an earlier AI Deck release",
           dismissed: "Dismissed", running: "Implementation running", failed: "Implementation failed", interrupted: "Implementation stopped",
@@ -920,8 +922,24 @@ export function LiveApp() {
   const [nativePreview, setNativePreview] = useState(null);
   const [nativeConversation, setNativeConversation] = useState(null);
   const nativeChatRequest = useRef(null);
+  const pageNavigation = useRef(null);
+  const workspaceRequest = useRef(null);
+  const pendingWorkspace = useRef(null);
+  const pendingOperations = useRef(0);
   const nativeTextDrafts = useRef(null);
-  nativeTextDrafts.current ??= new NativeTextDrafts(localStorage);
+  nativeTextDrafts.current ??= new NativeTextDrafts({
+    getItem(key) {
+      const checkpoint = api.nativeTextCheckpoint?.({ read: true });
+      if (checkpoint?.error) throw Error(checkpoint.error);
+      this.needsCheckpoint = Boolean(checkpoint && checkpoint.value === null);
+      return checkpoint?.value ?? localStorage.getItem(key);
+    },
+    setItem(key, value) {
+      const checkpoint = api.nativeTextCheckpoint?.({ value });
+      if (checkpoint?.error) throw Error(checkpoint.error);
+      localStorage.setItem(key, value);
+    },
+  });
   const [nativeDraftError, setNativeDraftError] = useState(() => nativeTextDrafts.current.error);
   const nativeDrafts = useRef(null);
   const nativeDraftLedger = useRef(null);
@@ -1111,6 +1129,23 @@ export function LiveApp() {
     flushDraft.current();
     if (autosave.current?.text !== JSON.stringify(draft)) drafts.current.set(taskId, draft);
   };
+
+  function quitWithSavedDrafts() {
+    flushDraft.current();
+    let saved = nativeTextDrafts.current.flush();
+    if (taskId && autosave.current?.text !== JSON.stringify(draft)) saved = false;
+    for (const [id, value] of drafts.current) {
+      const owners = repositories.filter(project => project.tasks.some(task => task.id === id));
+      const result = owners.length === 1 && api.autosaveDraft({ repo: owners[0].repo, taskId: id, draft: value });
+      if (result?.id) drafts.current.delete(id);
+      else saved = false;
+    }
+    if (!saved) {
+      setError("Some chat drafts could not be saved. AI Deck stayed open. Retry after restoring disk access, or copy your unsent text before closing.");
+      return;
+    }
+    return perform("quit-app");
+  }
 
   windowCheckpoint.current = () => {
     nativeTextDrafts.current.flush();
@@ -1509,22 +1544,26 @@ export function LiveApp() {
   }, [notice, launching, nativeRecents.pulled, nativeRecents.errors, state.connections]);
 
   async function perform(command, payload, reportError = setError) {
+    const scope = workspaceRequest.current;
+    const navigation = pageNavigation.current;
     setError("");
     setNotice("");
+    pendingOperations.current++;
     setBusy(true);
     const menuAction = ["connections", "provider-details", "provider-models"].includes(command)
       ? { command, agent: payload?.agent ?? payload } : null;
     if (menuAction) setPendingMenuAction(menuAction);
     try {
       const next = await api[command](payload);
+      if (workspaceRequest.current !== scope) return null;
       if (next?.connections) setState(next);
       else if (command === "save-appearance" && next?.appearance) setState((current) => ({ ...current, appearance: next.appearance }));
       return next;
     } catch (reason) {
-      reportError(cleanError(reason));
+      if (workspaceRequest.current === scope && pageNavigation.current === navigation) reportError(cleanError(reason));
       return null;
     } finally {
-      setBusy(false);
+      setBusy(--pendingOperations.current > 0);
       if (menuAction) setPendingMenuAction((current) => current === menuAction ? null : current);
     }
   }
@@ -1577,8 +1616,11 @@ export function LiveApp() {
     if (result && nativeChatRequest.current === request) {
       const key = sessionKey(session);
       const receipt = nativeDraftLedger.current.receipt(key, result.messages, nativeDrafts.current.get(key));
-      if (receipt?.discardDraft) keepNativeDraft(session, "");
-      setNativeConversation({ session, sourceTaskId, ...result, ...(receipt && { delivered: receipt }) });
+      const delivery = receipt ?? (result.delivered && { ...result.delivered, discardDraft: Boolean(result.delivered.draftToken &&
+        result.delivered.draftToken === nativeTextDrafts.current.token(key) && nativeDrafts.current.get(key)?.trim() === result.delivered.prompt) });
+      if (delivery?.discardDraft) keepNativeDraft(session, "");
+      const next = { session, sourceTaskId, ...result, ...(delivery && { delivered: delivery }) };
+      setNativeConversation((current) => refresh ? mergeNativeLatest(current, next) : next);
     }
   }
 
@@ -1586,26 +1628,24 @@ export function LiveApp() {
     const ref = original ? nativeChatRequest : sessionRequest;
     const update = original ? setNativeConversation : setNativePreview;
     const request = ref.current;
-    const { session: { provider, id }, sourceTaskId } = original ? nativeConversation : nativePreview;
-    const next = await perform("native-session-preview", { provider, id, older: true, query, sourceTaskId }, (error) => {
+    const view = original ? nativeConversation : nativePreview;
+    const { session: { provider, id }, sourceTaskId } = view;
+    const next = await perform("native-session-preview", { provider, id, older: true, query, sourceTaskId,
+      ...(Object.hasOwn(view, "cursor") && { cursor: view.cursor }) }, (error) => {
       if (ref.current === request) setError(error);
     });
     if (!next || ref.current !== request) return;
-    update((current) => {
-      const loaded = new Set(current.messages.map(({ id }) => id));
-      return { ...current, ...next, skipped: current.skipped || next.skipped,
-        messages: [...current.messages, ...next.messages.filter(({ id }) => !loaded.has(id))] };
-    });
+    update((current) => mergeNativeOlder(current, next));
   }
 
   async function sendNativeChat(prompt, revision, options) {
-    nativeTextDrafts.current.flush();
+    if (!nativeTextDrafts.current.flush()) throw Error(nativeTextDrafts.current.error);
     const request = nativeChatRequest.current;
     const { provider, id } = nativeConversation.session;
     const key = sessionKey({ provider, id });
     const submitted = nativeDraftLedger.current.begin(key, prompt, options.requestId, nativeConversation.messages);
     let next;
-    try { next = await api["native-chat-send"]({ provider, id, prompt, revision, ...options }); }
+    try { next = await api["native-chat-send"]({ provider, id, prompt, revision, ...options, draftToken: nativeTextDrafts.current.token(key) }); }
     catch (reason) { const error = cleanError(reason);
       if (nativeChatRequest.current !== request) return false;
       if (/refresh (?:the )?messages|refresh before sending/iu.test(error)) {
@@ -1619,11 +1659,8 @@ export function LiveApp() {
     }
     if (!next) return false;
     if (nativeChatRequest.current !== request) return Boolean(next.delivered);
-    setNativeConversation((current) => {
-      const newest = new Set(next.messages.map(({ id }) => id));
-      return { ...current, ...next, ...(next.delivered && { delivered: { ...next.delivered, discardDraft } }),
-        messages: [...next.messages, ...current.messages.filter(({ id }) => !newest.has(id))] };
-    });
+    setNativeConversation((current) => mergeNativeLatest(current,
+      { ...next, ...(next.delivered && { delivered: { ...next.delivered, discardDraft } }) }));
     return true;
   }
 
@@ -1731,6 +1768,8 @@ export function LiveApp() {
   }
 
   async function applySessionAction(action, values) {
+    const navigation = pageNavigation.current;
+    const request = nativeChatRequest.current;
     const { id, provider, repo } = sessionActions;
     if (!provider) {
       if (await open("deck-task-action", { repo, id, action, ...values }, action === "fork" ? "workspace" : page)) {
@@ -1746,10 +1785,12 @@ export function LiveApp() {
       ...(result.session ? [result.session] : [])].sort((left, right) => right.updatedAt - left.updatedAt) }));
     setState((current) => ({ ...current, nativePins: result.pins }));
     if (action === "delete") nativeTextDrafts.current.delete(sessionKey(sessionActions));
+    if (pageNavigation.current !== navigation) return;
     close();
+    if (nativeChatRequest.current !== request) return;
     if (nativeConversation && same(nativeConversation.session)) {
       if (action === "restore" && result.session) await loadNativeChat(result.session);
-      else if (result.session && !result.session.archived) setNativeConversation((current) => ({ ...current, session: result.session }));
+      else if (result.session && !result.session.archived) setNativeConversation((current) => current && same(current.session) ? { ...current, session: result.session } : current);
       else go("workspace");
     }
   }
@@ -1782,12 +1823,19 @@ export function LiveApp() {
 
   async function open(command, payload, destination = "workspace") {
     preserveDraft.current();
+    const request = workspaceRequest.current = Symbol();
+    pendingWorkspace.current = request;
+    const navigation = pageNavigation.current = Symbol();
+    nativeChatRequest.current = Symbol();
     const next = await perform(command, payload);
+    if (pendingWorkspace.current === request) pendingWorkspace.current = null;
+    if (workspaceRequest.current !== request) return null;
     if (next?.workspace) {
       if (next.workspace.taskId !== taskId) hydrate(next.workspace, next.running, next.approvals);
       setWorking(next.running);
       setCanSteer(next.canSteer);
       setCanFollowClaude(next.canFollowClaude);
+      if (pageNavigation.current !== navigation) return null;
       setPage(destination);
       if (destination === "workspace" && layout.focused === "projects") {
         setShowProjects(false);
@@ -2598,6 +2646,8 @@ export function LiveApp() {
   }
   const openProvider = (key) => perform("provider-page", key);
   function go(next) {
+    pageNavigation.current = Symbol();
+    nativeChatRequest.current = Symbol();
     nativeTextDrafts.current.flush();
     setError("");
     setNotice("");
@@ -2704,7 +2754,7 @@ export function LiveApp() {
       case "general": return <>
         <PerformanceSettings enabled={lowMemory} closeToTray={state.closeToTray === true}
           locked={locked || typeof state.lowMemory !== "boolean"} change={(enabled) => perform("save-low-memory", enabled)}
-          changeTray={(enabled) => perform("save-close-to-tray", enabled)} quit={() => { flushDraft.current(); return perform("quit-app"); }} readMemory={api["system-memory"]} />
+          changeTray={(enabled) => perform("save-close-to-tray", enabled)} quit={quitWithSavedDrafts} readMemory={api["system-memory"]} />
         <SettingsCard title="Composer"><SettingSelect label="Send messages with" value={String(preferences.sendOnEnter)} busy={busy}
           options={[["false", "Ctrl+Enter"], ["true", "Enter"]]} change={(value) => settingChange("sendOnEnter", value === "true")}
           description="Shift+Enter inserts a new line. During a compatible run, Ctrl+Enter sends a follow-up to an agent." /></SettingsCard>
@@ -2738,7 +2788,7 @@ export function LiveApp() {
         }, busy)}</div>
       </SettingsCard>;
       case "import": return <SettingsImport key={workspace?.repo} repo={workspace?.repo} busy={locked} action={perform} />;
-      case "voice": return <SettingsCard title="Voice chat defaults" description="Voice chat transcribes up to 30 seconds of audio on this PC. The transcript appears in the composer for review before sending.">
+      case "voice": return <SettingsCard title="Voice chat defaults" description="Optional local voice files are required for microphone transcription, up to 30 seconds. Review the transcript before sending. Reply playback uses your installed Windows voices.">
         <SettingSelect label="Microphone language" value={preferences.voiceLanguage} busy={busy} options={[["th", "ไทย"], ["en", "English"]]}
           change={(value) => settingChange("voiceLanguage", value)} />
         <label className="setting-row setting-list"><input type="checkbox" checked={preferences.readReplies} disabled={busy}
@@ -2912,7 +2962,7 @@ export function LiveApp() {
           nativeRecents={nativeRecents} currentNative={nativeChatPage ? nativeConversation.session : undefined}
           pins={state.nativePins ?? []} pullSessions={pullSessions} openNativeChat={openNativeChat} pinSession={pinSession}
           manageSession={manageSession} selection={sessionSelection} setSelection={setSessionSelection} reviewDeletion={reviewSessionDeletion}
-          openTask={(repo, id) => { if (id !== taskId || nativeChatPage) void open("switch-task", { repo, id }); else if (layout.focused === "projects") closePane("projects"); }} newTask={() => open("new-task")} />}
+          openTask={(repo, id) => { if (id !== taskId || nativeChatPage || pendingWorkspace.current) void open("switch-task", { repo, id }); else if (layout.focused === "projects") closePane("projects"); }} newTask={() => open("new-task")} />}
         {layout.projects && <PanelDivider side="projects" panel={layout.projects} layoutRef={layoutRef} save={savePaneWidth} />}
         <WorkbenchPage title="Settings" scope="AI Deck" description="Manage your app, provider accounts and project defaults." hidden={page !== "settings"}
           actions={<button className="button small" onClick={() => go("workspace")}>Back to workspace</button>}>
