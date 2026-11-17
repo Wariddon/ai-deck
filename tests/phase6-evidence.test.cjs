@@ -92,7 +92,8 @@ test('a plain JSON artifact without predicates is recorded without a semantic pa
 
 test('multiple contracts share two bounded artifact passes and one Git barrier instead of multiplying IO',async t=>{
  const input=fixture(t),value={readyWhen:[condition],evidenceRefs:[{condition,paths:['receipt.json']}]},fsp=require('node:fs/promises'),open=fsp.open;let opens=0,observations=0;
- fsp.open=async(...args)=>{if(args[0]===path.join(input.cwd,'receipt.json'))opens++;return open(...args)};t.after(()=>{fsp.open=open});
+ const canonicalReceipt=fs.realpathSync.native(path.join(input.cwd,'receipt.json'));
+ fsp.open=async(...args)=>{if(args[0]===canonicalReceipt)opens++;return open(...args)};t.after(()=>{fsp.open=open});
  const result=await collectWorkEvidenceBatch({first:value,second:value},{...input,observe:async()=>{observations++;return input.observation}});
  assert.equal(opens,2);assert.equal(observations,1);assert.ok(Object.values(result).every(e=>e.conditions[0].status==='evidence recorded'));
 });

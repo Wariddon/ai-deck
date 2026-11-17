@@ -94,7 +94,7 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
    assert.equal(await js(`document.querySelectorAll('.deck-native-chat .thread-approval button').length`),0);
    if(scenario==='partial'){
     const {NativeSendJournal}=require(path.join(appDir,'native-send-journal.cjs'));
-    assert.equal(new NativeSendJournal(profile).read({provider,id:ids[provider]},fs.realpathSync(cwd)).records.at(-1).partialText,'A real partial checkpoint.');
+    assert.equal(new NativeSendJournal(profile).read({provider,id:ids[provider]},fs.realpathSync.native(cwd)).records.at(-1).partialText,'A real partial checkpoint.');
     assert.equal(p.chat.recovery.partialText,'A real partial checkpoint.');
     assert.ok(await js(`document.querySelector('.deck-native-chat').innerText.includes('Saved partial reply')`));
     await js(`document.querySelector('.deck-native-work').open=true`);
