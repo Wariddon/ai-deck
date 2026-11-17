@@ -36,7 +36,7 @@ jobs:
         run: |
           node scripts/ensure-electron.cjs
           npm run build
-          $packageOutput = node scripts/package-windows.mjs
+          $packageOutput = @(node scripts/package-windows.mjs)
           if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
           $packageOutput | Write-Output
           $release = $packageOutput[-1] | ConvertFrom-Json

@@ -2,7 +2,7 @@
 const fs = require('node:fs'), path = require('node:path'), Module = require('node:module');
 const assert = require('node:assert/strict'), { randomUUID } = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
-const { app, ipcMain } = require('electron');
+const { app, ipcMain, desktopCapturer, nativeImage } = require('electron');
 app.disableHardwareAcceleration();
 const root = process.env.AI_DECK_QA_ROOT, appDir = process.env.AI_DECK_QA_APP;
 const profile = process.env.AI_DECK_PROFILE_DIRECTORY = path.join(root, 'profile');
@@ -26,6 +26,9 @@ engines.CodexEngine = class { async initialize() {} async shutdown() {} close() 
   async request(method) { if (method === 'thread/list') return { data: [] }; if (method === 'config/read') return { config: {} }; throw Error('No model operation expected: ' + method); }
   async run() { result.modelCalls++; throw Error('Unexpected model call'); } };
 engines.runClaude = () => { result.modelCalls++; throw Error('Unexpected Claude call'); };
+const sharedWindows = [{ id: 'window:12:0', name: 'Fixture first' }, { id: 'window:13:0', name: 'Fixture second' }];
+desktopCapturer.getSources = async () => sharedWindows.map(w => ({ ...w, thumbnail: nativeImage.createFromPath(path.join(appDir, 'notification-icon.png')) }));
+require(path.join(appDir, 'computer-use.cjs')).windowsUi = async () => ({ identity: '123/456', application: 'fixture', controls: [] });
 let media;
 const voice = require(path.join(appDir, 'voice.cjs'));
 voice.voiceAvailable = () => true;
@@ -60,6 +63,18 @@ app.once('browser-window-created', (_, win) => {
     }
     try {
       await wait(() => js(`Boolean(document.querySelector('header.thread-top'))&&!document.querySelector('.deck-startup')`), 'startup');
+      // Removing the most recently previewed window must still allow sharing
+      // the remaining earlier preview, without re-capturing or a model call.
+      for (const remaining of [1, 2]) {
+        await api('capture-windows');
+        const first = await api('preview-computer-window', sharedWindows[0].id);
+        const second = await api('preview-computer-window', sharedWindows[1].id);
+        const grant = await api('computer-arm', { token: remaining === 1 ? [first.token] : [first.token, second.token], agent: 'codex' });
+        assert.ok(grant.title.includes('Fixture first'));
+        assert.equal(grant.title.includes('Fixture second'), remaining === 2);
+        await api('computer-revoke', grant.token);
+      }
+      result.windowShares = 2;
       await start(); await api('switch-task', { repo: repos[0], id: b.id }); await cancelled('task switch discards old transcription');
       await api('switch-task', { repo: repos[0], id: a.id }); await start();
       await api('switch-task', { repo: repos[1], id: a.id }); await cancelled('same task ID in another project does not inherit voice');

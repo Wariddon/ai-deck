@@ -20,7 +20,7 @@ export async function publishRelease({ root, archive, token, fetcher = fetch }) 
   if (!token) throw Error('A GitHub release credential is required.');
   const headers = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'AI-Deck-Release' };
   async function api(route, options = {}, allow404 = false) {
-    const res = await fetcher('https://api.github.com/repos/' + releaseRepository + route, { ...options, headers: { ...headers, ...options.headers }, signal: AbortSignal.timeout(30000) });
+    const res = await fetcher('https://api.github.com/repos/' + releaseRepository + route, { ...options, headers: { ...headers, 'Content-Type': 'application/json', ...options.headers }, signal: AbortSignal.timeout(30000) });
     if (allow404 && res.status === 404) return null;
     if (!res.ok) throw Error('GitHub release request failed (' + res.status + ').');
     return res.status === 204 ? null : res.json();

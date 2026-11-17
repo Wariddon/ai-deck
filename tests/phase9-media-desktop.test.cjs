@@ -11,6 +11,6 @@ test('voice task, project, minimize and cancel races stay isolated through produ
     });
     const result = JSON.parse(fs.readFileSync(path.join(root, 'result.json')));
     assert.equal(result.error, undefined, result.error + ' ' + root);
-    assert.equal(result.passed, true); assert.equal(result.cases.length, 4); assert.equal(result.modelCalls, 0); passed = true;
+    assert.equal(result.passed, true); assert.equal(result.cases.length, 4); assert.equal(result.windowShares, 2); assert.equal(result.modelCalls, 0); passed = true;
   } finally { if (passed && !process.env.AI_DECK_QA_ROOT && path.dirname(fs.realpathSync(root)) === fs.realpathSync(os.tmpdir())) fs.rmSync(root, { recursive: true }); }
 });

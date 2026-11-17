@@ -6697,7 +6697,7 @@ async function armComputer({ token, agent, access = "browse" } = {}) {
   const request = windowCapture;
   const tokens = Array.isArray(token) ? token : [token];
   if (!tokens.length || tokens.length > 3 || new Set(tokens).size !== tokens.length) throw Error('Choose one to three previewed windows.');
-  if (tokens.length > 1 && request) request.preview = request.previews?.get(tokens[0]);
+  if (Array.isArray(token) && request) request.preview = request.previews?.get(tokens[0]);
   token = tokens[0];
   if (!request?.preview?.identity || request.preview.token !== token || checkAttachmentOwner(request.owner) !== request.ownerKey) {
     throw new Error("Preview a window from this chat before sharing it.");

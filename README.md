@@ -7,7 +7,7 @@
 <p align="center">Codex + Claude Code, working together in one desktop workspace.</p>
 
 <p align="center">
-  <strong>Windows x64 · Desktop 0.9.182</strong><br />
+  <strong>Windows x64 · Desktop 0.9.183</strong><br />
   <a href="https://github.com/Wariddon/ai-deck/releases/latest">Download Windows ZIP</a> ·
   <a href="#quick-start-on-windows">Quick start</a> ·
   <a href="#working-with-a-team">Team workflows</a> ·
@@ -20,8 +20,9 @@ Project teams automatically receive bounded shared guidance for planning and han
 
 Project plans carry the inputs each assignment needs, the outputs it must deliver and the conditions the next member must verify. AI Deck automatically saves and forwards these with the existing plan and evidence, including after a paused review or app restart. Requirements remain separate from observed checks; a completed reply does not establish that a handoff condition passed. Ordinary team handoffs use the same guidance in their existing reports, with no additional setup buttons.
 
-## Latest update · 0.9.182
+## Latest update · 0.9.183
 
+- Removing the newest shared-window preview keeps earlier selected previews usable, including when only one remains. The release job captures single-line package output as an array before parsing its JSON.
 - Public Windows ZIP releases include a SHA-256 update catalog. The existing update bell downloads and verifies AI Deck, then saves drafts before a user-requested restart. Provider updaters remain separate; no update installs automatically.
 - The existing window picker can share up to three windows with one agent for a turn. Click and drag use normalized coordinates from a fresh screenshot, verify the image again after approval, and stay inside the selected window. The shared action budget and global computer lock remain bounded.
 - Codex original chats can negotiate native WebRTC voice through their existing signed-in App Server and original thread ID. This is conversation voice; file/tool work uses the normal permission-controlled composer. Unsupported CLI/account combinations fail without a fallback prompt or fork. Claude native dictation remains an interactive-provider feature, and private web-account memory has no supported sync bridge.
