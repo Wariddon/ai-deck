@@ -12,6 +12,8 @@ const paginationProbe = process.env.AI_DECK_QA_PAGINATION === "1";
 const phase2Probe = process.env.AI_DECK_QA_PHASE2 === "1";
 const concurrencyProbe = process.env.AI_DECK_QA_CONCURRENCY === '1';
 const concurrencyRaces = process.env.AI_DECK_QA_CONCURRENCY_RACES === '1';
+const resourceCycles = process.env.AI_DECK_QA_RESOURCE_CYCLES === '1';
+if (resourceCycles) app.commandLine.appendSwitch('js-flags', '--expose-gc');
 const cwd = path.join(root, "chat-folder"), codexFile = path.join(root, "codex.json"), idsFile = path.join(root, "ids.json");
 const claudeRoot = process.env.CLAUDE_CONFIG_DIR = path.join(root, "claude"), claudeFolder = path.join(claudeRoot, "projects", "fixture");
 process.env.CODEX_HOME = path.join(root, "codex");
@@ -148,7 +150,7 @@ ipcMain.handle = (key, fn) => handle(key, async (...args) => {
   return result;
 });
 const wait = async (fn, label) => { const until = Date.now() + 15000; while (Date.now() < until) { if (await fn()) return; await delay(40); } throw Error("Timeout " + label); };
-let seeded = restore || performanceProbe || pathRecovery || paginationProbe || concurrencyProbe || concurrencyRaces, started = false;
+let seeded = restore || performanceProbe || pathRecovery || paginationProbe || concurrencyProbe || concurrencyRaces || resourceCycles, started = false;
 app.once("browser-window-created", (_, win) => win.webContents.on("did-finish-load", async () => {
   const js = code => win.webContents.executeJavaScript(code, true);
   const api = (key, payload) => js(`window.aiDeck[${JSON.stringify(key)}](${JSON.stringify(payload) ?? ""})`);
@@ -157,7 +159,7 @@ app.once("browser-window-created", (_, win) => win.webContents.on("did-finish-lo
   const open = async key => {
     const session = sessions.find(s => s.key === key), start = performance.now();
     await click("Recents"); await wait(() => click((session.provider === "codex" ? "Codex" : "Claude Code") + ": " + session.title), "open " + key);
-    await wait(() => js(`Boolean(document.querySelector('.deck-native-chat textarea'))&&/Replies are saved${phase2Probe || concurrencyProbe ? '|Sending to' : ''}/.test(document.querySelector('.deck-native-chat .thread-hint')?.textContent??'')`), "chat ready " + key);
+    await wait(() => js(`Boolean(document.querySelector('.deck-native-chat textarea'))&&/Replies are saved${phase2Probe || concurrencyProbe || resourceCycles ? '|Sending to' : ''}/.test(document.querySelector('.deck-native-chat .thread-hint')?.textContent??'')`), "chat ready " + key);
     const openMs = Math.round(performance.now() - start);
     if (performanceProbe) await wait(() => js("Boolean([...document.querySelectorAll('.deck-native-reply')].at(-1)?.querySelector('.deck-markdown'))||!document.querySelector('.deck-native-reply')"), 'latest reply formatted');
     report.timings.push({ key, openMs, ...(performanceProbe && { latestReplyMs: Math.round(performance.now() - start) }) });
@@ -183,6 +185,10 @@ app.once("browser-window-created", (_, win) => win.webContents.on("did-finish-lo
   if (started) return; started = true;
   try {
     await wait(() => js("Boolean(document.querySelector('header.thread-top'))&&!document.querySelector('.deck-startup')"), "startup");
+    if (resourceCycles) {
+      await require('./resource-cycles.cjs')({ report, js, api, click, type, open, picker, saveOptions, assertOptions, draft, wait, holdTurn, ids });
+      report.passed = true; save(); app.quit(); return;
+    }
     if (concurrencyRaces) {
       await require('./concurrency-races.cjs')({ restore, root, profile, cwd, report, js, api, click, type, open, picker, saveOptions, assertOptions, options, draft, wait, hold: holdPhase2, holdTurn, ids });
       report.passed = true; save(); app.quit(); return;

@@ -117,6 +117,10 @@ npm.cmd start
 
 GitHub Actions checks every push and pull request on Windows with Node 24. One unit suite and three deterministic desktop shards cover every discovered test exactly once; each shard runs serially. The jobs prepare Electron, build the app and retain JUnit/log summaries for seven days. No provider credentials or live model requests are used in CI. To repeat a suite locally after building, run `node scripts/ci-tests.mjs unit` or `desktop-1`, `desktop-2`, `desktop-3`; omit the suite to run all tests serially.
 
+Recovery checks exercise an owned QA app crash, durable duplicate-send fences and a real loopback TCP reset after acceptance. A short resource probe runs ten two-active/one-waiting cycles and records retained renderer heap, idle CPU, working set and process count. It separates test-only garbage collection from idle CPU sampling.
+
+Real Codex/Claude recovery is a separate local opt-in test using the currently signed-in CLIs and named disposable QA conversations. Set `AI_DECK_QA_LIVE=1` before running `node --test --test-concurrency=1 tests/live-native-recovery-desktop.test.cjs`; it uses account quota. It interrupts only its own QA process tree, checks no automatic replay and resumes the same native chat to verify retained context. CI explicitly disables these live calls and never uploads account/profile directories.
+
 Install and sign in to the Codex CLI, Claude Code, or both on your own machine. Open **Connections** in AI Deck to verify sign-in. If a CLI is missing, select its Windows executable there and refresh. One connected CLI is enough for solo work. Team discussion and two-agent workflows require both.
 
 Open a Git repository from **Projects** for project file work, or pull **Recents** to continue an existing provider chat. Account sign-in, workspace settings, drafts and chat history stay in your own local profile; cloning this repository does not include another user's account or conversations.

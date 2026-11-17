@@ -38,7 +38,15 @@ function runner(p,id,text,emit){
   if(p==='codex'){turns[0].status='completed';turns[0].items.push({id:randomUUID(),type:'agentMessage',text:'Completed once'});fs.writeFileSync(turnsFile,JSON.stringify(turns))}else append('assistant','Completed once');
   return Promise.resolve({status:'completed',sessionId:id});
  }
- if(scenario==='transport')return Promise.reject(Error('Fixture provider transport closed after acceptance (EPIPE)'));
+ if(scenario==='transport')return new Promise((resolve,reject)=>{
+  const net=require('node:net');let client,settled=false;
+  const server=net.createServer(socket=>socket.once('data',()=>socket.resetAndDestroy()));
+  const done=error=>{if(settled)return;settled=true;client?.destroy();server.close();write('transport.json',{localLoopback:true,observedCode:error?.code??null,observedMessage:error?.message??'Socket closed'});reject(error??Error('Loopback provider connection closed after acceptance'))};
+  server.once('error',done);server.listen(0,'127.0.0.1',()=>{
+   client=net.connect({host:'127.0.0.1',port:server.address().port},()=>client.write('accepted diagnostic request'));
+   client.setTimeout(3000,()=>done(Error('Loopback transport timed out')));client.once('error',done);client.once('close',()=>done());
+  });
+ });
  if(scenario==='newer-draft'){
   fs.writeFileSync(path.join(profile,'native-text-drafts.json'),JSON.stringify([[JSON.stringify([p,'',id]),prompt,randomUUID()]]));
  }
