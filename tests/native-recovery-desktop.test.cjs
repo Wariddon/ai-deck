@@ -19,7 +19,7 @@ for(const kind of ['native','team'])for(const provider of ['codex','claude'])tes
    await promisify(execFile)(require('electron'),[script],{windowsHide:true,timeout:25000,maxBuffer:1024*1024,env:{...env,AI_DECK_QA_PHASE:'restore'}});
    const result=JSON.parse(fs.readFileSync(path.join(root,'restore.json')));assert.equal(result.error,undefined,result.error);assert.equal(result.passed,true);assert.equal(result.calls.length,0);
    if(scenario==='transport'){const transport=JSON.parse(fs.readFileSync(path.join(root,'transport.json')));assert.equal(transport.localLoopback,true);assert.equal(transport.observedCode,'ECONNRESET')}
-  }catch(e){error=e;if(child.exitCode===null)await promisify(execFile)('taskkill',['/PID',String(child.pid),'/T','/F'],{windowsHide:true}).catch(()=>{});throw Error(provider+' '+scenario+' ('+root+'): '+e.message,{cause:e})}
+  }catch(e){error=e;if(child.exitCode===null)await promisify(execFile)('taskkill',['/PID',String(child.pid),'/T','/F'],{windowsHide:true}).catch(()=>{});const restored=path.join(root,'restore.json');const detail=fs.existsSync(restored)?JSON.parse(fs.readFileSync(restored)).error:'';throw Error(provider+' '+scenario+' ('+root+'): '+(detail||e.message),{cause:e})}
   finally{if(!error&&!process.env.AI_DECK_QA_ROOT)fs.rmSync(root,{recursive:true,force:true})}
  }
  if(!process.env.AI_DECK_QA_ROOT)fs.rmdirSync(base);

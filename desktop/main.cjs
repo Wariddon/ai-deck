@@ -1994,8 +1994,8 @@ async function beginSessionTeamInternal(payload, { queuedId, queuedSetupStamp, w
       return status;
     }
     try {
-      const cwd = await prepareWorktree(workspace, task, "main", checkedTarget?.commit,
-        (checkout) => { run.checkouts = { main: checkout }; });
+      const cwd = await fs.promises.realpath(await prepareWorktree(workspace, task, "main", checkedTarget?.commit,
+        (checkout) => { run.checkouts = { main: checkout }; }));
       const scope = await decisionScope(workspace, task).catch(() => null);
       const decisions = usableDecisions(task.teamDecisions, scope);
       run.teamReview.decisions = decisions.map(({ id, text, pinned }) => ({ id, text, pinned }));
@@ -3729,6 +3729,7 @@ async function stagedDigest(cwd) {
 }
 
 async function checkoutObservation(cwd, includeFileDigests = false) {
+  cwd = await fs.promises.realpath(cwd);
   const before = await projectHead(git, cwd);
   const [working, staged] = await Promise.all([
     transferPreview(git, { source: cwd, base: before.commit, temp: app.getPath("temp"), includeDiff: false, includeFileDigests }).catch(() => null),

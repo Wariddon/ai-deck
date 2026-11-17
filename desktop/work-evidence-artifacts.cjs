@@ -7,6 +7,7 @@ async function readEvidenceArtifacts(contracts, cwd) {
   const refs = contracts.flatMap(contract => contract.evidenceRefs ?? []);
   const jsonPaths = new Set(refs.flatMap(ref => (ref.assertions ?? []).map(assertion => assertion.path)));
   const artifacts = new Map(), documents = new Map();
+  const physicalRoot = await fs.realpath(cwd).catch(() => null);
   let remaining = 4 * 1024 * 1024;
   for (const relative of new Set(refs.flatMap(ref => ref.paths))) {
     const missing = () => artifacts.set(relative, { path: relative, status: 'unverified' });
@@ -14,7 +15,8 @@ async function readEvidenceArtifacts(contracts, cwd) {
     const image = visible && /\.(?:png|jpe?g|webp)$/iu.test(relative);
     if (artifacts.size >= 12 || !eligibleReviewPath(relative) && !(visible && /\.json$/iu.test(relative)) && !image) { missing(); continue; }
     try {
-      const filename = path.resolve(cwd, relative), real = await fs.realpath(filename), local = path.relative(cwd, real);
+      if (!physicalRoot) throw Error('Evidence folder unavailable');
+      const filename = path.resolve(cwd, relative), real = await fs.realpath(filename), local = path.relative(physicalRoot, real);
       if (path.isAbsolute(local) || local === '..' || local.startsWith('..' + path.sep) || !(await fs.lstat(filename)).isFile()) throw Error('Outside evidence scope');
       const handle = await fs.open(real, 'r');
       try {

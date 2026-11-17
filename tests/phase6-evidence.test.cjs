@@ -11,6 +11,22 @@ function fixture(t){const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'deck-phase6-
  fs.writeFileSync(path.join(cwd,'screen.png'),Buffer.from([137,80,78,71,13,10,26,10]));return{cwd,observation:{cwd,head:'base',branch:'main',stamp:'code-and-index'}};}
 async function check(input){return{command:'node verify-api.cjs',freshness:'matched',exitCode:0,artifactSnapshot:await captureWorkArtifacts([contract],input.cwd)}}
 
+test('verified checkout aliases bind local artifacts while linked and outside artifacts remain withheld',async t=>{
+ const input=fixture(t),alias=input.cwd+'-alias';fs.symlinkSync(input.cwd,alias,process.platform==='win32'?'junction':'dir');
+ t.after(()=>fs.unlinkSync(alias));
+ const observed=await captureWorkArtifacts([contract],alias);
+ assert.ok(observed.files.every(file=>file.status==='recorded'));
+ const checks=[{command:'node verify-api.cjs',freshness:'matched',exitCode:0,artifactSnapshot:observed}];
+ const result=await collectWorkEvidence(contract,{...input,cwd:alias,observation:{...input.observation,cwd:alias},checks});
+ assert.equal(result.conditions[0].status,'verified');
+ const outside=fs.mkdtempSync(path.join(os.tmpdir(),'deck-outside-artifact-'));t.after(()=>fs.rmSync(outside,{recursive:true}));
+ const outsideFile=path.join(outside,'receipt.json');fs.writeFileSync(outsideFile,'{"status":200}');
+ fs.symlinkSync(outside,path.join(input.cwd,'escape'),process.platform==='win32'?'junction':'dir');
+ fs.linkSync(outsideFile,path.join(input.cwd,'linked.json'));
+ const rejected=await captureWorkArtifacts([{evidenceRefs:[{paths:['escape/receipt.json','linked.json']}]}],alias);
+ assert.ok(rejected.files.every(file=>file.status==='unverified'));
+});
+
 test('API/UI artifact receipts need a command-time observation and bind exact target and environment',async t=>{
  const input=fixture(t);let checks=[await check(input)],result=await collectWorkEvidence(contract,{...input,checks});
  assert.equal(result.conditions[0].status,'verified');assert.equal(result.conditions[0].tests[0].host.platform,process.platform);

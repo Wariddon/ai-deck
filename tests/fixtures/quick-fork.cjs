@@ -163,7 +163,7 @@ app.once("browser-window-created", (_event, win) => win.webContents.once("did-fi
         await type(".thread-composer textarea", "");
       }
       if (!noProject) {
-        assert.equal(ws.repo, sourceRepo, "Prefer source repo, otherwise current verified project");
+        assert.equal(ws.repo, fs.realpathSync(sourceRepo), "Prefer source repo, otherwise current verified project");
         assert.equal(ws.chatOnly, undefined);
         assert.equal(ws.savedDraft.mode, { team: "build-review", codex: "codex", claude: "claude-write" }[recipient]);
         for (const mode of ["full", "auto", "ask"]) {

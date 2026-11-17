@@ -17,9 +17,10 @@ test("Claude Recents reuses unchanged metadata but invalidates renamed, rewritte
   const text = (title) => JSON.stringify({ type: "user", sessionId: id, cwd: project, customTitle: title,
     message: { content: title } }) + "\n";
   await fs.writeFile(file, text("First"));
+  const canonicalFile = await fs.realpath(file);
   const originalOpen = fs.open;
   let opens = 0;
-  t.mock.method(fs, "open", (...args) => { if (args[0] === file) opens++; return originalOpen(...args); });
+  t.mock.method(fs, "open", (...args) => { if (args[0] === canonicalFile) opens++; return originalOpen(...args); });
   const initial = await listClaudeSessions(root);
   assert.equal(initial[0].title, "First"); assert.equal(opens, 1);
   initial[0].title = "Changed in a caller";

@@ -47,7 +47,7 @@ test("Claude local transcript lifecycle preserves original bytes and refuses an 
   assert.equal(await fs.readFile(file, "utf8"), "A different transcript");
   await fs.unlink(file);
   entry = await changeClaudeTranscript(root, entry, "restore", undefined, idle);
-  assert.equal(entry.file, file);
+  assert.equal(entry.file, await fs.realpath(file));
   assert.equal(await changeClaudeTranscript(root, entry, "delete", undefined, idle), null);
   assert.deepEqual(await listClaudeSessions(root), []);
 });

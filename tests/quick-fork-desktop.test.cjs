@@ -6,10 +6,14 @@ test("one-click forks preserve sources, choose verified projects and allow all p
   for (const noProject of ["0", "1"]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ai-deck-quick-fork-")); let passed = false;
     try {
-      await promisify(execFile)(require("electron"), [path.join(__dirname, "fixtures/quick-fork.cjs")], {
+      try { await promisify(execFile)(require("electron"), [path.join(__dirname, "fixtures/quick-fork.cjs")], {
         windowsHide: true, timeout: 30000, maxBuffer: 1024 * 1024,
         env: { ...process.env, AI_DECK_QA_APP: path.resolve(__dirname, "../desktop"), AI_DECK_QA_ROOT: root, AI_DECK_QA_NO_PROJECT: noProject },
-      });
+      }); } catch (error) {
+        const saved=path.join(root,'result.json');
+        if(fs.existsSync(saved)){const report=JSON.parse(fs.readFileSync(saved,'utf8'));throw Error(report.error??error.message,{cause:error})}
+        throw error;
+      }
       const report = JSON.parse(fs.readFileSync(path.join(root, "result.json"), "utf8"));
       assert.equal(report.error, undefined, report.error); assert.equal(report.passed, true);
       assert.equal(report.authFailureHandled, true);
