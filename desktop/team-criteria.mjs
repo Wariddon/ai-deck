@@ -1,3 +1,7 @@
+import { observedCheckOutcome } from './claude-command-result.cjs';
+export { testCommandText } from './check-command.cjs';
+import { testCommandText } from './check-command.cjs';
+
 export function reviewCriteria(prompt) {
   const items = new Map();
   for (const [, id, scope, text] of prompt.matchAll(/^[ \t]*(R[1-9]\d?)(?:[ \t]+\[files:[ \t]*([^\]\r\n]+)\])?[ \t]*[:：][ \t]*(\S[^\r\n]*)/gmu)) {
@@ -59,11 +63,6 @@ export function criteriaReplyFormat(focus) {
 
 export const emptyReviewNote = (line) => /^(?:review notes: none|ไม่มี check ที่ขาด)[.!]?$/iu.test(line.trim());
 
-export function testCommandText(command) {
-  return /^(?:"[^"]*[\\/](?:pwsh|powershell)(?:\.exe)?"|(?:pwsh|powershell)(?:\.exe)?)(?:\s+-(?:NoLogo|NoProfile|NonInteractive))*\s+-Command\s+(['"])(.*)\1$/iu
-    .exec(command ?? "")?.[2] ?? command;
-}
-
 export function scopedEvidenceRequest(text, criteria, checks, approved = []) {
   const match = /^(?:AI_DECK_REVIEW: BLOCKED\r?\n)?AI_DECK_NEEDS_EVIDENCE: (R[1-9]\d?)\r?\nQuestion: ([^\r\n]{3,360}\?)\r?\nImpact: ([^\r\n]{3,200})\r?\nCheck: (none|[AE][1-9]\d*)\r?\n/u.exec(text?.trim() ?? "");
   if (!match || (match[2].match(/\?/gu) ?? []).length !== 1) return;
@@ -80,7 +79,7 @@ export function scopedEvidenceRequest(text, criteria, checks, approved = []) {
     return { id, question, impact, results, approvedCheck: check, extraNotes };
   }
   const recorded = check.startsWith("E") && checks[Number(check.slice(1)) - 1];
-  if (check.startsWith("E") && (!recorded || recorded.freshness === "matched" && Number.isInteger(recorded.exitCode))) return;
+  if (check.startsWith("E") && (!recorded || verifiedCheck(recorded))) return;
   return { id, question, impact, results, extraNotes };
 }
 
@@ -104,7 +103,7 @@ export function newReviewChecks(previous = [], next = []) {
   return next.filter((check) => !alreadySent.has(key(check)));
 }
 
-export const verifiedCheck = ({ freshness, exitCode }) => freshness === "matched" && Number.isInteger(exitCode);
+export const verifiedCheck = check => ['passed', 'failed'].includes(observedCheckOutcome(check));
 
 export function savedCriterionChecks(run, id) {
   const result = run.collaboration?.criterionResults?.find((item) => item.id === id);

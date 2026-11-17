@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appendLiveDeltas, appendLiveRow, applyRunUpdate, conversationTurns, frameDeltas, retainTimelineRows } from "../src/timeline-rows.mjs";
+import { appendLiveDeltas, appendLiveRow, applyRunUpdate, conversationTurns, frameDeltas, interactionRowId, retainTimelineRows } from "../src/timeline-rows.mjs";
 import { createTimelineProjector } from "../src/timeline-projection.mjs";
+
+test('concurrent controls keep separate renderer identities across members and request types', () => {
+  const ids = [interactionRowId('run','left','approval',7), interactionRowId('run','right','approval',7), interactionRowId('run','left','question',7)];
+  assert.equal(new Set(ids).size,3);
+  assert.equal(interactionRowId('run','left','approval',7),ids[0]);
+});
 
 test("streaming reuses projected history and finishing a resumed review replaces the original result", () => {
   const project = createTimelineProjector();

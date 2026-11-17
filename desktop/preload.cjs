@@ -8,7 +8,7 @@ const commands = [
   "native-hooks-sources", "native-hooks-read", "native-hooks-change", "native-hook-test-preview", "native-hook-test-run", "native-hook-test-cancel",
   "save-session-team", "team-provider-models", "save-gemini-key",
   "save-deck-preference", "test-notification", "open-notification", "preview-settings-import", "apply-settings-import", "open-settings-location", "open-provider-terminal",
-  "voice-status", "voice-arm", "voice-transcribe", "voice-speak", "voice-cancel",
+  "voice-status", "voice-arm", "voice-transcribe", "voice-speak", "voice-cancel", "prepare-deck-update", "apply-deck-update", "native-voice-start", "native-voice-stop",
   "state", "save-appearance", "save-panel-width", "save-low-memory", "system-memory", "save-close-to-tray", "quit-app", "complete-tray-sleep",
   "connections", "choose-cli", "docs", "copy-login", "choose-repo", "startup-data", "pull-native-recents", "native-session-preview", "native-chat-send",
   "save-native-chat-permission", "save-native-chat-models", "native-chat-approve", "native-chat-answer", "native-chat-stop", "native-chat-unshare",

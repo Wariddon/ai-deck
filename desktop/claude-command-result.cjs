@@ -1,5 +1,6 @@
 // Consume the native foreground Bash result, never the model's prose or an
 // exit-code-looking line in command output. Some CLI versions omit numeric exit.
+const { standaloneCheck } = require('./check-command.cjs');
 function claudeCommandResult(message, item, foreground) {
   if (!foreground) return {};
   const result = message.tool_use_result ?? message.toolUseResult;
@@ -17,6 +18,10 @@ function claudeCommandResult(message, item, foreground) {
 
 function observedCheckOutcome(check) {
   if (check?.freshness !== 'matched') return 'unverified';
+  const command = check.command ?? check.subject;
+  const configured = Number.isSafeInteger(check.exitCode) &&
+    ['required-check', 'approved check on verified copy'].includes(check.source);
+  if (command !== undefined && !configured && !standaloneCheck(command)) return 'unverified';
   if (check.completionSource === 'claude-tool-result' && check.completion === 'failed') return 'failed';
   if (check.completionSource === 'claude-tool-result' && check.completion === 'interrupted') return 'unverified';
   if (Number.isSafeInteger(check.exitCode)) return check.exitCode === 0 ? 'passed' : 'failed';

@@ -22,17 +22,26 @@ function sessionReviewWriters(members, reviewer, topology) {
 
 const findingFile = finding => typeof finding?.scope === 'string' ? finding.scope.replace(/:\d+(?::\d+)?$/u, '') : '';
 export function sessionRepairOwner({ members, reviewer, topology, writes = {}, findings }) {
+  const result = sessionRepairOwners({ members, reviewer, topology, writes, findings });
+  if (result.groups?.length === 1) return { writer: result.groups[0].writer };
+  return { reason: result.reason ?? 'The findings need more than one writer or a clearer file scope; keep them for a new plan.' };
+}
+
+export function sessionRepairOwners({ members, reviewer, topology, writes = {}, findings }) {
   const candidates = sessionReviewWriters(members, reviewer, topology);
   const actionable = (findings ?? []).filter(f => ['major', 'blocker'].includes(f?.severity));
-  const owners = new Set();
+  const owners = new Map();
   for (const finding of actionable) {
     const file = findingFile(finding);
     const matched = candidates.filter(member => writes[member.id]?.paths?.includes(file));
     if (!file || !shareableDiffPath(file) || matched.length !== 1) return { reason: 'The finding has no unique recorded owner in this reviewer’s upstream writers.' };
-    owners.add(matched[0]);
+    const owner = matched[0];
+    if (!owners.has(owner.id)) owners.set(owner.id, { writer: owner, findings: [], paths: [] });
+    owners.get(owner.id).findings.push(finding);
+    if (!owners.get(owner.id).paths.includes(file)) owners.get(owner.id).paths.push(file);
   }
-  if (owners.size !== 1) return { reason: 'The findings need more than one writer or a clearer file scope; keep them for a new plan.' };
-  return { writer: [...owners][0] };
+  if (!owners.size) return { reason: 'The review has no scoped actionable findings.' };
+  return { groups: members.filter(member => owners.has(member.id)).map(member => owners.get(member.id)) };
 }
 
 export function sessionWriterFilesCurrent(written, observation) {
@@ -73,11 +82,11 @@ export function sessionHandoffIssue({ member, members, topology, reports, review
   }
 }
 
-export function sessionRepairDecision({ verdict, findings, paths, used = 0, turnsLeft, current, partial, stopped, available = true }) {
+export function sessionRepairDecision({ verdict, findings, paths, used = 0, maxRounds = 3, requiredTurns = 2, turnsLeft, current, partial, stopped, available = true }) {
   if (verdict !== 'changes') return { repair: false };
   const hold = reason => ({ repair: false, needsReview: true, reason });
   if (stopped || !available) return hold('The repair is paused because a member is unavailable or the run stopped.');
-  if (used >= 1 || turnsLeft < 2) return hold('The bounded repair budget is exhausted; the findings remain available in this chat.');
+  if (used >= maxRounds || turnsLeft < requiredTurns) return hold('The bounded repair budget is exhausted; the findings remain available in this chat.');
   if (!current || partial || !paths?.length || paths.some(file => !shareableDiffPath(file))) {
     return hold('The writer scope or current review snapshot could not be verified.');
   }

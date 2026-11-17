@@ -43,16 +43,25 @@ test("editing the team map prevents cyclic drops and keeps branches connected on
   assert.equal(removeTreeMember(members, left.id).find(({ id }) => id === leaf.id).parentId, lead.id);
 });
 
-test("branch batches pair at most one Gemini and one Ollama at the same level and honor Low RAM", () => {
+test("branch batches pair independent read-only members at the same level and honor Low RAM", () => {
   const providers = ["gemini", "ollama", "gemini", "codex", "ollama", "gemini"];
   const members = branchFixture().map((entry, index) => ({ ...entry, provider: providers[index], model: index === 3 ? "" : "fixture" }));
   const team = normalizeSessionTeam({ topology: "tree", members, parallelBranches: true, summaryMemberId: members[0].id });
   assert.equal(team.summaryMemberId, members[0].id);
   assert.deepEqual(sessionTeamBatches(team, false).map((batch) => batch.map(({ name }) => name)),
-    [["AI1"], ["AI2", "AI3"], ["AI4"], ["AI5", "AI6"]]);
+    [["AI1"], ["AI2", "AI3"], ["AI4", "AI5"], ["AI6"]]);
   assert.deepEqual(sessionTeamBatches(team, true).map((batch) => batch.length), [1, 1, 1, 1, 1, 1]);
   assert.throws(() => normalizeSessionTeam({ ...team, summaryMemberId: "missing" }), /wrap-up/);
   assert.equal(normalizeSessionTeam({ ...team, topology: "sequence" }).summaryMemberId, undefined);
+});
+
+test('native reader branches overlap automatically, while shared writers stay serial', () => {
+  const members = branchFixture();
+  const team = normalizeSessionTeam({ topology: 'tree', members });
+  assert.deepEqual(sessionTeamBatches(team, false).map(batch => batch.length), [1, 2, 2, 1]);
+  assert.equal(normalizeSessionTeam({ ...team, parallelBranches: false }).parallelBranches,true);
+  const writers = members.map((member, index) => index === 1 ? { ...member, position: 'write' } : member);
+  assert.ok(sessionTeamBatches({ ...team, members: writers }, false).every(batch => batch.length === 1 || batch.every(member => member.position !== 'write')));
 });
 
 test("an unavailable child only blocks a sequential team; a branching team requires its lead", () => {

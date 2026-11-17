@@ -1,5 +1,5 @@
 const { execFile } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
 const { createServer } = require("node:http");
 const path = require("node:path");
 const { abortableRead } = require("./abortable-read.cjs");
@@ -7,7 +7,7 @@ const { abortableRead } = require("./abortable-read.cjs");
 const computerName = "ai_deck_computer";
 const controlId = { type: "integer", minimum: 1, maximum: 36, description: "Control ID from the latest inspect result." };
 const definitions = [
-  ["screenshot", "Get a screenshot of the one Windows window shared for this turn.", {}, []],
+  ["screenshot", "Get a fresh screenshot of a Windows window shared for this turn. Coordinates are normalized to 0–1000 within this image.", {}, []],
   ["inspect", "List usable accessibility controls in the shared window. Control IDs are replaced on each inspection.", {}, []],
   ["invoke", "Ask the user to approve invoking one control in the shared window.", { controlId }, ["controlId"]],
   ["set_text", "Ask the user to approve replacing the text in an editable control in the shared window.", {
@@ -19,6 +19,13 @@ const definitions = [
   ["press_key", "Ask the user to approve one navigation key in a focused accessible control. No global or system shortcuts.", {
     controlId, key: { type: "string", enum: ["Enter", "Tab", "Shift+Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"] },
   }, ["controlId", "key"]],
+  ["click", "Ask approval for one click at normalized coordinates in the latest screenshot of the shared window.", {
+    x: { type: 'integer', minimum: 0, maximum: 1000 }, y: { type: 'integer', minimum: 0, maximum: 1000 },
+  }, ['x', 'y']],
+  ["drag", "Ask approval for a bounded drag wholly inside the shared window, using normalized coordinates in its latest screenshot.", {
+    x: { type: 'integer', minimum: 0, maximum: 1000 }, y: { type: 'integer', minimum: 0, maximum: 1000 },
+    toX: { type: 'integer', minimum: 0, maximum: 1000 }, toY: { type: 'integer', minimum: 0, maximum: 1000 },
+  }, ['x', 'y', 'toX', 'toY']],
 ].map(([name, description, properties, required]) => ({
   name, description, inputSchema: { type: "object", properties, required, additionalProperties: false },
   annotations: { readOnlyHint: required.length === 0, destructiveHint: required.length > 0, openWorldHint: required.length > 0 },
@@ -31,7 +38,11 @@ const chromeNavigation = {
 const chromeDefinitions = [...definitions, chromeNavigation];
 const protocols = new Set(["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]);
 const codexToolPrefix = computerName + "_";
-const codexDefinitions = (tools) => tools.map(({ name, description, inputSchema }) =>
+const windowList = { name: 'windows', description: 'List only the windows explicitly shared for this turn. Pass windowId when using any tool with several shared windows.',
+  inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }, annotations: { readOnlyHint: true } };
+const routingDefinitions = tools => [...tools.map(t => ({ ...t, inputSchema: { ...t.inputSchema, properties: { ...t.inputSchema.properties,
+  windowId: { type: 'string', maxLength: 80, description: 'Window ID returned by windows. Required when several windows were shared.' } } } })), windowList];
+const codexDefinitions = (tools) => routingDefinitions(tools).map(({ name, description, inputSchema }) =>
   ({ type: "function", name: codexToolPrefix + name, description, inputSchema }));
 const codexWindowTools = codexDefinitions(definitions);
 const codexChromeTools = codexDefinitions(chromeDefinitions);
@@ -65,12 +76,13 @@ function windowsUi(request, signal) {
 
 const textResult = (text) => ({ content: [{ type: "text", text }] });
 
-function createWindowTools({ target, readWindow, approve, report, enabled, ui = windowsUi, now = Date.now }) {
+function singleWindowTools({ target, readWindow, approve, report, enabled, ui = windowsUi, now = Date.now }) {
   const toolDefinitions = target.chrome ? chromeDefinitions : definitions;
   const abort = new AbortController();
   let controls = [];
   let inspectedView;
   let inspectedAt = 0;
+  let frame;
   let working = false;
   let attempts = 0;
   const ensureActive = () => {
@@ -114,14 +126,31 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
         return textResult(JSON.stringify({ window: title, controls: controls.map(({ key, ...control }, index) => ({ id: index + 1, ...control })) }));
       }
       if (name === "screenshot") {
-        const view = viewOf(await query("identify"));
+        const identified = await query("identify"), view = viewOf(identified);
         const image = await readWindow(true);
         await query("identify", { view });
         ensureActive();
+        frame = { view, geometry: identified.geometry, at: now(), sha256: createHash('sha256').update(image).digest('hex') };
         report("Captured " + title);
         return { content: [{ type: "image", mimeType: "image/jpeg", data: image.toString("base64") }] };
       }
+      if (name === 'click' || name === 'drag') {
+        const fields = name === 'drag' ? ['x', 'y', 'toX', 'toY'] : ['x', 'y'];
+        if (!fields.every(k => Number.isInteger(args[k]) && args[k] >= 0 && args[k] <= 1000)) throw Error('Use screenshot coordinates from 0 to 1000.');
+        const fresh = () => { if (!frame?.geometry || now() - frame.at > 30000) throw Error('Capture a fresh screenshot before using coordinates.'); };
+        fresh(); const observed = frame;
+        const summary = name === 'drag' ? `Drag (${args.x}, ${args.y}) to (${args.toX}, ${args.toY})` : `Click (${args.x}, ${args.y})`;
+        if (!await decision({ summary, window: title })) return { ...textResult('The user did not approve this action.'), isError: true };
+        ensureActive(); fresh();
+        const currentImage = await readWindow(true); ensureActive(); fresh();
+        if (createHash('sha256').update(currentImage).digest('hex') !== observed.sha256) { frame = undefined; throw Error('The window image changed after approval. Capture it again.'); }
+        frame = undefined; controls = [];
+        await query(name, { ...args, geometry: observed.geometry, view: observed.view });
+        report(summary + ' · completed in ' + title);
+        return textResult('Action completed. Capture a fresh screenshot before another coordinate action.');
+      }
       if (name === "navigate") {
+        frame = undefined;
         let url;
         if (typeof args.url === "string" && args.url.length <= 1600) {
           try { url = new URL(args.url); } catch {}
@@ -139,6 +168,7 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
         report("Opened " + url.origin + " in the shared Chrome window");
         return textResult("Chrome received the navigation. Inspect the new page before taking another action.");
       }
+      frame = undefined;
       const control = Number.isSafeInteger(args.controlId) && controls[args.controlId - 1];
       if (control) freshControls();
       const set = name === "set_text";
@@ -175,6 +205,28 @@ function createWindowTools({ target, readWindow, approve, report, enabled, ui = 
     } finally { working = false; }
   }
   return { call, definitions: toolDefinitions, close: () => abort.abort(new Error("Window access has ended.")) };
+}
+
+function createWindowTools(options) {
+  const targets = options.target.windows ?? [options.target];
+  if (!targets.length || targets.length > 3 || new Set(targets.map(t => t.id)).size !== targets.length) throw Error('Share one to three distinct windows.');
+  const members = targets.map(target => ({ target, tools: singleWindowTools({ ...options, target,
+    readWindow: image => options.readWindow(image, target) }) }));
+  let working = false, attempts = 0, closed = false;
+  return { definitions: routingDefinitions(options.target.chrome ? chromeDefinitions : definitions), async call(name, args = {}) {
+    if (closed || !options.enabled()) throw Error('Window access has ended.');
+    if (working || attempts >= 20) throw Error('Computer Use is busy or reached this turn\'s action limit.');
+    attempts++;
+    if (name === 'windows') {
+      if (Object.keys(args).length) throw Error('Invalid windows arguments.');
+      return textResult(JSON.stringify(members.map(({ target }) => ({ windowId: target.id, title: target.title }))));
+    }
+    const { windowId, ...parameters } = args;
+    const member = windowId === undefined && members.length === 1 ? members[0] : members.find(m => m.target.id === windowId);
+    if (!member) throw Error('Choose a windowId from the shared windows list.');
+    working = true;
+    try { return await member.tools.call(name, parameters); } finally { working = false; }
+  }, close() { closed = true; for (const { tools } of members) tools.close(); } };
 }
 
 async function startComputerServer(tools) {

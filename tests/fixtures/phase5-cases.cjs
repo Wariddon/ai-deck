@@ -8,7 +8,7 @@ const cases = [
   { writer:'codex', setupRace:true, expected:1 },
   { writer:'codex', unavailable:true, expected:4 },
   { writer:'claude', crossBranch:true, expected:5 },
-  { writer:'codex', longReview:true, expected:3 },
+  { writer:'codex', longReview:true, expected:6 },
   { writer:'claude', longFalsePass:true, crossOwner:true, expected:5 },
   { writer:'codex', staleAncestor:true, expected:3 },
 ];
@@ -60,7 +60,7 @@ function validate(entry, state, calls) {
   if(entry.longReview) {
     const review=run.teamReview.reviews[byName('Reviewer').id];
     assert.equal(review.findings.length,2); assert.ok(!review.text.includes('FINDING'));
-    assert.equal(run.teamReview.cycles.length,0);
+    assert.equal(run.teamReview.cycles.length,1); assert.equal(run.teamReview.cycles[0].writers.length,2);
   }
 }
 const selected=process.env.AI_DECK_QA_PHASE5_CASES;

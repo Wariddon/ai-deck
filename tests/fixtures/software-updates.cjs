@@ -41,7 +41,7 @@ app.once("browser-window-created", (_, win) => win.webContents.once("did-finish-
       await wait(() => js('document.querySelector(".deck-update-count")?.textContent==="3"'), "unread badge");
       assert.ok(await click(".deck-update-bell"));
       await wait(() => js('document.querySelector(".deck-update-panel").matches(":popover-open")'), "panel");
-      assert.equal(await js('document.querySelectorAll(".deck-update-item").length'), 4);
+      assert.equal(await js('document.querySelectorAll(".deck-update-item").length'), 5);
       for (const [width, height] of [[1240, 800], [760, 540]]) {
         win.setSize(width, height); await delay(140);
         if (!await js('document.querySelector(".deck-update-panel").matches(":popover-open")')) await click(".deck-update-bell");

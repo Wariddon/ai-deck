@@ -29,7 +29,7 @@ import { sessionTeamPermissionModes, supportsRunPermissions } from "../desktop/r
 import { ChatQuoteActions } from "./ChatNavigation.jsx";
 import { ChatMarkdown } from "./ChatMarkdown.jsx";
 import { recordedSummaryLeader } from "../desktop/team-result.mjs";
-import { appendLiveDeltas, appendLiveRow, applyRunUpdate, frameDeltas, retainTimelineRows } from "./timeline-rows.mjs";
+import { appendLiveDeltas, appendLiveRow, applyRunUpdate, frameDeltas, interactionRowId, retainTimelineRows } from "./timeline-rows.mjs";
 import { applySavedModelSettings } from "./saved-model-settings.mjs";
 import { DeckNav, FeatureMap, ProjectEmpty, WorkbenchPage } from "./DeckPages.jsx";
 import { ReviewEvidence, ReviewFiles, ReviewFreshness, ReviewTarget, RunEvidence, RunScope, WorktreeComparison } from "./RunReadiness.jsx";
@@ -1131,7 +1131,7 @@ export function LiveApp() {
     if (autosave.current?.text !== JSON.stringify(draft)) drafts.current.set(taskId, draft);
   };
 
-  function quitWithSavedDrafts() {
+  function quitWithSavedDrafts(updateToken) {
     flushDraft.current();
     let saved = nativeTextDrafts.current.flush();
     if (taskId && autosave.current?.text !== JSON.stringify(draft)) saved = false;
@@ -1145,7 +1145,7 @@ export function LiveApp() {
       setError("Some chat drafts could not be saved. AI Deck stayed open. Retry after restoring disk access, or copy your unsent text before closing.");
       return;
     }
-    return perform("quit-app");
+    return perform(typeof updateToken === 'string' ? "apply-deck-update" : "quit-app", typeof updateToken === 'string' ? updateToken : undefined);
   }
 
   windowCheckpoint.current = () => {
@@ -1170,7 +1170,7 @@ export function LiveApp() {
     setStartedAt(running ? latest?.startedAt : null);
     const withLive = (next?.liveRows ?? []).reduce((current, row) => appendLiveRow(current, row), restored);
     setRows([...withLive, ...approvals.map((approval) => ({
-      ...approval, id: latest.id + ":approval:" + approval.key, agent: approval.agent ?? "codex", kind: approval.type === "question" ? "question" : "approval",
+      ...approval, id: interactionRowId(latest.id, approval.agent ?? 'codex', approval.type, approval.key), agent: approval.agent ?? "codex", kind: approval.type === "question" ? "question" : "approval",
     }))]);
     setStatuses(last);
     setTeamActivity(latest?.autoTeam?.activity ?? {});
@@ -1409,7 +1409,7 @@ export function LiveApp() {
         const row = limitRow(runId.current + ":limit:" + ++sequence.current, agent, data.limit);
         setRows((current) => [...current, { ...row, memberName: data.memberName, provider: data.provider }]);
       } else if (type === "approval" || type === "question") {
-        const row = { ...data, id: runId.current + ":approval:" + data.key, agent, kind: type };
+        const row = { ...data, id: interactionRowId(runId.current, agent, type, data.key), agent, kind: type };
         setRows((current) => [...current, row]);
       } else if (["delta", "message", "activity", "steered"].includes(type) && data.text) {
         const id = runId.current + ":" + agent + ":" + (data.key ?? "event-" + ++sequence.current);
@@ -2893,7 +2893,7 @@ export function LiveApp() {
         </div></SettingsCard>
       </>;
       case "computer": return <SettingsCard title="Share a Windows window" scope="In AI Deck"
-        description="Preview and share one window with Codex or Claude Code for the next turn. The agent can inspect accessible controls and request an approved click or text change.">
+        description="Preview and share up to three windows with Codex or Claude Code for the next turn. Each click, drag or text change asks for approval.">
         <p className="setting-detail">Window screenshots and control labels go to the selected provider. Access ends when the turn finishes or AI Deck is hidden.</p>
         {!workspace && <p className="setting-detail">Open a repository to start an AI Deck task.</p>}
         {link && <p className="setting-detail">Open a regular AI Deck task to share a window.</p>}
@@ -2948,7 +2948,7 @@ export function LiveApp() {
             title="Run one agent at a time" disabled={locked || typeof state.lowMemory !== "boolean"}
             onClick={() => perform("save-low-memory", !lowMemory)}><IconCpu size={15} />Low RAM {lowMemory ? "on" : "off"}</button>
           <button className="button small" onClick={() => openSettings("connections")}><IconPlug size={15} />Connections</button>
-          <UpdateBell api={api} ready={!launching} busy={locked || (state.jobs?.length ?? 0) > 0} />
+          <UpdateBell api={api} ready={!launching} busy={locked || (state.jobs?.length ?? 0) > 0} restart={quitWithSavedDrafts} />
         </div>
       </header>
       <div className="thread-layout" ref={layoutRef} data-panel-view={layout.focused ?? undefined} style={{

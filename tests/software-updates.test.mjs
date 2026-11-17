@@ -12,7 +12,7 @@ test("protected Windows package-manager aliases remain usable without falling ba
 test("invalid old update cache does not prevent app startup", () => {
   for (const saved of [null, [], "invalid"]) {
     const monitor = createUpdateMonitor({ saved, read: async () => [], persist() {} });
-    assert.equal(monitor.view().unread, 0); assert.equal(monitor.view().items.length, 4);
+    assert.equal(monitor.view().unread, 0); assert.equal(monitor.view().items.length, 5);
   }
 });
 
@@ -47,7 +47,7 @@ test("reader uses metadata only, respects Claude stable and reads local processe
   assert.equal(calls.length, 4); assert.equal(urls.length, 2);
   assert.ok(calls.every(({ args }) => args[0] === "list" || args.length === 1 && args[0] === "--version"));
   assert.ok(calls.slice(0, 2).every(({ args }) => args.includes("--disable-interactivity") && !args.some((arg) => /upgrade|accept/.test(arg))));
-  assert.deepEqual(result.map(({ status }) => status), ["current", "update", "update", "current"]);
+  assert.deepEqual(result.map(({ status }) => status), ["current", "update", "update", "current", "unknown"]);
   assert.equal(result[3].channel, "stable"); assert.equal(result[2].bundled, true);
   assert.ok(!JSON.stringify(result).includes("C:/resources"));
 });

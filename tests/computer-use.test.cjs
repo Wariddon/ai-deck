@@ -2,6 +2,33 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { createWindowTools, startComputerServer, windowHandle, codexWindowTools, callCodexWindowTool } = require("../desktop/computer-use.cjs");
 
+test('several shared windows isolate controls and recheck approved coordinate images', async () => {
+  const actions = []; let tick = 1000, image = 'same';
+  const members = [{ id: 'first', handle: '12', identity: '1/2', title: 'First' }, { id: 'second', handle: '13', identity: '3/4', title: 'Second' }];
+  const tools = createWindowTools({ target: { ...members[0], windows: members }, enabled: () => true, now: () => tick,
+    readWindow: async (capture, target) => capture ? Buffer.from(image + target.id) : { title: target.title },
+    approve: async () => true, report() {}, ui: async request => {
+      if (request.action === 'identify') return { geometry: '0,0,800,600' };
+      if (request.action === 'inspect') return { controls: [{ key: request.handle, label: 'Button', invoke: true }] };
+      actions.push(request); return {};
+    } });
+  try {
+    assert.equal(JSON.parse((await tools.call('windows', {})).content[0].text).length, 2);
+    await assert.rejects(tools.call('screenshot', {}), /windowId/);
+    await tools.call('inspect', { windowId: 'first' });
+    await assert.rejects(tools.call('invoke', { windowId: 'second', controlId: 1 }), /Inspect/);
+    await tools.call('screenshot', { windowId: 'second' });
+    await tools.call('drag', { windowId: 'second', x: 100, y: 200, toX: 500, toY: 300 });
+    assert.equal(actions[0].handle, '13'); assert.equal(actions[0].geometry, '0,0,800,600');
+    await assert.rejects(tools.call('click', { windowId: 'second', x: 1, y: 1 }), /fresh screenshot/);
+    await tools.call('screenshot', { windowId: 'first' }); image = 'changed';
+    await assert.rejects(tools.call('click', { windowId: 'first', x: 1, y: 1 }), /image changed/);
+    await tools.call('screenshot', { windowId: 'first' }); tick += 30001;
+    await assert.rejects(tools.call('click', { windowId: 'first', x: 1, y: 1 }), /fresh screenshot/);
+    assert.equal(actions.length, 1);
+  } finally { tools.close(); }
+});
+
 test("shared-window scrolling and navigation keys require fresh controls and approval", async () => {
   const actions = []; let approved = false;
   const tools = createWindowTools({ target: { handle: "12", identity: "34/56", title: "Fixture" }, enabled: () => true,
@@ -110,7 +137,7 @@ test("the computer MCP endpoint is scoped to a private route and rejects browser
     const init = await (await post("initialize", { protocolVersion: "2025-06-18" })).json();
     assert.equal(init.result.protocolVersion, "2025-06-18");
     assert.deepEqual((await (await post("tools/list")).json()).result.tools.map(tool => tool.name),
-      ["screenshot", "inspect", "invoke", "set_text", "scroll", "press_key"]);
+      ["screenshot", "inspect", "invoke", "set_text", "scroll", "press_key", "click", "drag"]);
     assert.equal((await post("tools/call", { name: "invoke" }, { origin: "http://example.org" })).status, 404);
     assert.equal((await post("tools/call", { name: "invoke" }, {}, new URL("/wrong", endpoint))).status, 404);
     const result = await (await post("tools/call", { name: "set_text", arguments: { controlId: 1, text: "ไทย" } })).json();

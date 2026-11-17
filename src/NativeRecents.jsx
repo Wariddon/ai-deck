@@ -8,6 +8,7 @@ import { discussionMode } from "../desktop/collaboration.mjs";
 import { ChatMarkdown } from "./ChatMarkdown.jsx";
 import { ControlPopover } from "./ControlPopover.jsx";
 import { NativeModelPicker } from "./NativeModelPicker.jsx";
+import { NativeVoice } from './NativeVoice.jsx';
 import { ComposerAttachments } from "./ComposerAttachments.jsx";
 import { useNativeAttachments } from "./NativeAttachments.jsx";
 import { OnDemandDetails, WorkSteps } from "./WorkActivity.jsx";
@@ -101,17 +102,18 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
   const [responding, setResponding] = useState(false);
   const [controlError, setControlError] = useState("");
   const [savingModels, setSavingModels] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
   const feed = useRef(null);
   const input = useRef(null);
   const search = useRef(null);
   const follow = useRef(true);
   const readOnly = Boolean(sourceTaskId || session.archived);
-  const attachments = useNativeAttachments({ api, session, busy: busy || Boolean(pending) || readOnly,
+  const attachments = useNativeAttachments({ api, session, busy: busy || Boolean(pending) || voiceActive || readOnly,
     onEdited: () => { draftEdits.current++; keepDraft(draftValue.current); },
     canEdit: Boolean(chat?.permissionMode && chat.permissionMode !== "chat"),
     onDelivered: (text) => clearSentDraft(text, draftEdits.current) });
   const repeatsUnknown = chat?.recovery?.status === 'unverified' && draft.trim() === chat.recovery.prompt;
-  const canSend = !readOnly && ready && chat?.available && !chat.active && !chat.unverified && !repeatsUnknown && !savingModels;
+  const canSend = !voiceActive && !readOnly && ready && chat?.available && !chat.active && !chat.unverified && !repeatsUnknown && !savingModels;
   const term = query.trim().toLocaleLowerCase();
   const visible = useMemo(() => messages?.filter(({ text }) => !term || text.toLocaleLowerCase().includes(term)).reverse(), [messages, term]);
   const workSteps = useMemo(() => activity.steps?.map(step => ({ ...step, id: step.key })), [activity.steps]);
@@ -304,7 +306,7 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
           draftValue.current = event.target.value;
           setDraft(event.target.value); keepDraft(event.target.value);
         }}
-          rows={1} maxLength={18000} aria-label="Message in original chat" placeholder={"Message " + name + "…"} readOnly={Boolean(pending)}
+          rows={1} maxLength={18000} aria-label="Message in original chat" placeholder={"Message " + name + "…"} readOnly={Boolean(pending) || voiceActive}
           onPaste={attachments.paste} onKeyDown={(event) => {
             if (event.key !== "Enter" || event.shiftKey || event.altKey || event.nativeEvent.isComposing || event.keyCode === 229 ||
                 !(sendOnEnter || event.ctrlKey)) return;
@@ -313,14 +315,15 @@ export function NativeChat({ preview, job, busy, ready, error, initialDraft, kee
           }} />
         <div className="thread-compose-actions deck-native-compose-actions">
           <div className="thread-actions deck-native-compose-settings">{attachments.controls}<span className="thread-session-provider"><Brand agent={session.provider} size={15} />{name}</span>
-            <PermissionPicker mode={chat?.permissionMode ?? "chat"} choices={nativePermissionModes} busy={busy || Boolean(pending)}
+            <PermissionPicker mode={chat?.permissionMode ?? "chat"} choices={nativePermissionModes} busy={busy || Boolean(pending) || voiceActive}
               unavailable={!chat?.available || chat.active || chat.unverified ? "Refresh to verify this chat's folder before changing permissions." : undefined}
               scope={"Saved for this original chat. Folder: " + (chat?.cwd ?? session.cwd ?? "Unavailable")}
               choose={choosePermission} />
-            <NativeModelPicker provider={session.provider} chat={chat} busy={busy || Boolean(pending)} api={api}
+            <NativeModelPicker provider={session.provider} chat={chat} busy={busy || Boolean(pending) || voiceActive} api={api}
               save={chooseModels} onSaving={setSavingModels} />
           </div>
-          <div className="thread-actions deck-native-compose-submit">{pending && <button className="button small" type="button"
+          <div className="thread-actions deck-native-compose-submit">{session.provider === 'codex' && <NativeVoice api={api} session={session}
+            disabled={busy || Boolean(pending) || !chat?.available || chat.active || chat.unverified || attachments.adding} changed={setVoiceActive} refresh={refresh} />}{pending && <button className="button small" type="button"
             disabled={responding || activity.stopping} onClick={() => control("native-chat-stop")}><IconPlayerStop size={15} />Stop</button>}
           <button className="button primary small" type="submit"
             disabled={busy || attachments.adding || !canSend || !draft.trim() && !attachments.images.length}>Send<IconArrowUp size={15} /></button></div>

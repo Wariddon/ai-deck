@@ -127,7 +127,7 @@ export function SessionTeamEditor({ workspace, config, lowMemory, locked, perfor
   const [catalogs, setCatalogs] = useState({});
   const [loadingProvider, setLoadingProvider] = useState(null);
   const [topology, setTopology] = useState(workspace.sessionTeam?.topology ?? "sequence");
-  const [parallelBranches, setParallelBranches] = useState(workspace.sessionTeam?.parallelBranches === true);
+  const parallelBranches = true;
   const [summaryMemberId, setSummaryMemberId] = useState(workspace.sessionTeam?.summaryMemberId ?? "");
   const [panel, setPanel] = useState(topology === "tree" ? "map" : "members");
   const [selectedId, setSelectedId] = useState(null);
@@ -291,12 +291,9 @@ export function SessionTeamEditor({ workspace, config, lowMemory, locked, perfor
         {tree && <>
           <p className="setting-detail">Drag from the bottom port of the sender to the top port of the receiver. Drag an existing arrow to change its sender. Data sharing applies to handoffs and the final wrap-up.</p>
           <div className="team-map-run-options">
-            <label className="setting-row">
-              <input type="checkbox" checked={parallelBranches} disabled={locked} onChange={(event) => setParallelBranches(event.target.checked)} />
-              <span><strong>Parallel text branches</strong><span className="setting-detail">{lowMemory
-                ? "Low RAM is on. This team runs one member at a time."
-                : "Gemini and Ollama can run together. Codex and Claude take turns in the shared worktree."}</span></span>
-            </label>
+            <p className="setting-detail">{lowMemory || !parallelBranches
+              ? "This team runs one member at a time."
+              : "Independent read-only members run together, up to two at a time. File writers and command hooks run in order."}</p>
             <SettingSelect label="Final wrap-up" options={[["", "Off"], ...members.map(({ id, name }) => [id, name || "Unnamed member"])]}
               value={summaryMemberId} change={setSummaryMemberId} busy={locked} description="Summarize branch results in a separate read-only step." />
           </div>
@@ -603,7 +600,7 @@ export function SessionTeamScope({ scope }) {
   const tree = scope.sessionTeam.topology === "tree";
   return <div className="setting-list">
     <p className="dialog-intro">{tree ? "Each member receives its upstream report when data sharing allows. " +
-      (scope.sessionTeam.parallelBranches && !scope.lowMemory ? "Ready Gemini and Ollama members can overlap." : "Members run one at a time.")
+      (scope.sessionTeam.parallelBranches !== false && !scope.lowMemory ? "Independent read-only members can overlap; file writers run in order." : "Members run one at a time.")
       : "Members run in this order."} Gemini receives its inputs over the internet.</p>
     {tree && <TeamMap members={scope.sessionTeam.members} />}
     {tree && scope.sessionTeam.summaryMemberId && <p className="setting-detail">Final wrap-up by {

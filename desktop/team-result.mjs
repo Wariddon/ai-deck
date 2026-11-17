@@ -1,7 +1,8 @@
 import { agentOutput, discussionContinuation, discussionMode, isPeerGreeting, planPair, startsDiscussionTopic, teamReviewer } from "./collaboration.mjs";
 import { workContractMarkdown } from "./work-contract.mjs";
-import { criterionResults, emptyReviewNote, verifiedCheck } from "./team-criteria.mjs";
+import { criterionResults, emptyReviewNote } from "./team-criteria.mjs";
 import { resolvedCheckNote, reviewChecks } from "./decision-shadow.mjs";
+import { observedCheckOutcome } from './claude-command-result.cjs';
 
 export const teamAgentName = (agent, record) => record?.memberName ?? ({ codex: "Codex", claude: "Claude Code" })[agent] ?? agent;
 
@@ -74,7 +75,7 @@ export function economySummary(run) {
       reviewSnapshot.partial || !collaboration.criteria?.length) return;
   const results = collaboration.criteria.map(({ id }) => collaboration.criterionResults?.find((item) => item.id === id));
   if (results.some((item) => item?.status !== "pass" || !item.detail)) return;
-  if (collaboration.handoffs?.some(({ checks }) => checks?.some(({ freshness, exitCode }) => freshness === "matched" && Number.isInteger(exitCode) && exitCode !== 0))) return;
+  if (collaboration.handoffs?.some(({ checks }) => checks?.some(check => observedCheckOutcome(check) === 'failed'))) return;
   const text = results.map(({ id, detail }) => id + " · " + detail).join("\n");
   return { text, recorded: true, ...(collaboration.reviewEarlierNotes &&
     { note: collaboration.reviewEarlierNotes, noteLabel: "Earlier review notes" }) };
@@ -94,9 +95,9 @@ export function verifiedTeamSummary(run) {
   const reportedResults = criterionResults(reported.join("\n"), collaboration.criteria);
   if (reported.length !== results.length || reportedResults.length !== results.length ||
       reportedResults.some(({ id, status, detail }) => status !== "pass" || results.find((item) => item.id === id)?.detail !== detail)) return;
-  if (!checks.some((check) => verifiedCheck(check) && check.exitCode === 0) ||
-      checks.some((check) => Number.isInteger(check.exitCode) && check.exitCode !== 0) ||
-      results.some(({ evidence }) => evidence.checks?.some((check) => !verifiedCheck(check) || check.exitCode !== 0))) return;
+  if (!checks.some((check) => observedCheckOutcome(check) === 'passed') ||
+      checks.some((check) => observedCheckOutcome(check) === 'failed') ||
+      results.some(({ evidence }) => evidence.checks?.some((check) => observedCheckOutcome(check) !== 'passed'))) return;
   return results.map(({ id, detail }) => id + " · " + detail).join("\n");
 }
 

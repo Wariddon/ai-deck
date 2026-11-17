@@ -1,25 +1,25 @@
 # Screen, browser, voice and Cloud
 
-Ordinary chat keeps the existing attachments, window sharing and explicit browser request flow. This phase adds no feature switches, extra model turns or replacement provider sessions.
+Use ordinary chat, the existing attachment picker and the update bell. These capabilities add no Settings switch and do not copy provider credentials.
 
-| Capability | AI Deck Windows interface | Boundary |
+| Capability | Windows interface | Boundary |
 | --- | --- | --- |
-| Screenshot or inspect one shared window | Existing attachment preview, then per-turn window lease | Scoped to its provider/chat and verified window; hide/minimize/Stop revokes access |
-| Accessible invoke, text, scroll and navigation keys | Existing bounded window tools | Fresh inspection within 30 seconds; one action approval; recheck after approval |
-| Chrome/Edge browser automation | Claude Code native Chrome tools for an explicit browser request | Official extension/account connection required; changes and tab creation ask for approval even with full file permissions |
-| Browser dragging or several browser tabs | Native browser tools only when discovered and approved | Does not grant global desktop dragging or access to unshared desktop windows |
-| Native desktop coordinates or simultaneous desktop windows | No supported bridge in this Windows runner | No emulation through unrestricted shell commands or fabricated tool support |
-| Microphone to chat | Existing local Whisper transcription, up to 30 seconds, Thai/English | Optional runtime required; review transcript before Send; not native realtime voice |
-| Read a reply aloud | Windows speech synthesis and existing audio player | Installed language voice required; at most 1,000 reply characters |
-| Codex Cloud | Official signed-in CLI list/status/diff | Read-only; 20 task rows, 16k detail preview, 18-second caller deadline; no exec/apply/delete |
-| Other cloud actions or realtime provider voice | Original provider surface | No hidden writes, authentication automation or new session in ordinary chat |
+| Screenshots and accessible controls | Share up to three windows in the existing picker for one provider turn | Exact process/window identity, chat, permissions and the global computer lock remain bound; hide/minimize/Stop revokes access |
+| Invoke, text, scroll, navigation keys | Existing bounded tools | Independent control IDs per window, thirty-second expiry, approval and recheck |
+| Coordinate click and drag | Scoped AI Deck bridge with 0–1000 screenshot coordinates | Fresh screenshot, one-action approval and image rehash afterward; bounds, focus and covered-window checks. This is not a native Windows provider interface |
+| Native Chrome | Explicit browser request to Claude, using discovered tools | Official extension/account connection; changes and tab creation require approval |
+| Codex continuous conversation voice | Voice beside Send in an original Codex chat, using App Server WebRTC v3 and existing OAuth | Original thread ID, no fallback text prompt/fork. Conversation is separate from file/tool work. Navigation, hide, cancellation or ten-minute limit closes media/CLI resources |
+| Claude native dictation | Native interactive CLI /voice | No supported print-mode audio API; AI Deck does not use private transcription endpoints or claim voice parity |
+| Local microphone transcription | Optional Whisper files, Thai/English, thirty seconds | Review before Send; missing runtime shown honestly; no startup recording |
+| Read replies aloud | Windows speech synthesis | Installed language voice; at most 1,000 reply characters |
+| Codex Cloud reads | Native CLI list/status/diff | Bounded rows/detail/deadline, never creates work |
+| Explicit project-chat Cloud writes | Native Codex create/apply and Claude follow-up | One-action approval and durable receipt before dispatch. Clean checkout for create/apply; original remote ID for follow-up. Codex creation requires an environment ID supplied in chat. Uncertain writes never replay |
+| Native local memory | Provider-owned context and local memory, retaining opt-outs | Codex loaded-thread summaries use its native interface. No private web-account memory import or cross-provider sync |
 
-The native browser connection is distinct from a running Chrome process or a connected MCP server. Claude must read `list_connected_browsers` before using it, and report missing connections without repeated model attempts. An English code phrase such as `edge cases`, `knowledge` or `chromeOptions` must not enable Chrome. Native `tabs_context_mcp` with `createIfEmpty` can mutate browser state and therefore requires approval.
+Cloud apply binds a bounded remote diff and checkout HEAD/status/origin, then rechecks both after approval. Claude Cloud creation is interactive-only in the installed CLI, so this bridge refuses it before approval or dispatch. Create the session in Claude first and supply its ID for a native follow-up; no private provisioning API or bundled checkout upload is used. Remote creation/follow-up and local apply are excluded from the read-tool list. Missing environment IDs, unavailable providers or failed approval cause no send. Provisioning is not proof of completed code or passing tests.
 
-Window observations expire instead of authorizing an action indefinitely. Closing access interrupts pending approval waits. Independent controllers never share control IDs; every actual action still verifies its bound window identity. Browser-native requests retain their discovered tools and per-action permissions. This release does not introduce an additional window picker or bypass the global computer lock.
+Native voice negotiates through the installed CLI without exporting OAuth into the renderer. Unsupported versions/accounts fail without replay, fork or text-draft changes. A cancellation during startup fences that voice request ID. Voice uses an idle exclusive connection; ordinary independent jobs retain their bounded pool. The v3 parameter is necessary for the currently installed native WebRTC protocol.
 
-Voice helper cancellation and deadlines await cleanup of owned processes. A transcription/speech result from another task or project is rejected, even if it completes late or the two projects contain the same saved task ID. Minimize cancels backend voice preparation as well as window sharing. No microphone prompt, recording or playback is started at launch.
+AI Deck updates download only on request from the fixed public GitHub repository. Release tag, asset, size, SHA-256 and bounded extraction are checked before replacement. Restart flushes drafts again after download. The detached helper waits for the exact old process, preserves machine-local tools and the external profile, retains a rollback folder and restores it if replacement/launch fails. Tag publishing gates on all four Windows test shards and publishes complete assets from a draft.
 
-The current provider documentation describes Claude Code computer use as a macOS interactive-session preview, unavailable through Windows CLI/non-interactive print mode. Its Desktop Windows feature is a separate surface. See [Claude Code computer use](https://code.claude.com/docs/en/computer-use) and [native Chrome integration](https://code.claude.com/docs/en/chrome). Codex Cloud uses the documented [official CLI commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli); metadata reads do not create cloud work.
-
-See [validation](validation.md) for controlled fixtures, actual local-tool checks, installed release status and remaining live-provider proof.
+Primary interfaces: [Codex App Server](https://developers.openai.com/codex/app-server), [realtime schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/realtime.rs), [Claude Cloud](https://code.claude.com/docs/en/claude-code-on-the-web), [Claude dictation](https://code.claude.com/docs/en/voice-dictation), [Claude Chrome](https://code.claude.com/docs/en/chrome). See [validation](validation.md) for controlled, live and installed proof separately.

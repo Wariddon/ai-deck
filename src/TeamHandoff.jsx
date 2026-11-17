@@ -185,8 +185,8 @@ export function TeamReviewRecord({ run }) {
     {needsReview && <p className="setting-detail">The saved changes still need review. You can continue this chat; queued work stays paused.</p>}
     {cycles.map(cycle => <details key={cycle.id}>
       <summary>Repair → recheck · {cycle.status}</summary>
-      <p className="setting-detail">{teamAgentName(cycle.writer, run.agents[cycle.writer])} · {cycle.paths.join(', ')}</p>
-      {cycle.previousReports?.[cycle.writer] && <details><summary>Before repair</summary><ChatMarkdown text={cycle.previousReports[cycle.writer]} /></details>}
+      <p className="setting-detail">{(cycle.writers ?? [cycle.writer]).map(id => teamAgentName(id, run.agents[id])).join(', ')} · {cycle.paths.join(', ')}</p>
+      {(cycle.writers ?? [cycle.writer]).filter(id => cycle.previousReports?.[id]).map(id => <details key={id}><summary>Before repair · {teamAgentName(id, run.agents[id])}</summary><ChatMarkdown text={cycle.previousReports[id]} /></details>)}
       <ul>{cycle.findings.map(finding => <li key={finding.key}><code>{finding.scope}</code> · {finding.detail}</li>)}</ul>
       {cycle.finalReview && <ChatMarkdown text={cycle.finalReview.replace(/^AI_DECK_REVIEW: (?:PASS|CHANGES|BLOCKED)\s*\n/u, '')} />}
     </details>)}

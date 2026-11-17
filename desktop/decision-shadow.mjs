@@ -1,4 +1,5 @@
-import { criterionResults, emptyReviewNote, verifiedCheck } from "./team-criteria.mjs";
+import { criterionResults, emptyReviewNote } from "./team-criteria.mjs";
+import { observedCheckOutcome } from './claude-command-result.cjs';
 
 export function reviewChecks(run) {
   const { collaboration, reviewSnapshot } = run;
@@ -13,24 +14,24 @@ export function resolvedCheckNote(line, checks) {
   const id = (marker ?? note)?.[1];
   if (!id) return false;
   const check = checks[Number(id.slice(1)) - 1];
-  return Boolean(check && verifiedCheck(check) && check.exitCode === 0);
+  return observedCheckOutcome(check) === 'passed';
 }
 
 export function decideReview(run, current) {
   const { collaboration, reviewSnapshot } = run;
   const checks = reviewChecks(run);
   if (!current) return { decision: "evidence", reason: "The reviewed checkout changed." };
-  if (checks.some((check) => verifiedCheck(check) && check.exitCode !== 0) || collaboration.verdict === "changes") {
+  if (checks.some((check) => observedCheckOutcome(check) === 'failed') || collaboration.verdict === "changes") {
     return { decision: "repair", reason: "A matched check failed or the reviewer requested changes." };
   }
   if (run.reviewPending || reviewSnapshot.partial || collaboration.preReviewChecksIncomplete ||
-      !checks.some((check) => verifiedCheck(check) && check.exitCode === 0) || collaboration.verdict !== "pass") {
+      !checks.some((check) => observedCheckOutcome(check) === 'passed') || collaboration.verdict !== "pass") {
     return { decision: "evidence", reason: "The review or matching check is incomplete." };
   }
   if (!collaboration.criteria?.length || collaboration.criteria.some(({ id }) => {
     const result = collaboration.criterionResults?.find((item) => item.id === id);
     return result?.status !== "pass" || result.evidence?.snapshot !== reviewSnapshot.sha256 || result.evidence.partial ||
-      result.evidence.checks?.some((check) => !verifiedCheck(check) || check.exitCode !== 0);
+      result.evidence.checks?.some((check) => observedCheckOutcome(check) !== 'passed');
   })) return { decision: "evidence", reason: "A criterion lacks passing evidence for this snapshot." };
   const notes = (collaboration.findings ?? "").split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   if (collaboration.reviewEarlierNotes || notes.some((line) => !emptyReviewNote(line) &&

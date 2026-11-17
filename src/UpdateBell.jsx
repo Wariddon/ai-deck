@@ -3,11 +3,12 @@ import { IconBell, IconCheck, IconExternalLink, IconRefresh } from "@tabler/icon
 import { Brand } from "./AgentIdentity.jsx";
 import { idleRefresh } from "./idle-refresh.mjs";
 
-export function UpdateBell({ api, ready, busy }) {
+export function UpdateBell({ api, ready, busy, restart }) {
   const id = useId();
   const [updates, setUpdates] = useState({ items: [], unread: 0 });
   const [error, setError] = useState("");
   const [requesting, setRequesting] = useState(false);
+  const [prepared, setPrepared] = useState(null);
   useEffect(() => {
     let disposed = false;
     void api["software-updates"]().then((result) => { if (!disposed) setUpdates(result); }).catch(() => {});
@@ -43,25 +44,34 @@ export function UpdateBell({ api, ready, busy }) {
   }
   const checking = updates.checking || requesting;
   const versions = Object.fromEntries(updates.items.filter((item) => item.unread).map((item) => [item.id, item.latest]));
+  async function updateDeck() {
+    if (prepared) { await restart(prepared.token); return; }
+    setError(''); setRequesting(true);
+    try { setPrepared(await api['prepare-deck-update']()); }
+    catch (error) { setError(error.message?.replace(/^Error invoking remote method '[^']+': Error: /u, '') || 'The update could not be prepared.'); }
+    finally { setRequesting(false); }
+  }
   return <>
     <button type="button" className="button small deck-update-bell deck-controls-trigger" aria-label={"App updates" + (updates.unread ? ": " + updates.unread + " unread" : "")}
-      title="Codex and Claude updates" popoverTarget={id}>
+      title="AI Deck, Codex and Claude updates" popoverTarget={id}>
       <IconBell size={17} aria-hidden="true" />{updates.unread > 0 && <span className="deck-update-count">{updates.unread}</span>}
     </button>
     <section id={id} popover="auto" className="deck-controls-panel deck-update-panel" aria-label="Codex and Claude updates">
       <div className="deck-update-heading"><strong>App updates</strong><button type="button" className="button small" disabled={!ready || busy || checking}
         onClick={() => act("software-updates", { check: true, force: true })}><IconRefresh size={14} className={checking ? "deck-update-spin" : undefined} />{checking ? "Checking…" : "Check now"}</button></div>
-      <p className="muted">Desktop apps and the engines AI Deck uses. Updates open in the provider’s updater or guide.</p>
+      <p className="muted">Update AI Deck here. Codex and Claude open their own updater or guide.</p>
       {busy && <p className="muted" role="status">Checks wait until your work is idle.</p>}
       {error && <p role="alert">{error}</p>}
       {updates.items.map((item) => <article key={item.id} className="deck-update-item" data-unread={item.unread || undefined}>
-        <div className="deck-update-heading"><span><Brand agent={item.provider} size={18} /><strong>{item.name}</strong></span>
+        <div className="deck-update-heading"><span>{item.provider && <Brand agent={item.provider} size={18} />}<strong>{item.name}</strong></span>
           {item.status === "update" && <span className="deck-update-tag">{item.unread ? "New update" : "Update available"}</span>}</div>
         <small className="muted">{item.kind}{item.channel ? " · " + item.channel : ""}{item.bundled ? " · bundled with desktop app" : ""}</small>
         <p>{item.installed ? <>Installed {item.installed}{item.status === "update" && <> → <strong>{item.latest}</strong></>}</> : "Version not reported"}</p>
         {item.status !== "update" && <small className="muted">{item.status === "unknown" ? "Could not check this product. Open its update page or retry." : item.kind === "Desktop app" ? "No update reported by Windows." : "No newer release in this channel."}</small>}
         <div className="deck-update-footer"><small className="muted">{item.stale ? "Last known · " : ""}{item.checkedAt ? new Date(item.checkedAt).toLocaleString() : "Not checked yet"}</small>
-          <button type="button" className="button small" disabled={requesting} onClick={() => act("open-software-update", item.id)}><IconExternalLink size={13} />{item.status === "update" ? "Open update" : "Update page"}</button></div>
+          {item.id === 'ai-deck' && item.status === 'update' ? <button type="button" className="button small" disabled={requesting || busy || !ready} onClick={updateDeck}>
+            {prepared ? 'Save drafts & restart' : requesting ? 'Preparing…' : 'Download update'}</button>
+            : <button type="button" className="button small" disabled={requesting} onClick={() => act("open-software-update", item.id)}><IconExternalLink size={13} />{item.status === "update" ? "Open update" : "Update page"}</button>}</div>
       </article>)}
       <div className="deck-update-footer"><small className="muted">Checks every 6 hours while idle. No model tokens.</small>
         {updates.unread > 0 && <button className="button small" type="button" disabled={requesting} onClick={() => act("read-software-updates", versions)}><IconCheck size={14} />Mark read</button>}</div>

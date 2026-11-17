@@ -240,6 +240,7 @@ class CodexEngine {
         for (const quota of codexWindows({ rateLimits: params.rateLimits })) this.emit({ type: "quota", quota });
       }
     }
+    if (method?.startsWith('thread/realtime/')) this.emit({ type: 'realtime', method, params });
     const active = this.active;
     if (!active || params.threadId && params.threadId !== active.threadId) return;
     if ((method === "hook/started" || method === "hook/completed") && params.run?.id) {

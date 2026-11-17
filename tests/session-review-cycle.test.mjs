@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionReviewWriter, sessionRepairOwner, sessionWriterFilesCurrent, sessionReviewHandoff, sessionHandoffIssue, sessionRepairDecision, sessionRepairPrompt } from '../desktop/session-review-cycle.mjs';
+import { sessionReviewWriter, sessionRepairOwner, sessionRepairOwners, sessionWriterFilesCurrent, sessionReviewHandoff, sessionHandoffIssue, sessionRepairDecision, sessionRepairPrompt } from '../desktop/session-review-cycle.mjs';
 
 test('repairs target the preceding writer or the actual ancestor, never a different branch', () => {
   const a={id:'a',provider:'codex',position:'write',parentId:null},b={id:'b',provider:'claude',position:'write',parentId:'a'},r={id:'r',provider:'codex',position:'review',parentId:'a'};
@@ -56,13 +56,24 @@ test('structured review handoffs stay bounded and report omitted findings explic
   assert.equal(packet.findings.length,12);assert.equal(packet.omitted,2);assert.equal(packet.findings[0].detail.length,360);
 });
 
-test('one repair requires a fresh complete snapshot, scoped findings and two available turns', () => {
+test('bounded repair rounds require a fresh complete snapshot, scoped findings and reserved turns', () => {
   const input={verdict:'changes',findings:[{severity:'major',scope:'service.js:4',detail:'Null input throws.'}],paths:['service.js'],turnsLeft:2,current:true,partial:false};
   assert.equal(sessionRepairDecision(input).repair,true);
-  for(const extra of [{used:1},{turnsLeft:1},{current:false},{partial:true},{stopped:true},{available:false},{paths:null},{paths:['other.js']},{findings:[{severity:'major',scope:'brief',detail:'Need a decision'}]}]) {
+  assert.equal(sessionRepairDecision({...input, used:1}).repair,true);
+  for(const extra of [{used:3},{turnsLeft:1},{turnsLeft:2,requiredTurns:3},{current:false},{partial:true},{stopped:true},{available:false},{paths:null},{paths:['other.js']},{findings:[{severity:'major',scope:'brief',detail:'Need a decision'}]}]) {
     const result=sessionRepairDecision({...input,...extra});assert.equal(result.repair,false);assert.equal(result.needsReview,true);
   }
   assert.deepEqual(sessionRepairDecision({...input,verdict:'pass'}),{repair:false});
   assert.deepEqual(sessionRepairDecision({...input,verdict:'blocked'}),{repair:false});
   assert.match(sessionRepairPrompt({...input,paths:input.paths}),/Preserve all other edits/);
+});
+
+test('multi-owner repair groups are all verified before dispatch and keep ambiguous ownership paused', () => {
+  const members=[{id:'a',provider:'codex',position:'write'},{id:'b',provider:'claude',position:'write'},{id:'r',position:'review'}];
+  const writes={a:{paths:['a.js','shared.js']},b:{paths:['b.js','shared.js']}}, finding=scope=>({severity:'major',scope,detail:'Fix'});
+  const input={members,reviewer:members[2],topology:'sequence',writes,findings:[finding('b.js:2'),finding('a.js:3')]};
+  const {groups}=sessionRepairOwners(input);
+  assert.deepEqual(groups.map(({writer,paths})=>[writer.id,paths]),[['a',['a.js']],['b',['b.js']]]);
+  assert.equal(sessionRepairOwners({...input,findings:[...input.findings,finding('shared.js:1')]}).groups,undefined);
+  assert.equal(sessionRepairOwners({...input,findings:[...input.findings,finding('../outside.js')]}).groups,undefined);
 });

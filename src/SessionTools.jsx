@@ -170,12 +170,13 @@ export function LinkAttachment({ initialUrl, busy, preview, attach }) {
 export function WindowAttachment({ api, windows, busy, refresh, capture, attach, providers, chromeOnly, canEdit }) {
   const [selected, setSelected] = useState("");
   const [preview, setPreview] = useState(null);
+  const [shared, setShared] = useState([]);
   const [agent, setAgent] = useState(providers?.[0]?.[0] ?? "");
   const [access, setAccess] = useState("browse");
   useEffect(() => () => { void api["cancel-window-capture"]().catch(() => {}); }, [api]);
   return <div className="deck-session-actions">
     <p className="dialog-intro">{chromeOnly ? "Choose an open Chrome window and one agent for the next turn. AI Deck asks before each click, text change or navigation." :
-      providers ? "Share one window with one agent for the next turn. The agent can receive screenshots and accessible controls. AI Deck asks before each click or text change. Send within five minutes." :
+      providers ? "Share up to three windows with one agent for the next turn. AI Deck asks before each click, drag or text change. Send within five minutes." :
       "Choose a window and check the image before attaching it to your draft."}</p>
     <div className="deck-link-form">
       <label className="field"><strong>Window</strong><select value={selected} disabled={busy}
@@ -183,13 +184,17 @@ export function WindowAttachment({ api, windows, busy, refresh, capture, attach,
         <option value="">Choose a window</option>
         {windows.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
       </select></label>
-      <button className="button small" type="button" disabled={busy} onClick={() => { setSelected(""); setPreview(null); void refresh(); }}>Refresh</button>
+      <button className="button small" type="button" disabled={busy} onClick={() => { setSelected(""); setPreview(null); setShared([]); void refresh(); }}>Refresh</button>
       <button className="button small" type="button" disabled={busy || !selected} onClick={async () => {
         setPreview(null);
-        setPreview(await capture(selected));
+        const next = await capture(selected);
+        setPreview(next);
+        if (providers && next) setShared(old => [...old.filter(p => p.windowId !== selected).slice(-2), { ...next, windowId: selected }]);
       }}>{busy ? "Working…" : "Preview capture"}</button>
     </div>
     {chromeOnly && !busy && !windows.length && <p className="setting-detail">Open a Google Chrome window, then select Refresh.</p>}
+    {providers && shared.length > 0 && <div className="thread-actions">{shared.map(p => <button key={p.token} type="button" className="button small" disabled={busy}
+      title="Remove shared window" onClick={() => setShared(old => old.filter(item => item.token !== p.token))}>{p.name} ×</button>)}</div>}
     {preview && <>
       <img className="deck-window-preview" src={preview.image} alt={"Preview of " + preview.name} />
       {providers && <p className="setting-detail">{preview.controls
@@ -204,8 +209,8 @@ export function WindowAttachment({ api, windows, busy, refresh, capture, attach,
         </select>
         <small>Chrome actions are approved separately. The share expires in five minutes if you do not send.</small>
       </label>}
-      <div className="dialog-actions"><button className="button primary small" type="button" disabled={busy || Boolean(providers && !agent)}
-        onClick={() => attach(preview.token, agent, preview.chrome && canEdit ? access : "browse")}>{providers ? "Share for next turn" : "Attach image"}</button></div>
+      <div className="dialog-actions"><button className="button primary small" type="button" disabled={busy || Boolean(providers && (!agent || !shared.length))}
+        onClick={() => attach(providers ? shared.map(p => p.token) : preview.token, agent, preview.chrome && canEdit ? access : "browse")}>{providers ? "Share for next turn" : "Attach image"}</button></div>
     </>}
   </div>;
 }

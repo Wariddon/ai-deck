@@ -31,9 +31,8 @@ export function sessionTeamBatches(team, lowMemory) {
     depth.set(member.id, level);
     const batch = batches.at(-1);
     const peer = batch?.[0];
-    const pair = team.topology === "tree" && team.parallelBranches && !lowMemory && batch?.length === 1 &&
-      depth.get(peer.id) === level && member.provider !== peer.provider &&
-      !nativeTeamProvider(member.provider) && !nativeTeamProvider(peer.provider);
+    const pair = team.topology === "tree" && !lowMemory && batch?.length === 1 &&
+      depth.get(peer.id) === level && member.position !== 'write' && peer.position !== 'write';
     if (pair) batch.push(member);
     else batches.push([member]);
   }
@@ -102,7 +101,7 @@ export function normalizeSessionTeam(value) {
   }
   const summaryMemberId = topology === "tree" ? value.summaryMemberId : undefined;
   if (summaryMemberId && !members.some(({ id }) => id === summaryMemberId)) throw new Error("Choose a team member for the wrap-up.");
-  return { members, ...(topology === "tree" && { topology, ...(value.parallelBranches === true && { parallelBranches: true }),
+  return { members, ...(topology === "tree" && { topology, parallelBranches: true,
     ...(summaryMemberId && { summaryMemberId }) }), shareContext: value.shareContext === true, shareDiff: value.shareDiff === true,
     shareReports: value.shareReports === true, freshReview: true, useByDefault: value.useByDefault === true,
     ...(value.interaction === "discuss" && { interaction: "discuss" }) };

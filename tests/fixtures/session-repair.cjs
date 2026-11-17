@@ -2,7 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),assert=require('node:assert/strict');
 const {randomUUID}=require('node:crypto'),{execFileSync,spawnSync}=require('node:child_process'),{setTimeout:delay}=require('node:timers/promises'),{app,ipcMain}=require('electron');
 app.disableHardwareAcceleration();const root=process.env.AI_DECK_QA_ROOT,appDir=process.env.AI_DECK_QA_APP,profile=process.env.AI_DECK_PROFILE_DIRECTORY=path.join(root,'profile'),repo=path.join(root,'project');
-const phase5=process.env.AI_DECK_QA_PHASE5==='1'?require('./phase5-cases.cjs'):null;
+const phase5=process.env.AI_DECK_QA_REPAIR180==='1'?require('./roster-repair-cases.cjs'):process.env.AI_DECK_QA_PHASE5==='1'?require('./phase5-cases.cjs'):null;
 if(phase5)delete process.env.GEMINI_API_KEY;
 process.env.CODEX_HOME=path.join(root,'codex');process.env.CLAUDE_CONFIG_DIR=path.join(root,'claude');
 for(const dir of [repo,profile,process.env.CLAUDE_CONFIG_DIR])fs.mkdirSync(dir,{recursive:true});
@@ -10,7 +10,7 @@ const git=args=>execFileSync('git',args,{cwd:repo,windowsHide:true,encoding:'utf
 fs.writeFileSync(path.join(repo,'service.js'),'module.exports = value => value;\n');fs.writeFileSync(path.join(repo,'service.test.cjs'),"const assert=require('node:assert/strict'),normalize=require('./service.js');assert.equal(normalize(' a '),'a');assert.equal(normalize(null),'');\n");git(['add','.']);git(['-c','user.name=QA','-c','user.email=qa@example.test','commit','-qm','fixture']);
 const condition='Null input and trimming have observed tests';
 const contract={readyWhen:[condition],evidenceRefs:[{condition,paths:['service.js'],checks:['node --test']}]};
-const cases=phase5?.cases??[{writer:'codex',plan:true,expected:5},{writer:'claude',plan:true,expected:5},{writer:'codex',budget:2,expected:2},{writer:'claude',escape:true,expected:3},{writer:'codex',falsePass:true,expected:2},{writer:'claude',race:true,expected:2},{writer:'codex',repeat:true,expected:4},{writer:'codex',unchanged:true,falsePass:true,expected:2},{writer:'codex',treeOther:true,expected:5}];
+const cases=phase5?.cases??[{writer:'codex',plan:true,expected:5},{writer:'claude',plan:true,expected:5},{writer:'codex',budget:2,expected:2},{writer:'claude',escape:true,expected:3},{writer:'codex',falsePass:true,expected:2},{writer:'claude',race:true,expected:2},{writer:'codex',repeat:true,expected:6},{writer:'codex',unchanged:true,falsePass:true,expected:2},{writer:'codex',treeOther:true,expected:5}];
 const {newTask}=require(path.join(appDir,'tasks.cjs'));
 const tasks=cases.map((entry,index)=>{
  const task=newTask();entry.id=task.id;entry.index=index;task.title='Repair case '+index;const other=entry.writer==='codex'?'claude':'codex';
@@ -28,7 +28,8 @@ engines.inspectClaude=async()=>({models:[{value:'sonnet',displayName:'Sonnet',su
 async function turn(provider,id,cwd,prompt,role,emit){
  const repair=prompt.includes('One bounded repair of the current task.'),planner=prompt.includes('You are Planner, the Planner');
  const side=prompt.includes('You are Sidewriter,');const record={case:current.index,provider,id,role,repair,side,prompt};report.calls.push(record);emit({type:'provider-call'});let text;
- if(planner)text=current.planBlocked?'AI_DECK_PLAN: BLOCKED\n'+JSON.stringify({summary:'A source decision is required before editing.',blockers:['Choose the contract.']}):'AI_DECK_PLAN: READY\n'+JSON.stringify({summary:'Normalize service.js and verify node tests.',...contract});
+ if(phase5?.turn)text=await phase5.turn({current,cwd,prompt,role,emit,record,repair,side});
+ else if(planner)text=current.planBlocked?'AI_DECK_PLAN: BLOCKED\n'+JSON.stringify({summary:'A source decision is required before editing.',blockers:['Choose the contract.']}):'AI_DECK_PLAN: READY\n'+JSON.stringify({summary:'Normalize service.js and verify node tests.',...contract});
  else if(role==='write'&&side){fs.writeFileSync(path.join(cwd,'other.js'),'module.exports = 42;\n');text='Updated other.js only.';}
  else if(role==='write'){
   if(!current.unchanged)fs.writeFileSync(path.join(cwd,'service.js'),repair||current.staleAncestor?"module.exports = value => typeof value === 'string' ? value.trim() : '';\n":"module.exports = value => value.trim();\n");
@@ -64,7 +65,7 @@ app.once('browser-window-created',(_,win)=>win.webContents.once('did-finish-load
   await wait(()=>js(`Boolean(document.querySelector('header.thread-top'))&&!document.querySelector('.deck-startup')`),'startup');
   for(current of cases){
    await api('switch-task',{repo,id:current.id});const before=report.calls.length;
-   await api('run',{repo,taskId:current.id,mode:'session-team',prompt:'Normalize service.js: trim strings and return empty text for null. Observe node --test. Preserve other files.',...(current.budget&&{teamOptions:{turnLimit:current.budget}})});
+   await api('run',{repo,taskId:current.id,mode:'session-team',prompt:'Normalize service.js: trim strings and return empty text for null. Observe node --test. Preserve other files.',...((current.budget||current.turnBudget)&&{teamOptions:{turnLimit:current.budget||current.turnBudget}})});
    if(current.budget||current.setupRace){await wait(()=>Boolean(releaseReview),'held member');await api('queue-message',{repo,taskId:current.id,mode:'session-team',prompt:'Queued follow-up must remain paused while this review needs changes.'});releaseReview();releaseReview=null;}
    await wait(async()=>{const s=await api('state');return !s.jobs.length&&s.workspace.runHistory.at(-1)?.finishedAt},'case '+current.index);
    const state=await api('state'),run=state.workspace.runHistory.at(-1),calls=report.calls.slice(before);assert.equal(calls.length,current.expected,'provider count case '+current.index);

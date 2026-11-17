@@ -7,7 +7,8 @@
 <p align="center">Codex + Claude Code, working together in one desktop workspace.</p>
 
 <p align="center">
-  <strong>Windows x64 · Desktop 0.9.179</strong><br />
+  <strong>Windows x64 · Desktop 0.9.182</strong><br />
+  <a href="https://github.com/Wariddon/ai-deck/releases/latest">Download Windows ZIP</a> ·
   <a href="#quick-start-on-windows">Quick start</a> ·
   <a href="#working-with-a-team">Team workflows</a> ·
   <a href="docs/validation.md">Validation &amp; limitations</a>
@@ -19,7 +20,26 @@ Project teams automatically receive bounded shared guidance for planning and han
 
 Project plans carry the inputs each assignment needs, the outputs it must deliver and the conditions the next member must verify. AI Deck automatically saves and forwards these with the existing plan and evidence, including after a paused review or app restart. Requirements remain separate from observed checks; a completed reply does not establish that a handoff condition passed. Ordinary team handoffs use the same guidance in their existing reports, with no additional setup buttons.
 
-## Latest update · 0.9.179
+## Latest update · 0.9.182
+
+- Public Windows ZIP releases include a SHA-256 update catalog. The existing update bell downloads and verifies AI Deck, then saves drafts before a user-requested restart. Provider updaters remain separate; no update installs automatically.
+- The existing window picker can share up to three windows with one agent for a turn. Click and drag use normalized coordinates from a fresh screenshot, verify the image again after approval, and stay inside the selected window. The shared action budget and global computer lock remain bounded.
+- Codex original chats can negotiate native WebRTC voice through their existing signed-in App Server and original thread ID. This is conversation voice; file/tool work uses the normal permission-controlled composer. Unsupported CLI/account combinations fail without a fallback prompt or fork. Claude native dictation remains an interactive-provider feature, and private web-account memory has no supported sync bridge.
+- Explicit project-chat Cloud requests expose native Codex create/apply and Claude follow-up actions behind one-action approval. Delivery receipts survive restarts and hold uncertain writes without replay; Codex creation requires a supplied environment ID. See [capabilities and boundaries](docs/screen-browser-voice-cloud.md) and [validation](docs/validation.md).
+
+### Earlier updates · 0.9.181
+
+- Standard team review and saved criterion evidence recognize Claude's correlated native foreground result when its CLI omits a numeric exit code. The final answer keeps the actual source and outcome; failed, interrupted, stale and unknown results cannot complete a review.
+- Inferred verification evidence cannot credit a test hidden inside a pipeline, command chain, background call or redirection. Explicit configured checks retain the result of their whole approved command. Shared builder/repair guidance asks both providers to run checks in separate foreground tool calls automatically.
+- Local opt-in full-cycle checks exercise real model edits, failing and passing Node tests, review-driven repair, Ask, original Recents, fork drafts and restart continuation in both native role orders. See [validation](docs/validation.md) for results and proof limits.
+
+### Earlier updates · 0.9.180
+
+- Independent read-only Session Team branches run automatically in pairs, including Codex and Claude or two members using the same provider. Sequential workflows retain their saved order; shared file writes, command hooks and Low RAM remain serial. Approval, question, native-session and Stop controls belong to each exact member.
+- Session Team can repair findings across multiple uniquely recorded upstream file owners and recheck up to three rounds within its frozen maximum of ten provider turns. It reserves a full repair/recheck group before starting, reuses each writer's original chat and preserves earlier reports. Ambiguous ownership, changed snapshots, failed checks and scope escapes remain visible and hold dependent work.
+- A local opt-in test confirms actual Codex and Claude reader turns overlap with the same upstream report. Controlled production-app scenarios cover colliding control IDs, navigation, Low RAM, Stop, multi-owner repairs, repeated rounds and budget limits. See [validation](docs/validation.md) for results and proof limits.
+
+### Earlier fixes · 0.9.179
 
 - Artifact verification recognizes the physical checkout when Windows presents a short path or a verified folder alias. Valid build/API/UI receipts remain usable while changed, outside and linked artifacts stay withheld.
 - Session Team uses that same physical checkout for saved builder conversations and evidence barriers, keeping the original chat and observed-check bucket when the path spelling changes.
@@ -30,7 +50,7 @@ Project plans carry the inputs each assignment needs, the outputs it must delive
 
 - Equivalent Model/Effort/Speed settings keep the same member-check bucket regardless of saved field order. Switching to different values still starts a separate bucket.
 - Member scores retain their bounded check snapshots when long command activity scrolls out of the compact history. A matched failure cannot disappear behind later command output, and test filenames containing `build` remain test results.
-- Concurrent member runs preserve their selected controls, drafts and original builder chat IDs, including after restart. Verification uses controlled provider transports; Claude inference remains skipped. See [validation](docs/validation.md).
+- Concurrent member runs preserve their selected controls, drafts and original builder chat IDs, including after restart. These regressions use controlled provider transports; separate actual Codex and Claude checks are recorded in [validation](docs/validation.md).
 
 - Team members receive short verification guides automatically in ordinary project turns. The guides use local observed check counts for that project/member/role/model/settings bucket and preserve your chosen team, Model, Effort, Speed and permissions.
 - Only current attributed native check outcomes contribute samples; model prose, reviewer agreement, quota failures and interrupted runs do not establish ability. Counts show their sample size and remain unrated when evidence or the model identity is unknown.
@@ -58,7 +78,7 @@ Project plans carry the inputs each assignment needs, the outputs it must delive
 
 - Review corrections return to the unique recorded owner of the affected files, including an earlier writer or an actual tree ancestor. Ambiguous ownership and findings from another branch stay available for a new plan.
 - Dependent work waits for ready plans and current, passing reviews, including reviews above an intermediate report. Independent branches can continue; changed team requirements pause the remaining automatic handoffs and queued follow-ups.
-- Structured findings survive long report previews and travel through the existing sharing controls. The one-repair budget, native builder chat, permissions and serial writes remain in place, with no new controls or extra planning turns.
+- Structured findings survive long report previews and travel through the existing sharing controls. Bounded repair rounds preserve native builder chats, permissions and serial writes, with no new controls or extra planning turns.
 
 - New messages cannot jump ahead of an older eligible waiting job. A waiter blocked by its working folder still allows independent work to proceed.
 - Closing the run pool cancels pending preparation, rejects later submissions and clears waiting timers. Stop continues to target the selected job.
@@ -80,7 +100,7 @@ Project plans carry the inputs each assignment needs, the outputs it must delive
 - Batched native text drafts have a main-process checkpoint and persistent edit identities. Forced termination preserves saved drafts and newer identical follow-ups; interrupted partial replies remain available in the chat.
 - Persistent team builder IDs are saved when first reported, and partial team progress is checkpointed during execution. Restart keeps recorded results and queued follow-ups paused.
 
-- Session Team can send one scoped review correction back to the original builder and run a fresh recheck, within the saved turn budget. Unverified snapshots and out-of-scope findings retain their review notes instead of starting a repair.
+- Session Team sends scoped corrections back to the recorded builders and runs fresh rechecks within the saved turn budget. Unverified snapshots and out-of-scope findings retain their review notes instead of starting a repair.
 - Plans can connect handoff conditions to relative files and observed test commands. The existing review details show file hashes, test outcomes and the matching code snapshot; condition text is never executed.
 
 - Typing in long original chats reuses the loaded history; command output loads when its details are opened.
@@ -156,13 +176,13 @@ The model button beside permissions sets **Model**, **Effort** and **Speed** for
 
 Use the paperclip for files, screenshot preview or a one-turn window share. Images appear as thumbnails inside the composer. Original Recents chats use the same extraction/OCR pipeline as team tasks, and attachment drafts survive reopening the app. Delayed imports merge with the latest draft rather than replacing newer text or files.
 
-Both reviewers can search task text and read source lines through bounded read-only tools. The shared-window bridge supports accessible controls, scrolling and navigation keys, with fresh inspection and one-action approval. It controls one selected window at a time. Hiding or minimizing AI Deck ends window access; **Stop sharing** is separate from stopping the model. Window access does not increase file permissions.
+Both reviewers can search task text and read source lines through bounded read-only tools. The shared-window bridge supports accessible controls, scrolling and navigation keys, with fresh inspection and one-action approval. It can share up to three explicitly selected windows; actions remain serial within the shared turn budget. Coordinate clicks and drags require a fresh image and recheck it after approval. Hiding or minimizing AI Deck ends window access; **Stop sharing** is separate from stopping the model. Window access does not increase file permissions.
 
 An explicit Chrome request to Claude, such as `@Chrome`, enables Claude Code's native Chrome integration for that turn. Install/connect the provider's official browser extension first. Ordinary messages do not load Chrome tools. Browser changes retain one-action approval even with Full access for files, and hiding AI Deck ends the browser turn.
 
-The Codex Cloud bridge can read task lists, status and diffs through the signed-in official CLI. It does not create or apply cloud tasks. Native local-memory preferences and opt-outs are preserved; private ChatGPT/Claude account memory is not copied between providers.
+The Codex Cloud bridge reads task lists, status and diffs through the signed-in official CLI. Explicit project-chat requests can create Codex Cloud tasks with a supplied environment ID, apply a reviewed diff to a clean checkout, or send follow-ups to the same Claude Cloud session ID. These write actions ask for approval and retain durable delivery receipts; uncertain sends are never replayed. Native local-memory preferences and opt-outs are preserved; private ChatGPT/Claude account memory is not copied between providers.
 
-Arbitrary coordinate dragging, simultaneous multi-window control, native realtime voice and full provider-cloud workspace management are not implemented. Voice supports local transcription, chat and Windows text-to-speech when the optional runtime is available.
+Codex original chats offer native WebRTC conversation voice when the CLI and account support it. Tool work stays in the text composer. Claude Cloud creation and native dictation remain interactive-provider features; private web-account memory has no supported sync interface. Optional Whisper transcription and Windows reply playback remain separate capabilities. See the capability matrix for exact limits.
 
 ## Settings and updates
 

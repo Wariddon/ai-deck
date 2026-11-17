@@ -1,9 +1,10 @@
-// Metadata only: never installs software, authenticates, or sends a model prompt.
+// Checks are metadata only. Installing AI Deck is a separate user action.
 export const updateProducts = [
   { id: "codex-app", provider: "codex", name: "Codex desktop", kind: "Desktop app", packageId: "9PLM9XGG6VKS", source: "msstore", url: "ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS" },
   { id: "claude-app", provider: "claude", name: "Claude desktop", kind: "Desktop app", packageId: "Anthropic.Claude", source: "winget", url: "https://claude.com/download" },
   { id: "codex-cli", provider: "codex", name: "Codex CLI", kind: "AI Deck engine", url: "https://learn.chatgpt.com/docs/codex/cli" },
   { id: "claude-cli", provider: "claude", name: "Claude Code", kind: "AI Deck engine", url: "https://code.claude.com/docs/en/setup#update-manually" },
+  { id: "ai-deck", name: "AI Deck", kind: "This app", url: "https://github.com/Wariddon/ai-deck/releases/latest" },
 ];
 const ids = new Set(updateProducts.map(({ id }) => id));
 const cacheMs = 6 * 3600000;
@@ -67,7 +68,7 @@ async function packageTags(fetcher, provider, signal) {
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   } finally { await reader.cancel().catch(() => {}); }
 }
-export function createUpdateReader({ capture, executable, claudeChannel = async () => "latest", fetcher = fetch, platform = process.platform }) {
+export function createUpdateReader({ capture, executable, claudeChannel = async () => "latest", deckVersion, deckRelease, fetcher = fetch, platform = process.platform }) {
   return async (signal) => {
     const items = [];
     // Serial local processes keep this small on low-RAM machines.
@@ -75,7 +76,11 @@ export function createUpdateReader({ capture, executable, claudeChannel = async 
       signal.throwIfAborted();
       let installed, latest, channel, bundled = false;
       try {
-        if (product.packageId) {
+        if (product.id === 'ai-deck') {
+          installed = deckVersion;
+          if (!installed || !deckRelease) throw new Error('AI Deck release reader unavailable');
+          latest = (await deckRelease({ fetcher, signal })).version;
+        } else if (product.packageId) {
           const winget = platform === "win32" && executable("winget");
           if (!winget) throw new Error("Windows update catalog unavailable");
           const read = await capture(winget, ["list", "--id", product.packageId, "--exact", "--source", product.source, "--disable-interactivity"], { signal, timeout: 12000, limit: 128 * 1024 });
@@ -111,7 +116,7 @@ export function createUpdateReader({ capture, executable, claudeChannel = async 
 export function createUpdateMonitor({ saved = {}, read, persist, changed = () => {}, canCheck = () => true, now = Date.now }) {
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) saved = {};
   let data = { items: [], readVersions: {}, lastChecked: 0, retryAt: 0 }, pending, controller;
-  for (const item of Array.isArray(saved.items) ? saved.items.slice(0, 4) : []) {
+  for (const item of Array.isArray(saved.items) ? saved.items.slice(0, updateProducts.length) : []) {
     if (!ids.has(item?.id) || data.items.some((other) => other.id === item.id)) continue;
     const installed = softwareVersion(item.installed)?.text, latest = softwareVersion(item.latest)?.text;
     data.items.push({ id: item.id, installed, latest, bundled: item.bundled === true,
@@ -125,7 +130,7 @@ export function createUpdateMonitor({ saved = {}, read, persist, changed = () =>
     const items = updateProducts.map(({ id, name, kind, provider, source }) => {
       const item = data.items.find((row) => row.id === id) ?? { id, status: "unknown" };
       const expired = Boolean(item.installed) && (!Number.isFinite(item.checkedAt) || item.checkedAt <= 0 || item.checkedAt > now() + 60000 || now() - item.checkedAt >= cacheMs);
-      return { ...item, stale: Boolean(item.stale || expired), name, kind, provider, source: source ? "Windows catalog" : "Publisher package catalog", unread: item.status === "update" && data.readVersions[id] !== item.latest };
+      return { ...item, stale: Boolean(item.stale || expired), name, kind, provider, source: id === 'ai-deck' ? 'GitHub Releases' : source ? "Windows catalog" : "Publisher package catalog", unread: item.status === "update" && data.readVersions[id] !== item.latest };
     });
     return { items, checking: Boolean(pending), unread: items.filter((item) => item.unread).length, lastChecked: data.lastChecked };
   }

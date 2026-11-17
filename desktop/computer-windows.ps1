@@ -84,9 +84,77 @@ try {
   $identity = "$processId/$started"
   if ($request.identity -and $identity -ne $request.identity) { Finish @{ error = 'The selected window changed.' } }
   $application = $process.ProcessName
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DeckPointer {
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flag);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+  [StructLayout(LayoutKind.Sequential)] public struct MouseInput { public int dx,dy; public uint data,flags,time; public UIntPtr extra; }
+  [StructLayout(LayoutKind.Explicit)] public struct InputUnion { [FieldOffset(0)] public MouseInput mouse; }
+  [StructLayout(LayoutKind.Sequential)] public struct Input { public uint type; public InputUnion value; }
+  [DllImport("user32.dll")] public static extern uint SendInput(uint count, Input[] inputs, int size);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  public static void ApplyPointer(Point[] points) {
+    int left=GetSystemMetrics(76), top=GetSystemMetrics(77), width=GetSystemMetrics(78), height=GetSystemMetrics(79);
+    if(width<2 || height<2 || points.Length<1) throw new Exception("Unsupported desktop geometry");
+    var inputs=new Input[points.Length+1];
+    for(int i=0;i<points.Length;i++) {
+      inputs[i].value.mouse=new MouseInput { dx=(int)Math.Round((points[i].X-left)*65535.0/(width-1)), dy=(int)Math.Round((points[i].Y-top)*65535.0/(height-1)),
+        flags=(uint)(0x0001|0x8000|0x4000|0x2000|(i==0?0x0002:0)) };
+    }
+    inputs[inputs.Length-1].value.mouse.flags=0x0004;
+    // Submit down/moves/up as one ordered batch; killing the helper cannot strand
+    // a held mouse button between asynchronous process calls.
+    if(SendInput((uint)inputs.Length,inputs,Marshal.SizeOf(typeof(Input))) != inputs.Length) {
+      mouse_event(4,0,0,0,UIntPtr.Zero); throw new Exception("Pointer input was rejected");
+    }
+  }
+}
+'@
+  $handle = [IntPtr]::new([long]$request.handle)
+  $bounds = [DeckPointer+Rect]::new()
+  if (-not [DeckPointer]::GetWindowRect($handle, [ref]$bounds)) { throw 'Cannot read window bounds.' }
+  $geometry = "$($bounds.Left),$($bounds.Top),$($bounds.Right),$($bounds.Bottom)"
   $view = if ($application -eq 'chrome') { Get-ChromeView $root }
   if ($request.view -and $view -ne $request.view) { Finish @{ error = 'The selected Chrome tab or page changed. Inspect it again.' } }
-  if ($request.action -eq 'identify') { Finish @{ identity = $identity; application = $application; view = $view } }
+  if ($request.action -eq 'identify') { Finish @{ identity = $identity; application = $application; view = $view; geometry = $geometry } }
+  if ($request.action -in @('click', 'drag')) {
+    if (-not $request.identity -or $request.geometry -ne $geometry) { throw 'Window moved. Capture it again.' }
+    foreach ($key in $(if ($request.action -eq 'drag') { @('x','y','toX','toY') } else { @('x','y') })) {
+      if ($null -eq $request.$key -or [double]$request.$key -lt 0 -or [double]$request.$key -gt 1000 -or [double]$request.$key -ne [int]$request.$key) { throw 'Invalid pointer coordinates.' }
+    }
+    [void][DeckPointer]::SetForegroundWindow($handle)
+    function PointAt([double]$nx, [double]$ny) {
+      if ([DeckPointer]::GetForegroundWindow() -ne $handle -or ([DeckPointer]::GetAsyncKeyState(27) -band 0x8000)) { throw 'Shared window focus changed or action cancelled.' }
+      $currentBounds = [DeckPointer+Rect]::new()
+      [void][DeckPointer]::GetWindowRect($handle, [ref]$currentBounds)
+      if ("$($currentBounds.Left),$($currentBounds.Top),$($currentBounds.Right),$($currentBounds.Bottom)" -ne $geometry) { throw 'Window moved during action.' }
+      if ($request.view -and (Get-ChromeView $root) -ne $request.view) { throw 'Chrome tab changed.' }
+      $p = [DeckPointer+Point]::new()
+      $p.X = $bounds.Left + [int][Math]::Round(($bounds.Right - $bounds.Left - 1) * $nx / 1000)
+      $p.Y = $bounds.Top + [int][Math]::Round(($bounds.Bottom - $bounds.Top - 1) * $ny / 1000)
+      if ([DeckPointer]::GetAncestor([DeckPointer]::WindowFromPoint($p), 2) -ne $handle) { throw 'The pointer would reach a different window.' }
+      return $p
+    }
+    $points = [Collections.Generic.List[DeckPointer+Point]]::new()
+    $points.Add((PointAt $request.x $request.y))
+    if ($request.action -eq 'drag') {
+      for ($step = 1; $step -le 12; $step++) {
+        $points.Add((PointAt ($request.x + ($request.toX - $request.x) * $step / 12) ($request.y + ($request.toY - $request.y) * $step / 12)))
+      }
+    }
+    [DeckPointer]::ApplyPointer($points.ToArray())
+    Finish @{ applied = $true }
+  }
   if ($request.action -eq 'capture') {
     if ($application -ne 'chrome' -or !$request.identity -or !$view) { Finish @{ error = 'Chrome window identity could not be verified.' } }
     $width = [Math]::Min(1280, [Math]::Max(128, [int]$request.width))

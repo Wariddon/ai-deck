@@ -5,6 +5,10 @@ const activeWorkLimit = 320;
 const activeMessageLimit = 60;
 const completedWorkLimit = 60;
 
+export function interactionRowId(runId, agent, type, key) {
+  return runId + ':approval:' + JSON.stringify([agent, type, key]);
+}
+
 export function conversationTurns(rows, runs) {
   const records = new Map(runs.map((run) => [run.id, run]));
   const turns = [];
